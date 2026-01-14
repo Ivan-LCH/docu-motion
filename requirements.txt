@@ -1,0 +1,9 @@
+google-genai>=1.0.0
+google-api-python-client
+edge-tts
+moviepy==1.0.3
+pymupdf
+pillow
+streamlit>=1.40.0
+pandas
+numpy<2.0.0
