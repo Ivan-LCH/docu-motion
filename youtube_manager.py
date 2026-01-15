@@ -78,5 +78,6 @@ def upload_short(file_path, title, description):
     except Exception as e:
         print(f"❌ 업로드 실패: {e}")
         # 에러가 나도 프로그램이 죽지 않도록 None 반환
-        return None
+        # return None
+        raise e
 
