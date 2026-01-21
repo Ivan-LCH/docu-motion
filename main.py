@@ -54,7 +54,7 @@ if not logger.handlers:
 # 3. Configuration & Layout (와이드 레이아웃 유지)
 # -----------------------------------------------------------------------------------------------------------------------------#
 # [앱 정보] 버전 및 프로젝트명
-VERSION        = "3.4.9 (YT Debug)"
+VERSION        = "3.4.9"
 PROJECT_NAME   = "DocuMotion Studio"
 
 st.set_page_config(page_title=PROJECT_NAME, page_icon="🎬", layout="wide")
@@ -335,7 +335,7 @@ def render_video(data, video_title="DocuMotion Video"):
             
             # Step 3: 배경(검정) 및 이미지 클립 생성
             bg_clip        = ColorClip(size=CANVAS_SIZE, color=BG_COLOR).set_duration(total_duration)
-            img_clip       = ImageClip(str(item['image'])).resize(height=int(CANVAS_SIZE[1] * 0.88)).set_position(('center', 'top')).set_duration(total_duration)
+            img_clip       = ImageClip(str(item['image'])).resize(height=int(CANVAS_SIZE[1] * 0.85)).set_position(('center', 'top')).set_duration(total_duration)
             
             # Step 4: 문장별 자막 클립 생성 (글자 수 비례 타이밍)
             subtitle_clips = []
@@ -351,8 +351,8 @@ def render_video(data, video_title="DocuMotion Video"):
                     size     = (CANVAS_SIZE[0] - 100, None), 
                     method   = 'caption', 
                     align    = 'center',
-                    interline = 10
-                ).set_start(current_start).set_duration(dur).set_position(('center', CANVAS_SIZE[1] - 140))
+                    interline = 8
+                ).set_start(current_start).set_duration(dur).set_position(('center', CANVAS_SIZE[1] - 90))
                 subtitle_clips.append(txt_clip)
                 current_start += dur
                 
@@ -433,7 +433,7 @@ def main():
                 upload_info = get_upload_status(v['name'])
                 is_uploaded = upload_info.get("uploaded", False)
                 
-                col1, col2, col3, col4, col5, col6 = st.columns([2.5, 1.2, 0.8, 0.5, 0.5, 0.5])
+                col1, col2, col3, col4, col5, col6 = st.columns([2.5, 1.2, 0.8, 0.8, 0.8, 0.6])
                 with col1:
                     st.write(f"**{v['name']}**")
                 with col2:
@@ -445,16 +445,15 @@ def main():
                         st.write("❌ 미업로드")
                 with col4:
                     with open(v['path'], "rb") as f:
-                        st.download_button("💾", f, file_name=f"{v['name']}.mp4", key=f"dl_{v['name']}")
+                        st.download_button("💾 다운", f, file_name=f"{v['name']}.mp4", key=f"dl_{v['name']}")
                 with col5:
                     if not is_uploaded:
-                        if st.button("📤", key=f"reup_{v['name']}", help="YouTube 업로드"):
-                            url = upload_to_youtube(str(v['path']), v['name'], YT_DESCRIPTION)
-                            if url:
-                                mark_as_uploaded(v['name'], url)
-                                st.rerun()
+                        if st.button("📤 업로드", key=f"reup_{v['name']}"):
+                            st.session_state.upload_target_video = str(v['path'])
+                            st.session_state.show_upload_dialog = True
+                            st.rerun()
                 with col6:
-                    if st.button("🗑️", key=f"vdel_{v['name']}"):
+                    if st.button("🗑️ 삭제", key=f"vdel_{v['name']}"):
                         delete_video(v['path'])
     
     # ─────────────────────────────────────────────────────────────────
@@ -485,11 +484,6 @@ def main():
                 key="unified_up"
             )
         
-        st.divider()
-        st.header("⚙️ 유튜브 설정")
-        video_title_input = st.text_input("📺 유튜브 제목", value="DocuMotion Video")
-        video_desc_input  = st.text_area("📝 유튜브 설명", value=YT_DESCRIPTION, height=200)
-        auto_upload       = st.checkbox  ("✅ 유튜브 자동 업로드", value=False)
         
         st.divider()
         # 수동 클렌징: 작업 디렉토리 및 세션 상태 초기화
@@ -503,20 +497,31 @@ def main():
     # 메인 영역: 파일 업로드 시 활성화
     # ─────────────────────────────────────────────────────────────────
     if uploaded_files:
-        # 파일 처리 함수
-        def process_uploaded_files(files):
+        # 파일 처리 함수 (진행률 표시 포함)
+        def process_uploaded_files(files, progress_bar):
             new_assets = []
-            for up_file in files:
+            total_files = len(files)
+            
+            for idx, up_file in enumerate(files):
+                progress_bar.progress((idx / total_files), f"📁 파일 처리 중... ({idx+1}/{total_files})")
+                
+                # 안전한 파일명 생성 (인덱스 + 타임스탬프)
+                safe_base = f"{idx+1:02d}_{datetime.now().strftime('%H%M%S')}"
+                
                 # 1. PDF 처리
                 if up_file.type == "application/pdf":
                     doc = fitz.open(stream=up_file.read(), filetype="pdf")
-                    for i in range(len(doc)):
-                        target = TEMP_DIR / f"pdf_{up_file.name}_{i+1:02d}.png"
+                    total_pages = len(doc)
+                    for i in range(total_pages):
+                        progress_bar.progress((idx / total_files) + (i / total_pages / total_files), 
+                                              f"📄 PDF 변환 중... {up_file.name} ({i+1}/{total_pages})")
+                        target = TEMP_DIR / f"pdf_{safe_base}_p{i+1:02d}.png"
                         doc.load_page(i).get_pixmap(dpi=150).save(str(target))
                         new_assets.append({'path': target, 'label': f"{up_file.name} - P{i+1}", 'script': ""})
                 # 2. 이미지 처리
                 elif up_file.type.startswith("image/"):
-                    target = TEMP_DIR / f"img_{up_file.name}"
+                    ext = Path(up_file.name).suffix or ".png"
+                    target = TEMP_DIR / f"img_{safe_base}{ext}"
                     with open(target, "wb") as f: f.write(up_file.getbuffer())
                     new_assets.append({'path': target, 'label': up_file.name, 'script': ""})
                 # 3. PPT 처리
@@ -525,19 +530,24 @@ def main():
                     for asset in ppt_assets:
                         asset['script'] = ""  # 통합 구조에 script 추가
                     new_assets.extend(ppt_assets)
+            
+            progress_bar.progress(1.0, "✅ 파일 처리 완료!")
             return new_assets
         
         # 새 파일 업로드 감지
         if 'current_file_set' not in st.session_state:
             st.session_state.current_file_set = True
             
-            new_assets = process_uploaded_files(uploaded_files)
+            # 진행률 표시바 생성
+            progress_bar = st.progress(0, text="🚀 파일 처리 준비 중...")
             
-            # 업로드 모드에 따른 처리
+            # 업로드 모드에 따른 처리 (파일 처리 전에 디렉토리 정리)
             if upload_mode == "🔄 기존 교체" or 'master_slides' not in st.session_state:
                 clear_work_directories()
+                new_assets = process_uploaded_files(uploaded_files, progress_bar)
                 st.session_state.master_slides = new_assets
             else:  # ➕ 추가 모드
+                new_assets = process_uploaded_files(uploaded_files, progress_bar)
                 existing = st.session_state.master_slides
                 if insert_position == "맨 앞":
                     st.session_state.master_slides = new_assets + existing
@@ -563,6 +573,8 @@ def main():
                         idx = int(k)
                         if idx < len(st.session_state.master_slides):
                             st.session_state.master_slides[idx]['script'] = v
+                            # 위젯 키도 업데이트 (Streamlit은 key가 있으면 value보다 우선)
+                            st.session_state[f"t_{idx}"] = v
                     st.rerun()
                 except Exception as e: st.error(f"JSON 오류: {e}")
 
@@ -574,7 +586,13 @@ def main():
             with st.container(border=True):
                 c1, c2, c3 = st.columns([1, 2, 0.3])
                 with c1: 
-                    st.image(str(slide['path']), use_container_width=True)
+                    # 파일을 직접 읽어서 표시 (경로 문제 방지)
+                    img_path = Path(slide['path'])
+                    if img_path.exists():
+                        with open(img_path, "rb") as img_file:
+                            st.image(img_file.read(), use_container_width=True)
+                    else:
+                        st.warning(f"이미지 없음: {slide['label']}")
                 with c2:
                     # 스크립트 입력 (통합 구조 사용)
                     new_script = st.text_area(f"Slide {i+1}", value=slide.get('script', ''), key=f"t_{i}", height=120)
@@ -590,7 +608,7 @@ def main():
                         delete_slide(i)
 
         # ─────────────────────────────────────────────────────────────
-        # 렌더링 트리거: 영상 생성 및 자동 업로드
+        # 렌더링 트리거: 영상 생성
         # ─────────────────────────────────────────────────────────────
         if render_btn:
             render_data = [{
@@ -598,37 +616,58 @@ def main():
                 "text"  : s.get('script', '')
             } for s in st.session_state.master_slides]
 
-            video_file = render_video(render_data, video_title_input)
+            video_file = render_video(render_data, "DocuMotion Video")
             if video_file:
                 st.session_state.last_v = str(video_file)
                 st.video(st.session_state.last_v)
-                
-                if auto_upload:
-                    video_name = Path(video_file).stem
-                    url = upload_to_youtube(st.session_state.last_v, video_title_input, video_desc_input)
-                    if url:
-                        mark_as_uploaded(video_name, url)
 
-        # ─────────────────────────────────────────────────────────────
-        # 영상 후처리: 수동 업로드 및 다운로드 버튼
-        # ─────────────────────────────────────────────────────────────
         if 'last_v' in st.session_state:
             st.divider()
             col1, col2 = st.columns(2)
             with col1:
-                if st.button("📺 YouTube 수동 업로드", width='stretch'):
-                    video_name = Path(st.session_state.last_v).stem
-                    url = upload_to_youtube(st.session_state.last_v, video_title_input, video_desc_input)
-                    if url:
-                        mark_as_uploaded(video_name, url)
-                        st.rerun()
+                if st.button("📺 YouTube 업로드", width='stretch'):
+                    st.session_state.show_upload_dialog = True
             with col2:
                 with open(st.session_state.last_v, "rb") as f:
-                    st.download_button("💾 동영상 다운로드", f, file_name=f"{video_title_input}.mp4")
+                    video_name = Path(st.session_state.last_v).stem
+                    st.download_button("💾 동영상 다운로드", f, file_name=f"{video_name}.mp4")
+        
     else:
         # 파일 미업로드 상태: 세션 정리 및 안내 메시지
         if 'current_file_set' in st.session_state: del st.session_state.current_file_set
         st.info("파일을 업로드하여 시작하세요.")
+    
+    # ─────────────────────────────────────────────────────────────
+    # YouTube 업로드 다이얼로그 (전역)
+    # ─────────────────────────────────────────────────────────────
+    if st.session_state.get('show_upload_dialog', False):
+        # 업로드 대상 영상 결정 (목록에서 선택 또는 마지막 렌더링)
+        target_video = st.session_state.get('upload_target_video', st.session_state.get('last_v', ''))
+        
+        if target_video:
+            with st.container(border=True):
+                st.subheader("📺 YouTube 업로드 설정")
+                default_title = Path(target_video).stem
+                video_title = st.text_input("영상 제목", value=default_title, key="yt_title")
+                video_desc = st.text_area("영상 설명", value=YT_DESCRIPTION, height=150, key="yt_desc")
+                
+                btn_col1, btn_col2 = st.columns(2)
+                with btn_col1:
+                    if st.button("✅ 업로드 실행", type="primary", width='stretch'):
+                        video_name = Path(target_video).stem
+                        url = upload_to_youtube(target_video, video_title, video_desc)
+                        if url:
+                            mark_as_uploaded(video_name, url)
+                        st.session_state.show_upload_dialog = False
+                        if 'upload_target_video' in st.session_state:
+                            del st.session_state.upload_target_video
+                        st.rerun()
+                with btn_col2:
+                    if st.button("❌ 취소", width='stretch'):
+                        st.session_state.show_upload_dialog = False
+                        if 'upload_target_video' in st.session_state:
+                            del st.session_state.upload_target_video
+                        st.rerun()
 
 
 # ===================================================================================================================
