@@ -7,3 +7,4 @@ pillow
 streamlit>=1.40.0
 pandas
 numpy<2.0.0
+python-pptx
