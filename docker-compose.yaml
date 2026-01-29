@@ -7,9 +7,10 @@ services:
     build: .
     container_name: docu_motion_app
     ports:
-      - "8501:8501"
+      - "8505:8501"
     volumes:
       - .:/app
+      - ./models_cache:/app/models
     env_file:
       - .env
     environment:

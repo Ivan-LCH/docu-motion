@@ -23,7 +23,7 @@ SCOPES = ['https://www.googleapis.com/auth/youtube.upload']
 # upload shorts
 # ===================================================================================================================
 
-def upload_short(file_path, title, description):
+def upload_short(file_path, title, description, tags=None, category_id='28'):
     print(f"🚀 유튜브 업로드 시작: {title}")
     
     if not os.path.exists('token.json'):
@@ -42,16 +42,24 @@ def upload_short(file_path, title, description):
         print(f"⚠️ 설명 내용이 너무 길어 일부 생략합니다. ({len(safe_description)}자 -> 4500자)")
         safe_description = safe_description[:4500] + "\n\n...(내용이 길어 생략되었습니다. 메일 리포트를 확인하세요.)"
 
+    # 태그 처리
+    if tags is None:
+        tags = []
+    elif isinstance(tags, str):
+        tags = [t.strip() for t in tags.split(',') if t.strip()]
+
     body = {
         'snippet': {
-            'title'       : title[:100], # 제목도 100자 제한
-            'description' : safe_description,
-            'tags'        : ['주식', '투자', '뉴스', 'AI브리핑', 'Ivan'],
-            'categoryId'  : '25' # 뉴스/정치
+            'title': title[:100],  # 제목 100자 제한
+            'description': safe_description,
+            'tags': tags,
+            'categoryId': category_id,
+            'defaultLanguage': 'ko',
+            'defaultAudioLanguage': 'ko'
         },
         'status': {
-            'privacyStatus'           : 'public', # 일부 공개
-            'selfDeclaredMadeForKids' : False
+            'privacyStatus': 'public',
+            'selfDeclaredMadeForKids': False
         }
     }
     

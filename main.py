@@ -29,6 +29,19 @@ from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips, Tex
 # [외부API] YouTube 업로드 매니저, Google Gemini AI
 import youtube_manager
 
+# [TTS] Qwen3-TTS Manager
+try:
+    from tts_manager import TTSEngine
+except ImportError:
+    TTSEngine = None
+
+# -----------------------------------------------------------------------------------------------------------------------------#
+# Configuration for Voice Cloning
+# -----------------------------------------------------------------------------------------------------------------------------#
+REF_AUDIO_PATH = "my_voice.m4a"
+REF_TEXT       = "안녕하세요, 이창호 입니다. 최진숙의 남편입니다. 만나서 반갑습니다."
+
+
 
 # -----------------------------------------------------------------------------------------------------------------------------#
 # 2. Logging Setup
@@ -182,11 +195,12 @@ def save_upload_status(status):
     with open(UPLOAD_STATUS_FILE, "w", encoding="utf-8") as f:
         json.dump(status, f, ensure_ascii=False, indent=2)
 
-def mark_as_uploaded(video_name, youtube_url):
+def mark_as_uploaded(video_name, youtube_url, video_title=None):
     status = load_upload_status()
     status[video_name] = {
         "uploaded": True,
         "url": youtube_url,
+        "title": video_title or video_name,
         "uploaded_at": datetime.now().strftime('%Y-%m-%d %H:%M')
     }
     save_upload_status(status)
@@ -308,6 +322,21 @@ class StreamlitProgressLogger(ProgressBarLogger):
                 overall_progress = 50 + int(encode_progress * 0.5)
                 self.progress_bar.progress(overall_progress, f"📼 영상 인코딩 중... ({encode_progress}%)")
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# load_tts_engine: TTS 엔진 로드 (캐싱 적용)
+# ─────────────────────────────────────────────────────────────────────────────
+@st.cache_resource
+def load_tts_engine():
+    if TTSEngine is None:
+        return None
+    try:
+        engine = TTSEngine(device="cpu")
+        return engine
+    except Exception as e:
+        logger.error(f"TTS Engine Load Error: {e}")
+        return None
+
 def render_video(data, video_title="DocuMotion Video"):
     total_slides = len(data)
     final_clips = []
@@ -315,6 +344,12 @@ def render_video(data, video_title="DocuMotion Video"):
     # 통합 프로그레스바 생성
     progress_bar = st.progress(0, text="🚀 렌더링 준비 중...")
     
+    # TTS 엔진 로드
+    tts_engine = load_tts_engine()
+    if not tts_engine:
+        st.error("TTS 엔진을 로드할 수 없습니다. requirements.txt를 확인하세요.")
+        return None
+
     try:
         for i, item in enumerate(data):
             if not item['text']: continue
@@ -323,9 +358,39 @@ def render_video(data, video_title="DocuMotion Video"):
             slide_progress = int((i / total_slides) * 50)
             progress_bar.progress(slide_progress, f"⏳ 슬라이드 {i+1}/{total_slides} 합성 중... ({slide_progress}%)")
             
-            # Step 1: TTS 오디오 생성
-            a_path         = TEMP_DIR / f"v_{i}.mp3"
-            asyncio.run(edge_tts.Communicate(item['text'], "ko-KR-SunHiNeural").save(str(a_path)))
+            # Step 1: TTS 오디오 생성 (Qwen3-TTS)
+            a_path = TEMP_DIR / f"v_{i}.wav" # wav로 변경 권장 (Qwen-TTS 출력 포맷에 따라)
+            
+            # Voice Cloning 적용 여부 확인
+            current_ref_audio = REF_AUDIO_PATH if os.path.exists(REF_AUDIO_PATH) else None
+            current_ref_text = REF_TEXT if current_ref_audio else None
+
+            if current_ref_audio:
+                logger.info(f"Generating with cloned voice using {current_ref_audio}")
+            
+            success = tts_engine.generate(
+                text=item['text'],
+                output_file=str(a_path),
+                ref_audio_path=current_ref_audio,
+                ref_text=current_ref_text
+            )
+            
+            if not success:
+               st.warning(f"슬라이드 {i+1} 오디오 생성 실패. 기본 TTS로 시도합니다.")
+               # Fallback or Skip? For now, we assume failure usually means model error.
+               # If strict logic, maybe fallback to edge-tts if installed? 
+               # But let's stick to user requirement of using Qwen.
+               # For robustness, if Qwen fails, we might just create a silent clip or error out.
+               # Let's try to fallback to Edge-TTS if Qwen fails (Safety Net)
+               try:
+                   asyncio.run(edge_tts.Communicate(item['text'], "ko-KR-SunHiNeural").save(str(a_path)))
+               except:
+                   pass
+
+            if not os.path.exists(str(a_path)):
+                 st.error(f"오디오 파일 생성 실패: {item['text'][:20]}...")
+                 continue
+
             a_clip         = AudioFileClip(str(a_path))
             total_duration = a_clip.duration
             
@@ -390,14 +455,15 @@ def render_video(data, video_title="DocuMotion Video"):
 # - 성공 시 URL 반환, 실패 시 에러 메시지 + 로깅
 # - 토큰 만료, 할당량 초과 등의 에러 핸들링 포함
 # ─────────────────────────────────────────────────────────────────────────────
-def upload_to_youtube(file_path: str, title: str, description: str = "AI Video"):
+def upload_to_youtube(file_path: str, title: str, description: str = "AI Video", tags: str = None):
     """유튜브 업로드 공통 함수"""
     with st.spinner(f"🚀 '{title}' 유튜브 업로드 중..."):
         try:
             url = youtube_manager.upload_short(
                 file_path   = file_path,
                 title       = title,
-                description = description
+                description = description,
+                tags        = tags
             )
             if url:
                 st.success(f"✅ 업로드 성공: {url}")
@@ -428,32 +494,64 @@ def main():
     # ─────────────────────────────────────────────────────────────
     video_list = get_video_list()
     if video_list:
+        # 컴팩트 버튼 스타일 CSS (Expander 내부의 버튼만 타겟팅하여 적용)
+        st.markdown("""
+        <style>
+        div[data-testid="stExpanderDetails"] div[data-testid="stButton"] button {
+            padding-top: 4px !important;
+            padding-bottom: 4px !important;
+            padding-left: 10px !important;
+            padding-right: 10px !important;
+            font-size: 14px !important;
+            min-height: 0px !important;
+            height: auto !important;
+            border: 1px solid #ddd !important;
+        }
+        div[data-testid="stExpanderDetails"] div[data-testid="stButton"] {
+            margin-bottom: 0px !important;
+            margin-top: 0px !important;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+
         with st.expander(f"📁 생성된 영상 목록 ({len(video_list)}개)", expanded=False):
             for v in video_list:
                 upload_info = get_upload_status(v['name'])
                 is_uploaded = upload_info.get("uploaded", False)
                 
-                col1, col2, col3, col4, col5, col6 = st.columns([2.5, 1.2, 0.8, 0.8, 0.8, 0.6])
-                with col1:
-                    st.write(f"**{v['name']}**")
-                with col2:
-                    st.write(f"{v['modified']}")
-                with col3:
+                # 업로드된 항목: 제목 표시, 미업로드: 파일명 표시
+                display_name = upload_info.get("title", v['name']) if is_uploaded else v['name']
+                
+                # 컬럼 비율 조정: 제목(6) + 공백(1) + 다운(0.5) + 업로드(0.5) + 삭제(0.5)
+                # 오른쪽 끝으로 밀기 위해 앞쪽 컬럼 비중을 높임
+                col_title, col_space, col_dl, col_up, col_del = st.columns([5, 1, 0.6, 0.6, 0.6])
+                
+                with col_title:
                     if is_uploaded:
-                        st.write("✅ 업로드됨")
+                        url = upload_info.get("url", "#")
+                        # 제목과 링크를 한 줄에 표시
+                        st.markdown(f"**{display_name}** &nbsp; [[YouTube]({url})]", unsafe_allow_html=True)
                     else:
-                        st.write("❌ 미업로드")
-                with col4:
+                        st.write(f"**{display_name}**")
+                    st.caption(f"📅 {v['modified']}")
+                
+                # 공백 컬럼은 비워둠 (col_title이 넓어서 자연스럽게 밀림)
+                
+                with col_dl:
                     with open(v['path'], "rb") as f:
-                        st.download_button("💾 다운", f, file_name=f"{v['name']}.mp4", key=f"dl_{v['name']}")
-                with col5:
-                    if not is_uploaded:
-                        if st.button("📤 업로드", key=f"reup_{v['name']}"):
+                        st.download_button("💾", f, file_name=f"{v['name']}.mp4", key=f"dl_{v['name']}", 
+                                          help="다운로드")
+                with col_up:
+                    if is_uploaded:
+                         # 이미 업로드된 경우 버튼 비활성화 대신 체크 표시만 (클릭 불가)
+                         st.button("✅", key=f"status_{v['name']}", disabled=True, help="업로드 완료")
+                    else:
+                        if st.button("📤", key=f"reup_{v['name']}", help="YouTube 업로드"):
                             st.session_state.upload_target_video = str(v['path'])
                             st.session_state.show_upload_dialog = True
                             st.rerun()
-                with col6:
-                    if st.button("🗑️ 삭제", key=f"vdel_{v['name']}"):
+                with col_del:
+                    if st.button("🗑️", key=f"vdel_{v['name']}", help="삭제"):
                         delete_video(v['path'])
     
     # ─────────────────────────────────────────────────────────────────
@@ -595,7 +693,10 @@ def main():
                         st.warning(f"이미지 없음: {slide['label']}")
                 with c2:
                     # 스크립트 입력 (통합 구조 사용)
-                    new_script = st.text_area(f"Slide {i+1}", value=slide.get('script', ''), key=f"t_{i}", height=120)
+                    # 세션 상태에 값이 없으면 기본값 설정
+                    if f"t_{i}" not in st.session_state:
+                        st.session_state[f"t_{i}"] = slide.get('script', '')
+                    new_script = st.text_area(f"Slide {i+1}", key=f"t_{i}", height=120)
                     st.session_state.master_slides[i]['script'] = new_script
                 with c3:
                     # 슬라이드 컨트롤 버튼
@@ -649,15 +750,18 @@ def main():
                 st.subheader("📺 YouTube 업로드 설정")
                 default_title = Path(target_video).stem
                 video_title = st.text_input("영상 제목", value=default_title, key="yt_title")
-                video_desc = st.text_area("영상 설명", value=YT_DESCRIPTION, height=150, key="yt_desc")
+                video_desc = st.text_area("영상 설명", value=YT_DESCRIPTION, height=120, key="yt_desc")
+                video_tags = st.text_input("태그 (쉼표 구분)", value="DocuMotion, 자동화, AI", key="yt_tags")
+                st.caption("📁 카테고리: 과학기술 | 🌐 언어: 한국어")
                 
                 btn_col1, btn_col2 = st.columns(2)
                 with btn_col1:
                     if st.button("✅ 업로드 실행", type="primary", width='stretch'):
                         video_name = Path(target_video).stem
-                        url = upload_to_youtube(target_video, video_title, video_desc)
+                        url = upload_to_youtube(target_video, video_title, video_desc, video_tags)
                         if url:
-                            mark_as_uploaded(video_name, url)
+                            mark_as_uploaded(video_name, url, video_title)
+                            st.success(f"✅ 업로드 완료! [YouTube에서 보기]({url})")
                         st.session_state.show_upload_dialog = False
                         if 'upload_target_video' in st.session_state:
                             del st.session_state.upload_target_video
