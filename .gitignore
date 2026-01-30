@@ -1,4 +1,5 @@
 # === 보안 및 개인정보 (절대 올리지 마세요) ===
+.streamlit/secrets.toml
 .env
 token.json
 credentials.json
@@ -12,9 +13,11 @@ outputs/
 *.jpg
 *.jpeg
 *.pdf
+app.log
 
 # === 파이썬 환경 및 캐시 ===
 __pycache__/
 .venv/
 env/
 .DS_Store
+

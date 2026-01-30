@@ -392,7 +392,13 @@ def render_video(data, video_title="DocuMotion Video"):
                  continue
 
             a_clip         = AudioFileClip(str(a_path))
-            total_duration = a_clip.duration
+            
+            # [Pacing Improvement] Add 0.5s pause before and after audio
+            PAD_DELAY      = 0.5  # 0.5 seconds silence padding
+            total_duration = a_clip.duration + (PAD_DELAY * 2)
+            
+            # Shift audio to start after padding
+            a_clip = a_clip.set_start(PAD_DELAY)
             
             # Step 2: 문장 분리 및 자막 타이밍 계산 준비
             sentences      = split_sentences(item['text'])
@@ -404,10 +410,11 @@ def render_video(data, video_title="DocuMotion Video"):
             
             # Step 4: 문장별 자막 클립 생성 (글자 수 비례 타이밍)
             subtitle_clips = []
-            current_start  = 0
+            current_start  = PAD_DELAY # Subtitles should start with audio
 
             for s in sentences:
-                dur          = (len(s) / total_chars) * total_duration if total_chars > 0 else total_duration
+                # Calculate duration based on original audio length (without padding)
+                dur          = (len(s) / total_chars) * a_clip.duration if total_chars > 0 else a_clip.duration
                 txt_clip     = TextClip(
                     txt      = s, 
                     font     = FONT_PATH, 
