@@ -4,10 +4,7 @@ edge-tts
 moviepy==1.0.3
 pymupdf
 pillow
-# Qwen-TTS Dependencies
-scipy
-soundfile
-qwen-tts
+requests
 
 streamlit>=1.40.0
 pandas

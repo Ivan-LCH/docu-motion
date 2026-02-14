@@ -8,25 +8,19 @@ WORKDIR /app
 # Ensure realtime logs
 ENV PYTHONUNBUFFERED=1
 
-# 1. 필수 시스템 패키지 및 폰트 설치
+# 1. 필수 시스템 패키지 및 폰트 설치 (TTS 관련 패키지 제거: sox, libsndfile1, git)
 RUN apt-get update && apt-get install -y \
     imagemagick \
     ffmpeg \
     fonts-noto-cjk \
     findutils \
-    libsndfile1 \
-    git \
-    sox \
     && rm -rf /var/lib/apt/lists/*
 
-# 2. MoviePy 전용 ImageMagick 보안 정책 완화 (제공된 로직 반영)
+# 2. MoviePy 전용 ImageMagick 보안 정책 완화
 RUN find /etc -name "policy.xml" -exec sed -i 's/rights="none" pattern="@\*"/rights="read|write" pattern="@*"/g' {} + && \
     find /etc -name "policy.xml" -exec sed -i 's/rights="none" pattern="PDF"/rights="read|write" pattern="PDF"/g' {} +
 
-# 3. Python 라이브러리 설치
-# Install CPU-only Torch and Audio first to avoid massive CUDA downloads (prevents OOM/Disk space errors)
-RUN pip install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cpu
-
+# 3. Python 라이브러리 설치 (PyTorch 제거 - 원격 TTS 서버 사용)
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
@@ -36,4 +30,3 @@ COPY . .
 # 5. Streamlit 실행 설정
 EXPOSE 8501
 CMD ["streamlit", "run", "main.py", "--server.port=8501", "--server.address=0.0.0.0"]
-

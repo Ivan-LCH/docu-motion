@@ -36,10 +36,10 @@ except ImportError:
     TTSEngine = None
 
 # -----------------------------------------------------------------------------------------------------------------------------#
-# Configuration for Voice Cloning
+# Configuration for Remote TTS Server
 # -----------------------------------------------------------------------------------------------------------------------------#
-REF_AUDIO_PATH = "my_voice.m4a"
-REF_TEXT       = "안녕하세요, 이창호 입니다. 최진숙의 남편입니다. 만나서 반갑습니다."
+TTS_SERVER_URL = os.getenv("TTS_SERVER_URL", "http://localhost:8002")
+TTS_VOICE_NAME = os.getenv("TTS_VOICE_NAME", "myvoice")
 
 
 
@@ -331,7 +331,7 @@ def load_tts_engine():
     if TTSEngine is None:
         return None
     try:
-        engine = TTSEngine(device="cpu")
+        engine = TTSEngine(server_url=TTS_SERVER_URL, voice_name=TTS_VOICE_NAME)
         return engine
     except Exception as e:
         logger.error(f"TTS Engine Load Error: {e}")
@@ -358,30 +358,18 @@ def render_video(data, video_title="DocuMotion Video"):
             slide_progress = int((i / total_slides) * 50)
             progress_bar.progress(slide_progress, f"⏳ 슬라이드 {i+1}/{total_slides} 합성 중... ({slide_progress}%)")
             
-            # Step 1: TTS 오디오 생성 (Qwen3-TTS)
-            a_path = TEMP_DIR / f"v_{i}.wav" # wav로 변경 권장 (Qwen-TTS 출력 포맷에 따라)
-            
-            # Voice Cloning 적용 여부 확인
-            current_ref_audio = REF_AUDIO_PATH if os.path.exists(REF_AUDIO_PATH) else None
-            current_ref_text = REF_TEXT if current_ref_audio else None
-
-            if current_ref_audio:
-                logger.info(f"Generating with cloned voice using {current_ref_audio}")
+            # Step 1: TTS 오디오 생성 (Remote TTS Server)
+            a_path = TEMP_DIR / f"v_{i}.wav"
+            logger.info(f"Generating TTS via remote server ({TTS_SERVER_URL})")
             
             success = tts_engine.generate(
                 text=item['text'],
-                output_file=str(a_path),
-                ref_audio_path=current_ref_audio,
-                ref_text=current_ref_text
+                output_file=str(a_path)
             )
             
+            # TTS 실패 시 Edge-TTS로 폴백
             if not success:
                st.warning(f"슬라이드 {i+1} 오디오 생성 실패. 기본 TTS로 시도합니다.")
-               # Fallback or Skip? For now, we assume failure usually means model error.
-               # If strict logic, maybe fallback to edge-tts if installed? 
-               # But let's stick to user requirement of using Qwen.
-               # For robustness, if Qwen fails, we might just create a silent clip or error out.
-               # Let's try to fallback to Edge-TTS if Qwen fails (Safety Net)
                try:
                    asyncio.run(edge_tts.Communicate(item['text'], "ko-KR-SunHiNeural").save(str(a_path)))
                except:
@@ -391,44 +379,82 @@ def render_video(data, video_title="DocuMotion Video"):
                  st.error(f"오디오 파일 생성 실패: {item['text'][:20]}...")
                  continue
 
-            a_clip         = AudioFileClip(str(a_path))
+            # ─────────────────────────────────────────────────────────────────
+            # Step 2: 타이밍 계산 (Pacing & Subtitle Sync)
+            # ─────────────────────────────────────────────────────────────────
+            a_clip = AudioFileClip(str(a_path))
             
-            # [Pacing Improvement] Add 0.5s pause before and after audio
-            PAD_DELAY      = 0.5  # 0.5 seconds silence padding
-            total_duration = a_clip.duration + (PAD_DELAY * 2)
+            # 원본 오디오 길이 저장 (set_start 전에 저장해야 정확함)
+            original_audio_duration = a_clip.duration
             
-            # Shift audio to start after padding
+            # 슬라이드 앞뒤 여백 (부드러운 전환용)
+            PAD_DELAY = 0.5  # 앞뒤 각 0.5초 침묵
+            
+            # 전체 슬라이드 길이 = 오디오 + 앞뒤 여백
+            total_duration = original_audio_duration + (PAD_DELAY * 2)
+            
+            # 오디오 시작점을 여백 이후로 이동
             a_clip = a_clip.set_start(PAD_DELAY)
             
-            # Step 2: 문장 분리 및 자막 타이밍 계산 준비
-            sentences      = split_sentences(item['text'])
-            total_chars    = sum(len(s) for s in sentences)
+            # ─────────────────────────────────────────────────────────────────
+            # Step 3: 문장 분리 및 자막 타이밍 계산
+            # ─────────────────────────────────────────────────────────────────
+            sentences = split_sentences(item['text'])
+            num_sentences = len(sentences)
+            total_chars = sum(len(s) for s in sentences)
             
-            # Step 3: 배경(검정) 및 이미지 클립 생성
-            bg_clip        = ColorClip(size=CANVAS_SIZE, color=BG_COLOR).set_duration(total_duration)
-            img_clip       = ImageClip(str(item['image'])).resize(height=int(CANVAS_SIZE[1] * 0.85)).set_position(('center', 'top')).set_duration(total_duration)
+            # 문장 사이 쉼 (0.15초) - 자연스러운 호흡
+            SENTENCE_GAP = 0.15
+            total_gap_time = SENTENCE_GAP * (num_sentences - 1) if num_sentences > 1 else 0
             
-            # Step 4: 문장별 자막 클립 생성 (글자 수 비례 타이밍)
+            # 자막에 사용할 실제 시간 = 원본 오디오 - 문장 사이 쉼
+            available_subtitle_time = original_audio_duration - total_gap_time
+            
+            # ─────────────────────────────────────────────────────────────────
+            # Step 4: 배경 및 이미지 클립 생성
+            # ─────────────────────────────────────────────────────────────────
+            bg_clip = ColorClip(size=CANVAS_SIZE, color=BG_COLOR).set_duration(total_duration)
+            img_clip = (
+                ImageClip(str(item['image']))
+                .resize(height=int(CANVAS_SIZE[1] * 0.85))
+                .set_position(('center', 'top'))
+                .set_duration(total_duration)
+            )
+            
+            # ─────────────────────────────────────────────────────────────────
+            # Step 5: 문장별 자막 클립 생성 (글자 수 비례 + 쉼 타이밍)
+            # ─────────────────────────────────────────────────────────────────
             subtitle_clips = []
-            current_start  = PAD_DELAY # Subtitles should start with audio
+            # 자막 시작: 오디오 시작 + 약간의 지연 (음성보다 약간 늦게 시작)
+            SUBTITLE_DELAY = 0.1  # 자막이 음성보다 0.1초 늦게 시작
+            current_start = PAD_DELAY + SUBTITLE_DELAY
 
-            for s in sentences:
-                # Calculate duration based on original audio length (without padding)
-                dur          = (len(s) / total_chars) * a_clip.duration if total_chars > 0 else a_clip.duration
-                txt_clip     = TextClip(
-                    txt      = s, 
-                    font     = FONT_PATH, 
-                    fontsize = FONT_SIZE, 
-                    color    = TEXT_COLOR, 
-                    size     = (CANVAS_SIZE[0] - 100, None), 
-                    method   = 'caption', 
-                    align    = 'center',
+            for idx, s in enumerate(sentences):
+                # 글자 수 비례로 자막 지속 시간 계산
+                char_ratio = len(s) / total_chars if total_chars > 0 else 1.0 / num_sentences
+                dur = char_ratio * available_subtitle_time
+                
+                txt_clip = TextClip(
+                    txt       = s, 
+                    font      = FONT_PATH, 
+                    fontsize  = FONT_SIZE, 
+                    color     = TEXT_COLOR, 
+                    size      = (CANVAS_SIZE[0] - 100, None), 
+                    method    = 'caption', 
+                    align     = 'center',
                     interline = 8
                 ).set_start(current_start).set_duration(dur).set_position(('center', CANVAS_SIZE[1] - 90))
-                subtitle_clips.append(txt_clip)
-                current_start += dur
                 
-            # Step 5: 레이어 합성 (배경 → 이미지 → 자막) + 오디오 연결
+                subtitle_clips.append(txt_clip)
+                
+                # 다음 자막 시작점: 현재 끝 + 문장 사이 쉼
+                current_start += dur
+                if idx < num_sentences - 1:
+                    current_start += SENTENCE_GAP
+                
+            # ─────────────────────────────────────────────────────────────────
+            # Step 6: 레이어 합성 (배경 → 이미지 → 자막) + 오디오 연결
+            # ─────────────────────────────────────────────────────────────────
             final_clips.append(CompositeVideoClip([bg_clip, img_clip] + subtitle_clips).set_audio(a_clip))
 
         # 슬라이드 합성 완료 (50%)
