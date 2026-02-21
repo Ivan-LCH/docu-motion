@@ -22,7 +22,7 @@ class TTSEngine:
         """
         self.server_url = server_url or os.getenv("TTS_SERVER_URL", "http://localhost:8002")
         self.voice_name = voice_name or os.getenv("TTS_VOICE_NAME", "myvoice")
-        self.timeout = 300  # 5 minutes timeout for TTS generation
+        self.timeout = 600  # 10 minutes timeout for TTS generation
         
         logger.info(f"TTS Engine initialized: server={self.server_url}, voice={self.voice_name}")
     

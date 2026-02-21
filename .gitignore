@@ -1,23 +1,50 @@
-# === 보안 및 개인정보 (절대 올리지 마세요) ===
-.streamlit/secrets.toml
-.env
-token.json
-credentials.json
-
-# === 데이터 및 결과물 (용량 및 프라이버시) ===
-temp/
-outputs/
-*.mp3
-*.mp4
-*.png
-*.jpg
-*.jpeg
-*.pdf
-app.log
-
-# === 파이썬 환경 및 캐시 ===
+# DocuMotion Studio - .gitignore
 __pycache__/
-.venv/
-env/
-.DS_Store
+*.pyc
+*.pyo
+*.pyd
+.Python
+.env
+*.env.local
 
+# 백업 폴더 (secrets.toml 포함)
+backup/
+
+# DB & Data
+data/*.db
+
+# Outputs (영상 파일)
+outputs/
+
+# 임시 PDF/TTS 파일
+temp/
+*.wav
+
+# Logs
+logs/
+*.log
+
+# Token
+token.json
+
+# Node.js
+frontend/node_modules/
+frontend/dist/
+
+# Docker
+docker-compose.override.yml
+
+# PID
+server.pid
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Python build
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/

@@ -1,0 +1,38 @@
+# ─────────────────────────────────────────────────────────────────────────── #
+# DocuMotion Studio - Docker Compose
+#
+# 포트 매핑:
+#   - 8505 → 8000 (FastAPI + React, 기존 포트 유지)
+#   - 1027 → 22   (SSH)
+# ─────────────────────────────────────────────────────────────────────────── #
+
+services:
+  docu-app:
+    build: .
+    container_name: docu_motion_app
+    command: ["/bin/bash", "-c", "/usr/sbin/sshd && sh /app/start_server.sh"]
+    ports:
+      - "8505:8000"
+      - "1028:22"
+    env_file:
+      - .env
+    environment:
+      - TZ=Asia/Seoul
+      - TTS_SERVER_URL=http://qwen_tts_server:8000
+      - TTS_VOICE_NAME=myvoice
+    volumes:
+      - .:/app                              # 소스코드 마운트 (개발/유지보수용)
+      - /app/frontend/node_modules          # node_modules 보호
+      - /app/frontend/dist                  # React 빌드 결과물 보호
+      - ./data:/app/data                    # SQLite DB 영속성
+      - ./outputs:/app/outputs              # 렌더링 결과물 영속성
+      - ./logs:/app/logs                    # 로그 영속성
+    networks:
+      - default
+      - tts_network
+    restart: unless-stopped
+
+networks:
+  tts_network:
+    external: true
+    name: qwen_tts_default
