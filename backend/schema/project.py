@@ -15,6 +15,12 @@ class SlideBase(BaseModel):
     image_filename: str = ""
     label: str = ""
     text: str = ""
+    # Video Slide
+    slide_type: str = "image"
+    video_filename: str = ""
+    volume: float = 1.0
+    subtitles: str = "[]"
+    use_tts: int = 1  # 1=TTS 생성, 0=자막만
 
 
 class SlideCreate(SlideBase):
@@ -27,6 +33,12 @@ class SlideUpdate(BaseModel):
     image_filename: str = ""
     label: str = ""
     text: str = ""
+    # Video Slide
+    slide_type: str = "image"
+    video_filename: str = ""
+    volume: float = 1.0
+    subtitles: str = "[]"
+    use_tts: int = 1  # 1=TTS 생성, 0=자막만
 
 
 class SlideRead(SlideBase):

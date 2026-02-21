@@ -109,6 +109,31 @@ function JsonModal({ slides, onApply, onClose }: {
   )
 }
 
+// ─── Subtitle Entry Type ─────────────────────
+interface SubEntry { start: string; end: string; text: string; use_tts: boolean }
+
+function parseSubtitles(raw: string): SubEntry[] {
+  try { return JSON.parse(raw || '[]') } catch { return [] }
+}
+function serializeSubtitles(subs: SubEntry[]): string {
+  return JSON.stringify(subs.map(s => ({
+    start: parseFloat(s.start) || 0,
+    end: parseFloat(s.end) || 0,
+    text: s.text,
+    use_tts: s.use_tts,
+  })))
+}
+function mmssToSec(t: string): string {
+  const m = t.match(/^(\d+):(\d{2})$/)
+  if (m) return String(parseInt(m[1]) * 60 + parseInt(m[2]))
+  return t
+}
+function secToMmss(v: number | string): string {
+  const s = parseFloat(String(v)) || 0
+  const m = Math.floor(s / 60), sec = Math.floor(s % 60)
+  return `${m}:${String(sec).padStart(2, '0')}`
+}
+
 // ─── Slide Card ──────────────────────────────
 function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveUp, onMoveDown }: {
   slide: Slide; index: number; total: number; projectId: string
@@ -118,40 +143,167 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
   onMoveDown: () => void
 }) {
   const [text, setText] = useState(slide.text)
+  const [volume, setVolume] = useState(slide.volume ?? 1.0)
+  const [useTts, setUseTts] = useState<boolean>((slide.use_tts ?? 1) === 1)
+  const [subs, setSubs] = useState<SubEntry[]>(() => parseSubtitles(slide.subtitles))
+  const videoRef = useRef<HTMLVideoElement>(null)
 
   useEffect(() => { setText(slide.text) }, [slide.text])
+  useEffect(() => { setVolume(slide.volume ?? 1.0) }, [slide.volume])
+  useEffect(() => { setUseTts((slide.use_tts ?? 1) === 1) }, [slide.use_tts])
+  useEffect(() => { setSubs(parseSubtitles(slide.subtitles)) }, [slide.subtitles])
 
   const handleBlur = () => {
     if (text !== slide.text) onUpdate({ ...slide, text })
   }
+  const handleVolumeChange = (v: number) => {
+    setVolume(v)
+    if (videoRef.current) videoRef.current.volume = v
+    onUpdate({ ...slide, volume: v })
+  }
+  const handleSubChange = (idx: number, field: keyof SubEntry, val: string | boolean) => {
+    const next = subs.map((s, i) => i === idx ? { ...s, [field]: val } : s)
+    setSubs(next)
+    onUpdate({ ...slide, subtitles: serializeSubtitles(next) })
+  }
+  const handleAddSub = () => {
+    const next = [...subs, { start: '0:00', end: '0:05', text: '', use_tts: false }]
+    setSubs(next)
+    onUpdate({ ...slide, subtitles: serializeSubtitles(next) })
+  }
+  const handleDeleteSub = (idx: number) => {
+    const next = subs.filter((_, i) => i !== idx)
+    setSubs(next)
+    onUpdate({ ...slide, subtitles: serializeSubtitles(next) })
+  }
+
+  const isVideo = slide.slide_type === 'video'
 
   return (
-    <div className="card" style={{ padding: '1rem', display: 'grid', gridTemplateColumns: '120px 1fr 40px', gap: '1rem', alignItems: 'start' }}>
-      {/* Thumbnail */}
-      <div style={{ borderRadius: 'var(--radius-sm)', overflow: 'hidden', background: 'var(--bg-secondary)', aspectRatio: '16/9', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        {slide.image_filename ? (
-          <img
-            src={api.assetUrl(projectId, slide.image_filename)}
-            alt={`Slide ${index + 1}`}
-            style={{ width: '100%', height: '100%', objectFit: 'contain' }}
-            onError={e => { (e.target as HTMLImageElement).src = '' }}
-          />
-        ) : (
-          <span style={{ color: 'var(--text-muted)', fontSize: '1.5rem' }}>🖼️</span>
-        )}
-      </div>
+    <div className="card" style={{ padding: '1rem', display: 'grid', gridTemplateColumns: isVideo ? '1fr 40px' : '120px 1fr 40px', gap: '1rem', alignItems: 'start' }}>
+      {/* Image Slide: Thumbnail */}
+      {!isVideo && (
+        <div style={{ borderRadius: 'var(--radius-sm)', overflow: 'hidden', background: 'var(--bg-secondary)', aspectRatio: '16/9', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          {slide.image_filename ? (
+            <img
+              src={api.assetUrl(projectId, slide.image_filename)}
+              alt={`Slide ${index + 1}`}
+              style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+              onError={e => { (e.target as HTMLImageElement).src = '' }}
+            />
+          ) : (
+            <span style={{ color: 'var(--text-muted)', fontSize: '1.5rem' }}>🖼️</span>
+          )}
+        </div>
+      )}
 
-      {/* Text */}
-      <div>
-        <label className="label">Slide {index + 1} — {slide.label || slide.image_filename}</label>
-        <textarea
-          className="textarea"
-          value={text}
-          onChange={e => setText(e.target.value)}
-          onBlur={handleBlur}
-          placeholder="TTS 대사를 입력하세요..."
-          rows={4}
-        />
+      {/* Center Content */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+        <label className="label">
+          {isVideo ? '🎬' : '🖼️'} Slide {index + 1} — {slide.label || slide.video_filename || slide.image_filename}
+        </label>
+
+        {/* Video Slide: preview + volume + subtitles */}
+        {isVideo ? (
+          <>
+            {slide.video_filename && (
+              <video
+                ref={videoRef}
+                controls
+                style={{ width: '100%', maxHeight: 200, borderRadius: 'var(--radius-sm)', background: '#000' }}
+                src={api.assetUrl(projectId, slide.video_filename)}
+              />
+            )}
+            {/* Volume */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>🔊 볼륨</span>
+              <input
+                type="range" min={0} max={1} step={0.05}
+                value={volume}
+                style={{ flex: 1 }}
+                onChange={e => handleVolumeChange(parseFloat(e.target.value))}
+              />
+              <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', width: 36 }}>{Math.round(volume * 100)}%</span>
+            </div>
+            {/* Subtitle Row Editor */}
+            <div>
+              <div style={{ fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.4rem', color: 'var(--text-secondary)' }}>📝 자막</div>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8rem' }}>
+                <thead>
+                  <tr style={{ color: 'var(--text-muted)' }}>
+                    <th style={{ padding: '2px 6px', textAlign: 'left', width: 68 }}>시작</th>
+                    <th style={{ padding: '2px 6px', textAlign: 'left', width: 68 }}>종료</th>
+                    <th style={{ padding: '2px 6px', textAlign: 'left' }}>자막 텍스트</th>
+                    <th style={{ padding: '2px 6px', width: 44 }}>TTS</th>
+                    <th style={{ width: 28 }}></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {subs.map((s, idx) => (
+                    <tr key={idx} style={{ borderTop: '1px solid var(--border)' }}>
+                      <td style={{ padding: '3px 4px' }}>
+                        <input className="input" style={{ padding: '2px 4px', fontSize: '0.78rem' }}
+                          value={s.start} placeholder="0:00"
+                          onChange={e => handleSubChange(idx, 'start', mmssToSec(e.target.value))}
+                          onBlur={e => handleSubChange(idx, 'start', secToMmss(parseFloat(e.target.value) || 0))}
+                        />
+                      </td>
+                      <td style={{ padding: '3px 4px' }}>
+                        <input className="input" style={{ padding: '2px 4px', fontSize: '0.78rem' }}
+                          value={s.end} placeholder="0:05"
+                          onChange={e => handleSubChange(idx, 'end', mmssToSec(e.target.value))}
+                          onBlur={e => handleSubChange(idx, 'end', secToMmss(parseFloat(e.target.value) || 0))}
+                        />
+                      </td>
+                      <td style={{ padding: '3px 4px' }}>
+                        <input className="input" style={{ padding: '2px 4px', fontSize: '0.78rem', width: '100%' }}
+                          value={s.text} placeholder="자막 내용..."
+                          onChange={e => handleSubChange(idx, 'text', e.target.value)}
+                        />
+                      </td>
+                      <td style={{ padding: '3px 4px', textAlign: 'center' }}>
+                        <input type="checkbox" checked={s.use_tts}
+                          onChange={e => handleSubChange(idx, 'use_tts', e.target.checked)}
+                          title="TTS 음성 생성"
+                        />
+                      </td>
+                      <td style={{ padding: '3px 4px', textAlign: 'center' }}>
+                        <button className="btn btn-danger btn-icon" style={{ fontSize: '0.75rem', padding: '2px 5px' }}
+                          onClick={() => handleDeleteSub(idx)}>🗑</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <button className="btn btn-ghost" style={{ marginTop: '0.4rem', fontSize: '0.8rem', padding: '4px 10px' }}
+                onClick={handleAddSub}>+ 자막 추가</button>
+            </div>
+          </>
+        ) : (
+          /* Image Slide: text + TTS 토글 */
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+            <textarea
+              className="textarea"
+              value={text}
+              onChange={e => setText(e.target.value)}
+              onBlur={() => { if (text !== slide.text) onUpdate({ ...slide, text }) }}
+              placeholder="TTS 대사 / 자막 텍스트를 입력하세요..."
+              rows={4}
+            />
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.85rem', cursor: 'pointer', color: 'var(--text-secondary)' }}>
+              <input
+                type="checkbox"
+                checked={useTts}
+                onChange={e => {
+                  const v = e.target.checked
+                  setUseTts(v)
+                  onUpdate({ ...slide, use_tts: v ? 1 : 0 })
+                }}
+              />
+              🔊 TTS 음성 생성 {useTts ? '(켜짐 — 음성 + 자막)' : '(꺼짐 — 자막만)'}
+            </label>
+          </div>
+        )}
       </div>
 
       {/* Controls */}
@@ -163,6 +315,7 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
     </div>
   )
 }
+
 
 // ─── Main Component ──────────────────────────
 export default function Editor() {
@@ -183,7 +336,8 @@ export default function Editor() {
   const [showYoutube, setShowYoutube] = useState(false)
   const [isDragging, setIsDragging] = useState(false)
   
-  const fileInputRef = useRef<HTMLInputElement>(null)
+  const fileInputRef  = useRef<HTMLInputElement>(null)
+  const videoInputRef = useRef<HTMLInputElement>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const loadProject = useCallback(async () => {
@@ -266,6 +420,28 @@ export default function Editor() {
 
   const handleUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     processFiles(Array.from(e.target.files || []))
+  }
+
+  const handleVideoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file || !projectId) return
+    setUploading(true)
+    try {
+      const insertIdx = insertAt === -1 ? undefined : insertAt
+      const newSlides = await api.uploadVideoSlide(projectId, file, insertIdx)
+      setSlides(prev => {
+        const idx = insertAt === -1 ? prev.length : Math.min(insertAt, prev.length)
+        const updated = [...prev.slice(0, idx), ...newSlides, ...prev.slice(idx)]
+        return updated.map((s, i) => ({ ...s, order_index: i }))
+      })
+      toast('동영상 슬라이드 추가 완료!', 'success')
+      setInsertAt(-1)
+    } catch (err: unknown) {
+      toast(err instanceof Error ? err.message : '동영상 업로드 실패', 'error')
+    } finally {
+      setUploading(false)
+      if (videoInputRef.current) videoInputRef.current.value = ''
+    }
   }
 
   // Drag & Drop Handlers
@@ -393,6 +569,18 @@ export default function Editor() {
           />
           <label htmlFor="file-upload" className="btn btn-secondary btn-full" style={{ cursor: 'pointer', display: 'flex', justifyContent: 'center' }}>
             {uploading ? <><span className="spinner" /> 업로드 중...</> : '📁 이미지/PDF 추가'}
+          </label>
+          {/* Video Upload */}
+          <input
+            ref={videoInputRef}
+            type="file"
+            accept="video/mp4,video/webm,video/quicktime,video/x-msvideo,video/x-matroska"
+            style={{ display: 'none' }}
+            onChange={handleVideoUpload}
+            id="video-upload"
+          />
+          <label htmlFor="video-upload" className="btn btn-secondary btn-full" style={{ cursor: 'pointer', display: 'flex', justifyContent: 'center', marginTop: '0.3rem' }}>
+            {uploading ? <><span className="spinner" /> 업로드 중...</> : '🎬 동영상 추가'}
           </label>
         </div>
 

@@ -27,6 +27,12 @@ export interface Slide {
   image_filename: string
   label: string
   text: string
+  // Video Slide
+  slide_type: 'image' | 'video'
+  video_filename: string
+  volume: number
+  subtitles: string  // JSON array string
+  use_tts: number   // 1=TTS on, 0=subtitle only
 }
 
 export interface Project {
@@ -89,7 +95,21 @@ export const api = {
   uploadYouTube: (id: string, payload: { title: string; description: string; tags?: string }) =>
     request<{ ok: boolean; url: string }>('POST', `/projects/${id}/youtube/upload`, payload),
 
-  // 이미지 서빙 URL
   assetUrl: (projectId: string, filename: string) =>
-    `/assets/${projectId}/${filename}`,
+    `${BASE}/projects/${projectId}/assets/${filename}`,
+
+  // 동영상 슬라이드 업로드
+  uploadVideoSlide: async (projectId: string, file: File, insertAt?: number): Promise<Slide[]> => {
+    const formData = new FormData()
+    formData.append('file', file)
+    if (insertAt !== undefined && insertAt >= 0) {
+      formData.append('insert_at', String(insertAt))
+    }
+    const res = await fetch(`${BASE}/projects/${projectId}/slides/upload-video`, {
+      method: 'POST',
+      body: formData
+    })
+    if (!res.ok) throw new Error('동영상 업로드 실패')
+    return res.json()
+  },
 }

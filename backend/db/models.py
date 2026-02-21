@@ -37,4 +37,12 @@ class Slide(Base):
     label          = Column(String(300), default="")
     text           = Column(Text, default="")
 
+    # Video Slide Fields
+    slide_type     = Column(String(20), default="image")    # 'image' or 'video'
+    video_filename = Column(String(300), default="")
+    volume         = Column(Float, default=1.0)
+    subtitles      = Column(Text, default="[]")             # JSON array of subtitle entries
+    use_tts        = Column(Integer, default=1)             # 0 or 1 (SQLite has no BOOLEAN)
+
     project = relationship("Project", back_populates="slides")
+

@@ -41,7 +41,15 @@ def run_render(project_id: str):
             .all()
         )
         slides_data = [
-            {"image_filename": s.image_filename, "text": s.text}
+            {
+                "image_filename": s.image_filename,
+                "text": s.text,
+                "slide_type": s.slide_type or "image",
+                "video_filename": s.video_filename or "",
+                "volume": s.volume if s.volume is not None else 1.0,
+                "subtitles": s.subtitles or "[]",
+                "use_tts": (s.use_tts if s.use_tts is not None else 1),
+            }
             for s in slides
         ]
 
