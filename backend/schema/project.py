@@ -21,6 +21,8 @@ class SlideBase(BaseModel):
     volume: float = 1.0
     subtitles: str = "[]"
     use_tts: int = 1  # 1=TTS 생성, 0=자막만
+    trim_start: float = 0.0
+    trim_end: float = 0.0
 
 
 class SlideCreate(SlideBase):
@@ -39,10 +41,21 @@ class SlideUpdate(BaseModel):
     volume: float = 1.0
     subtitles: str = "[]"
     use_tts: int = 1  # 1=TTS 생성, 0=자막만
+    trim_start: float = 0.0
+    trim_end: float = 0.0
 
 
 class SlideRead(SlideBase):
     id: str
+    
+    # Video Slide Fields Explicitly Added for Serialization
+    slide_type: str = "image"
+    video_filename: str = ""
+    volume: float = 1.0
+    subtitles: str = "[]"
+    use_tts: int = 1
+    trim_start: float = 0.0
+    trim_end: float = 0.0
 
     model_config = {"from_attributes": True}
 

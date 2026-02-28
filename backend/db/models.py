@@ -43,6 +43,8 @@ class Slide(Base):
     volume         = Column(Float, default=1.0)
     subtitles      = Column(Text, default="[]")             # JSON array of subtitle entries
     use_tts        = Column(Integer, default=1)             # 0 or 1 (SQLite has no BOOLEAN)
+    trim_start     = Column(Float, default=0.0)             # Video trim start time (seconds)
+    trim_end       = Column(Float, default=0.0)             # Video trim end time (seconds)
 
     project = relationship("Project", back_populates="slides")
 

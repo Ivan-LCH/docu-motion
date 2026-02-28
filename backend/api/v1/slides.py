@@ -88,7 +88,29 @@ async def upload_slides(
         with open(saved_path, "wb") as out:
             out.write(content)
 
-        if ext == ".pdf":
+        VIDEO_EXTS = {".mp4", ".mov", ".webm", ".avi", ".mkv", ".m4v", ".ts", ".3gp"}
+
+        is_video = ext in VIDEO_EXTS or (f.content_type or '').startswith('video/')
+        logger.info(f"Upload: filename={f.filename!r} ext={ext!r} content_type={f.content_type!r} is_video={is_video}")
+
+        if is_video:
+            slide = Slide(
+                project_id=project_id,
+                order_index=0,
+                image_filename="",
+                label=f.filename,
+                text="",
+                slide_type="video",
+                video_filename=saved_filename,
+                volume=1.0,
+                subtitles="[]",
+                use_tts=1,
+                trim_start=0.0,
+                trim_end=0.0
+            )
+            db.add(slide)
+            new_slides.append(slide)
+        elif ext == ".pdf":
             pdf_assets = _process_pdf(saved_path, assets_dir)
             for asset in pdf_assets:
                 slide = Slide(
@@ -144,16 +166,31 @@ def save_slides(
     for s_data in slides:
         slide = db.query(Slide).filter(Slide.id == s_data.id, Slide.project_id == project_id).first()
         if slide:
+            # 디버그: 프론트에서 보낸 데이터 vs DB 기존 값 비교
+            logger.info(f"SaveSlide [{s_data.id[:8]}] frontend: type={s_data.slide_type!r} vid={s_data.video_filename!r} | db: type={slide.slide_type!r} vid={slide.video_filename!r}")
             slide.order_index    = s_data.order_index
             slide.text           = s_data.text
             slide.image_filename = s_data.image_filename
             slide.label          = s_data.label
-            # Video Slide Fields
-            slide.slide_type     = s_data.slide_type
-            slide.video_filename = s_data.video_filename
+            # Video Slide Fields — 프론트에서 기본값으로 보내면 기존 DB 값 유지
+            if s_data.slide_type and s_data.slide_type != 'image':
+                slide.slide_type = s_data.slide_type
+            elif s_data.slide_type == 'image' and slide.slide_type == 'video':
+                # 프론트가 기본값 "image"를 보내도, DB에 video로 저장된 것은 유지
+                pass  # slide.slide_type 유지
+            else:
+                slide.slide_type = s_data.slide_type
+
+            if s_data.video_filename:
+                slide.video_filename = s_data.video_filename
+            # else: 기존 video_filename 유지
+
             slide.volume         = s_data.volume
             slide.subtitles      = s_data.subtitles
             slide.use_tts        = s_data.use_tts
+            slide.trim_start     = getattr(s_data, 'trim_start', 0.0)
+            slide.trim_end       = getattr(s_data, 'trim_end', 0.0)
+            logger.info(f"SaveSlide [{s_data.id[:8]}] RESULT: type={slide.slide_type!r} vid={slide.video_filename!r}")
 
     # stage 계산
     all_slides = db.query(Slide).filter(Slide.project_id == project_id).all()
@@ -186,59 +223,107 @@ def delete_slide(project_id: str, slide_id: str, db: Session = Depends(get_db)):
 
 
 # ─────────────────────────────────────────────
-# 동영상 슬라이드 업로드
+# 갤러리 이미지 콜라주 생성
 # ─────────────────────────────────────────────
-VIDEO_EXTS = {".mp4", ".mov", ".webm", ".avi", ".mkv"}
+from PIL import Image
+from pydantic import BaseModel
 
-@router.post("/{project_id}/slides/upload-video", response_model=List[SlideRead])
-async def upload_video_slide(
+class CollageRequest(BaseModel):
+    slide_ids: List[str]
+
+@router.post("/{project_id}/slides/collage", response_model=SlideRead)
+def create_collage(
     project_id: str,
-    file: UploadFile = File(...),
-    insert_at: int = Form(None),
+    request: CollageRequest,
     db: Session = Depends(get_db)
 ):
-    """동영상 파일 업로드 → 비디오 슬라이드 생성 (TTS 없음, 자막 행 별도 설정)"""
+    """여러 이미지 슬라이드를 합쳐 하나의 콜라주 슬라이드로 변환"""
     project = _get_project_or_404(project_id, db)
-    ext = Path(file.filename).suffix.lower()
-    if ext not in VIDEO_EXTS:
-        raise HTTPException(status_code=400, detail=f"Unsupported video format: {ext}")
+    if not request.slide_ids or len(request.slide_ids) < 2:
+        raise HTTPException(status_code=400, detail="At least 2 slides required for collage")
+
+    # DB에서 슬라이드 검색
+    slides = db.query(Slide).filter(
+        Slide.project_id == project_id,
+        Slide.id.in_(request.slide_ids),
+        Slide.slide_type == "image"
+    ).order_by(Slide.order_index).all()
+
+    if len(slides) != len(request.slide_ids):
+        raise HTTPException(status_code=400, detail="Some selected slides are invalid or not images")
 
     assets_dir = _assets_dir(project_id)
+    images = []
+    for s in slides:
+        if s.image_filename:
+            path = assets_dir / s.image_filename
+            if path.exists():
+                images.append(Image.open(path).convert('RGBA'))
+
+    if not images:
+        raise HTTPException(status_code=400, detail="No valid images found for the selected slides")
+
+    # 콜라주 병합 (간단한 가로 나열)
+    widths, heights = zip(*(i.size for i in images))
+    total_width = sum(widths)
+    max_height = max(heights)
+
+    collage_im = Image.new('RGBA', (total_width, max_height), (255, 255, 255, 0))
+    x_offset = 0
+    for im in images:
+        # 이미지를 높이에 맞춰 리사이즈
+        if im.size[1] != max_height:
+            new_w = int(im.size[0] * (max_height / im.size[1]))
+            resized = im.resize((new_w, max_height), Image.Resampling.LANCZOS)
+        else:
+            resized = im
+        collage_im.paste(resized, (x_offset, 0))
+        x_offset += resized.size[0]
+
+    # 저장
     timestamp = datetime.now().strftime('%H%M%S%f')
-    safe_name = _sanitize_filename(Path(file.filename).stem)
-    saved_filename = f"{safe_name}_{timestamp}{ext}"
-    saved_path = assets_dir / saved_filename
+    collage_filename = f"collage_{timestamp}.png"
+    collage_path = assets_dir / collage_filename
+    
+    # RGBA -> RGB 변환 후 저장 (JPEG 등 지원을 위해 필요하지만 여기선 PNG 권장)
+    if collage_im.mode in ('RGBA', 'LA') or (collage_im.mode == 'P' and 'transparency' in collage_im.info):
+        bg = Image.new("RGB", collage_im.size, (255, 255, 255))
+        bg.paste(collage_im, mask=collage_im.split()[3] if collage_im.mode == 'RGBA' else None)
+        bg.save(collage_path, "PNG")
+    else:
+        collage_im.save(collage_path, "PNG")
 
-    content = await file.read()
-    with open(saved_path, "wb") as out:
-        out.write(content)
-
-    existing_slides = db.query(Slide).filter(Slide.project_id == project_id).order_by(Slide.order_index).all()
-    insert_idx = min(insert_at, len(existing_slides)) if (insert_at is not None and insert_at >= 0) else len(existing_slides)
-
+    # DB 업데이트 (가장 앞의 order_index 기준)
+    base_order = slides[0].order_index
     new_slide = Slide(
         project_id=project_id,
-        order_index=0,
-        image_filename="",
-        label=file.filename,
-        text="",
-        slide_type="video",
-        video_filename=saved_filename,
-        volume=1.0,
-        subtitles="[]"
+        order_index=base_order,
+        image_filename=collage_filename,
+        label=f"Collage ({len(images)} imgs)",
+        text=""
     )
     db.add(new_slide)
 
-    combined = existing_slides[:insert_idx] + [new_slide] + existing_slides[insert_idx:]
-    for idx, s in enumerate(combined):
-        s.order_index = idx
-
-    project.stage = "uploaded"
-    project.updated_at = datetime.utcnow()
+    # 이전 슬라이드 삭제
+    for s in slides:
+        if s.image_filename:
+            old_path = assets_dir / s.image_filename
+            if old_path.exists():
+                try: os.unlink(old_path)
+                except: pass
+        db.delete(s)
+        
     db.commit()
     db.refresh(new_slide)
-    logger.info(f"[{project_id}] Video slide uploaded: {saved_filename}")
-    return [new_slide]
+
+    # 순서 재정렬
+    remaining = db.query(Slide).filter(Slide.project_id == project_id).order_by(Slide.order_index).all()
+    for idx, s in enumerate(remaining):
+        s.order_index = idx
+    project.updated_at = datetime.utcnow()
+    db.commit()
+
+    return new_slide
 
 
 # ─────────────────────────────────────────────

@@ -70,7 +70,7 @@ class WorkerProgressLogger(ProgressBarLogger):
                 percent = int(value / total * 100)
                 now = time.time()
                 # 1초 이상 지났거나 100% 도달 시에만 업데이트 (로그 스팸 방지)
-                if percent == 100 or (now - self.last_time >= 1.0) or (percent - self.last_percent >= 5):
+                if percent == 100 or (now - self.last_time >= 5.0) or (percent - self.last_percent >= 10):
                     self.last_percent = percent
                     self.last_time = now
                     overall = self.base_progress + int(percent * 0.5)
@@ -130,6 +130,14 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
                 volume = item.get('volume', 1.0)
                 if volume != 1.0:
                     video_clip = video_clip.volumex(volume)
+                    
+                # 비디오 자르기 (Trim)
+                trim_start = float(item.get('trim_start', 0.0))
+                trim_end = float(item.get('trim_end', 0.0))
+                if trim_end > trim_start:
+                    video_clip = video_clip.subclip(trim_start, min(trim_end, video_clip.duration))
+                elif trim_start > 0:
+                    video_clip = video_clip.subclip(trim_start, video_clip.duration)
 
                 # 캔버스 크기 맞춤 (letterbox)
                 video_clip = video_clip.resize(height=CANVAS_SIZE[1])
@@ -305,12 +313,13 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
         mp_logger  = WorkerProgressLogger(progress_callback, base_progress=50)
         temp_audio = temp_dir / "temp_audio.mp3"
 
+        video_codec = os.environ.get('VIDEO_CODEC', 'libx264')
         concatenate_videoclips(final_clips, method="compose").write_videofile(
             str(output_file),
             fps=24,
             logger=mp_logger,
             temp_audiofile=str(temp_audio),
-            codec='libx264',
+            codec=video_codec,
             audio_codec='libmp3lame'
         )
         progress_callback(100, "렌더링 완료!")

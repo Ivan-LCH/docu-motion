@@ -63,8 +63,17 @@ def get_project(project_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Project not found")
     result = _enrich_project(project)
     result["slides"] = [
-        {"id": s.id, "order_index": s.order_index, "image_filename": s.image_filename,
-         "label": s.label, "text": s.text}
+        {
+            "id": s.id, "order_index": s.order_index, 
+            "image_filename": s.image_filename, "label": s.label, "text": s.text,
+            "slide_type": getattr(s, "slide_type", "image"),
+            "video_filename": getattr(s, "video_filename", ""),
+            "volume": getattr(s, "volume", 1.0),
+            "subtitles": getattr(s, "subtitles", "[]"),
+            "use_tts": getattr(s, "use_tts", 1),
+            "trim_start": getattr(s, "trim_start", 0.0),
+            "trim_end": getattr(s, "trim_end", 0.0)
+        }
         for s in project.slides
     ]
     return result
