@@ -4,6 +4,9 @@ DocuMotion - Video Renderer (MoviePy 기반)
 """
 import os
 import asyncio
+
+# imageio_ffmpeg 번들 바이너리는 NVENC 미지원 → 시스템 ffmpeg 사용 강제
+os.environ.setdefault("IMAGEIO_FFMPEG_EXE", "/usr/bin/ffmpeg")
 import logging
 import re
 import shutil
@@ -89,10 +92,12 @@ def load_tts_engine():
         return None
 
 
-def render_project(project_id: str, slides: list, assets_dir: Path, output_file: Path, progress_callback):
+def render_project(project_id: str, slides: list, assets_dir: Path, output_file: Path,
+                   progress_callback, on_tts_done=None):
     """
     영상 렌더링 메인 함수
     slides: [{"image_filename": ..., "text": ...}, ...]
+    on_tts_done: TTS 슬라이드 생성이 모두 끝난 직후 호용되는 콜백. GPU 메모리 해제 등에 활용.
     """
     temp_dir = assets_dir / "temp_render"
     temp_dir.mkdir(exist_ok=True)
@@ -174,15 +179,22 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
                         if use_tts and tts_engine:
                             tts_path = temp_dir / f"v_{i}_{sub_idx}.wav"
                             try:
+                                if tts_path.exists() and tts_path.stat().st_size < 100:
+                                    try: tts_path.unlink()
+                                    except: pass
+                                    
                                 if not tts_path.exists():
                                     success = tts_engine.generate(sub_txt, str(tts_path))
                                     if not success:
                                         asyncio.run(edge_tts.Communicate(sub_txt, "ko-KR-SunHiNeural").save(str(tts_path)))
-                                if tts_path.exists():
+                                        
+                                if tts_path.exists() and tts_path.stat().st_size >= 100:
                                     tts_audio = AudioFileClip(str(tts_path)).set_start(start)
                                     audio_clips.append(tts_audio)
+                                else:
+                                    raise Exception(f"TTS 오디오 생성 실패 (비디오 슬라이드 자막 [{i}][{sub_idx}])")
                             except Exception as e:
-                                logger.error(f"TTS error for video subtitle [{i}][{sub_idx}]: {e}")
+                                raise Exception(f"비디오 서브타이틀 TTS 처리 중 오류: {e}")
                     except Exception as e:
                         logger.error(f"Error processing subtitle entry: {e}")
 
@@ -232,6 +244,11 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
             else:
                 # TTS - 이미 생성된 파일이 있으면 재사용 (재렌더링 속도 향상)
                 a_path = temp_dir / f"v_{i}.wav"
+                
+                if a_path.exists() and a_path.stat().st_size < 100:
+                    try: a_path.unlink()
+                    except: pass
+                    
                 success = a_path.exists()
 
                 if not success:
@@ -246,11 +263,10 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
                 else:
                     logger.info(f"Reusing existing TTS file: {a_path}")
 
-                if not success or not a_path.exists():
-                    logger.error(f"Audio generation failed for slide {i+1}")
-                    continue
+                if not a_path.exists() or a_path.stat().st_size < 100:
+                    raise Exception(f"TTS 오디오 생성 실패 또는 타임아웃 (슬라이드 {i+1})")
 
-                # Audio
+                # Audio 정상 생성됨
                 a_clip = AudioFileClip(str(a_path))
                 PAD_DELAY      = 0.5
                 total_duration = a_clip.duration + PAD_DELAY * 2
@@ -305,23 +321,44 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
                 final_clip = final_clip.set_audio(a_clip)
             final_clips.append(final_clip)
 
-        # Encoding
+        # 클립 인코딩 - TTS 완료 직후 GPU 메모리 해제 후 NVENC 인코딩
         progress_callback(50, "클립 합치는 중...")
         if not final_clips:
             raise Exception("렌더링할 클립이 없습니다 (텍스트가 입력된 슬라이드가 필요합니다)")
 
+        # TTS 완료 콜백 호출 (GPU 메모리 해제 등)
+        if on_tts_done:
+            try:
+                on_tts_done()
+            except Exception as cb_err:
+                logger.warning(f"on_tts_done callback error: {cb_err}")
+
         mp_logger  = WorkerProgressLogger(progress_callback, base_progress=50)
         temp_audio = temp_dir / "temp_audio.mp3"
 
-        video_codec = os.environ.get('VIDEO_CODEC', 'libx264')
-        concatenate_videoclips(final_clips, method="compose").write_videofile(
-            str(output_file),
-            fps=24,
-            logger=mp_logger,
-            temp_audiofile=str(temp_audio),
-            codec=video_codec,
-            audio_codec='libmp3lame'
-        )
+        # GPU NVENC 인코딩 시도, 실패 시 CPU 인코딩으로 안전하게 폴백
+        # ffmpeg_params: -pix_fmt yuv420p 강제
+        #   - h264_nvenc는 RGB 입력을 gbrp(GBR 플레이너)로 인코딩해 색왜곡(초록 우세) 발생
+        #   - yuv420p 명시로 두 코덱 모두 표준 색공간 사용
+        for video_codec in ("h264_nvenc", "libx264"):
+            try:
+                logger.info(f"영상 인코딩 중... codec={video_codec}")
+                progress_callback(55, f"영상 인코딩 중... ({video_codec})")
+                concatenate_videoclips(final_clips, method="compose").write_videofile(
+                    str(output_file),
+                    fps            = 24,
+                    logger         = mp_logger,
+                    temp_audiofile = str(temp_audio),
+                    codec          = video_codec,
+                    audio_codec    = 'libmp3lame',
+                    ffmpeg_params  = ["-pix_fmt", "yuv420p"]
+                )
+                logger.info(f"인코딩 완료: {video_codec}")
+                break  # 성공이면 루프 탈출
+            except Exception as enc_err:
+                logger.warning(f"{video_codec} 인코딩 실패 → 다음 코덱으로 전환: {enc_err}")
+                if video_codec == "libx264":
+                    raise  # 마지막 폴백도 실패 → 상위로 에러 전파
         progress_callback(100, "렌더링 완료!")
         # 임시 mp3 파일만 삭제 (wav 파일은 재렌더링을 위해 보존)
         cleanup_temp_files(temp_dir)

@@ -22,7 +22,7 @@ class TTSEngine:
         """
         self.server_url = server_url or os.getenv("TTS_SERVER_URL", "http://localhost:8002")
         self.voice_name = voice_name or os.getenv("TTS_VOICE_NAME", "myvoice")
-        self.timeout = 600  # 10 minutes timeout for TTS generation
+        self.timeout = 1800  # 30 minutes timeout for TTS generation
         
         logger.info(f"TTS Engine initialized: server={self.server_url}, voice={self.voice_name}")
     
@@ -33,6 +33,36 @@ class TTSEngine:
             return response.status_code == 200
         except Exception as e:
             logger.error(f"Health check failed: {e}")
+            return False
+            
+    def load_model(self):
+        """Explicitly load the TTS model into GPU memory."""
+        try:
+            logger.info("loading TTS model into GPU memory...")
+            response = requests.post(f"{self.server_url}/load", timeout=30)
+            if response.status_code == 200:
+                logger.info("TTS model loaded successfully.")
+                return True
+            else:
+                logger.error(f"Failed to load TTS model: {response.text}")
+                return False
+        except Exception as e:
+            logger.error(f"Exception while loading TTS model: {e}")
+            return False
+
+    def unload_model(self):
+        """Explicitly unload the TTS model from GPU memory."""
+        try:
+            logger.info("Unloading TTS model from GPU memory...")
+            response = requests.post(f"{self.server_url}/unload", timeout=10)
+            if response.status_code == 200:
+                logger.info("TTS model unloaded successfully.")
+                return True
+            else:
+                logger.error(f"Failed to unload TTS model: {response.text}")
+                return False
+        except Exception as e:
+            logger.error(f"Exception while unloading TTS model: {e}")
             return False
     
     def generate(self, text, output_file, ref_audio_path=None, ref_text=None, language="Auto"):

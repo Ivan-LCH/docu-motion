@@ -10,6 +10,7 @@ from backend.core.logger import get_logger
 from backend.db.session import SessionLocal
 from backend.db.models import Project, Slide
 from backend.services import renderer
+from backend.services.tts_manager import TTSEngine
 
 logger = get_logger(__name__)
 
@@ -69,13 +70,25 @@ def run_render(project_id: str):
             except Exception as e:
                 logger.warning(f"Progress callback failed: {e}")
 
+        # TTS 모델 사전 로드
+        tts = TTSEngine()
+        progress_callback(5, "TTS AI 모델을 GPU 메모리에 불러오는 중...")
+        tts.load_model()
+
+        # TTS 완료 시 GPU 메모리 해제 콜백 (비디오 인코딩으로 GPU 재활용)
+        def on_tts_done():
+            logger.info("TTS 완료 - GPU 메모리 해제 후 NVENC 인코딩 준비")
+            progress_callback(50, "TTS 완료 - GPU 메모리 해제 중...")
+            tts.unload_model()
+
         # 렌더링 실행
         renderer.render_project(
             project_id=project_id,
             slides=slides_data,
             assets_dir=assets_dir,
             output_file=output_file,
-            progress_callback=progress_callback
+            progress_callback=progress_callback,
+            on_tts_done=on_tts_done
         )
 
         # 완료
@@ -100,4 +113,10 @@ def run_render(project_id: str):
         except Exception as inner_e:
             logger.error(f"Failed to update error status: {inner_e}")
     finally:
+        # 렌더링(성공/실패) 종료 후 메모리 네 넌지 모델 언로드 (추가 보호로)
+        try:
+            tts = TTSEngine()
+            tts.unload_model()
+        except Exception:
+            pass
         db.close()
