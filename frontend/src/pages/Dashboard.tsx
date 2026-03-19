@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api, Project } from '../api/client'
 import { useToast } from '../components/ToastContext'
+import GoogleAuthSection from '../components/GoogleAuthSection'
 
 // ─── Status helpers ──────────────────────────
 function statusBadge(p: Project) {
@@ -141,6 +142,11 @@ export default function Dashboard() {
           <strong style={{ color: 'var(--text-secondary)' }}>DocuMotion Studio</strong><br />
           PDF 문서나 이미지를 업로드하고 대사를 입력하면 AI TTS와 함께 자동으로 영상을 제작해주는 문서 영상화 도구입니다.
         </div>
+
+        <hr className="divider" />
+
+        {/* Google 계정 인증 */}
+        <GoogleAuthSection />
       </aside>
 
       {/* Main Content */}

@@ -11,10 +11,11 @@ PyMuPDF==1.23.26
 edge-tts==6.1.10
 proglog==0.1.10
 
-# YouTube
+# YouTube + Google Photos
 google-api-python-client==2.118.0
 google-auth==2.28.0
 google-auth-httplib2==0.2.0
+google-auth-oauthlib==1.2.0
 
 # HTTP client (TTS)
 requests==2.31.0

@@ -50,12 +50,30 @@ def run_render(project_id: str):
                 "volume": s.volume if s.volume is not None else 1.0,
                 "subtitles": s.subtitles or "[]",
                 "use_tts": (s.use_tts if s.use_tts is not None else 1),
+                "trim_start": s.trim_start or 0.0,
+                "trim_end": s.trim_end or 0.0,
+                "transition": s.transition or "none",
+                "tts_volume": s.tts_volume if s.tts_volume is not None else 1.0,
+                "rotation": s.rotation if s.rotation is not None else 0,
             }
             for s in slides
         ]
 
         assets_dir  = OUTPUTS_DIR / project_id / "assets"
         output_file = OUTPUTS_DIR / project_id / "result.mp4"
+
+        # BGM 정보
+        bgm_filename = getattr(project, 'bgm_filename', '') or ''
+        bgm_vol      = getattr(project, 'bgm_volume', 0.3) or 0.3
+        bgm_path     = str(assets_dir / bgm_filename) if bgm_filename else ''
+
+        # 화면 비율
+        from backend.services.renderer import ASPECT_RATIO_MAP
+        aspect_ratio = getattr(project, 'aspect_ratio', '16:9') or '16:9'
+        canvas_size  = ASPECT_RATIO_MAP.get(aspect_ratio, (1280, 720))
+
+        # Master TTS Volume
+        tts_master_volume = getattr(project, 'tts_master_volume', 1.0) or 1.0
 
         # progress_callback: renderer에서 (percent, message)로 호출
         # MoviePy logger: **kwargs(message=...) 형태로 호출 - 충돌 가능성 있으므로 래퍼 처리
@@ -70,16 +88,28 @@ def run_render(project_id: str):
             except Exception as e:
                 logger.warning(f"Progress callback failed: {e}")
 
-        # TTS 모델 사전 로드
+        # TTS 모델 사전 로드 (최대 3회 재시도, 실패 시 edge-tts 전용 모드)
         tts = TTSEngine()
+        tts_loaded = False
         progress_callback(5, "TTS AI 모델을 GPU 메모리에 불러오는 중...")
-        tts.load_model()
+        for attempt in range(1, 4):
+            if tts.load_model():
+                tts_loaded = True
+                break
+            logger.warning(f"TTS load attempt {attempt}/3 failed")
+            if attempt < 3:
+                import time; time.sleep(2)
+
+        if not tts_loaded:
+            logger.warning("TTS 서버 로드 실패 → edge-tts 전용 모드로 렌더링 진행")
+            progress_callback(8, "TTS 서버 미응답 — edge-tts 폴백 모드로 진행...")
 
         # TTS 완료 시 GPU 메모리 해제 콜백 (비디오 인코딩으로 GPU 재활용)
         def on_tts_done():
             logger.info("TTS 완료 - GPU 메모리 해제 후 NVENC 인코딩 준비")
             progress_callback(50, "TTS 완료 - GPU 메모리 해제 중...")
-            tts.unload_model()
+            if tts_loaded:
+                tts.unload_model()
 
         # 렌더링 실행
         renderer.render_project(
@@ -88,7 +118,11 @@ def run_render(project_id: str):
             assets_dir=assets_dir,
             output_file=output_file,
             progress_callback=progress_callback,
-            on_tts_done=on_tts_done
+            on_tts_done=on_tts_done,
+            bgm_path=bgm_path,
+            bgm_volume=bgm_vol,
+            canvas_size=canvas_size,
+            tts_master_volume=tts_master_volume,
         )
 
         # 완료

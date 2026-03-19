@@ -1,7 +1,8 @@
 """
-DocuMotion - YouTube 업로드 API
+DocuMotion - YouTube 업로드 & OAuth 인증 API
 """
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
 from backend.db.session import get_db
@@ -11,11 +12,51 @@ from backend.core.config import OUTPUTS_DIR
 from backend.core.logger import get_logger
 from backend.services import youtube_manager
 
-router = APIRouter(prefix="/projects", tags=["youtube"])
+router = APIRouter(tags=["youtube"])
 logger = get_logger(__name__)
 
+OAUTH_REDIRECT = "http://localhost"
 
-@router.post("/{project_id}/youtube/upload")
+
+# ─── YouTube 인증 상태 확인 ─────────────────────
+@router.get("/youtube/auth-status")
+def youtube_auth_status():
+    """현재 YouTube 인증 상태 반환"""
+    return youtube_manager.get_auth_status()
+
+
+# ─── OAuth 인증 URL 생성 (4-1-2) ─────────────────
+@router.get("/youtube/auth-url")
+def youtube_auth_url(request: Request):
+    """OAuth2 인증 URL 생성 후 반환"""
+    try:
+        url = youtube_manager.generate_auth_url(OAUTH_REDIRECT)
+        return {"auth_url": url}
+    except Exception as e:
+        logger.error(f"Auth URL generation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─── 수동 코드 교환 ──────────────────────────────
+from pydantic import BaseModel as _BaseModel
+
+class _CodeExchangeRequest(_BaseModel):
+    code: str
+
+@router.post("/youtube/exchange-code")
+def youtube_exchange_code(req: _CodeExchangeRequest):
+    """수동으로 입력받은 authorization code → token 교환"""
+    try:
+        youtube_manager.exchange_code(req.code, OAUTH_REDIRECT)
+        logger.info("YouTube OAuth code exchange success")
+        return {"ok": True}
+    except Exception as e:
+        logger.error(f"YouTube code exchange failed: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ─── YouTube 업로드 ──────────────────────────────
+@router.post("/projects/{project_id}/youtube/upload")
 def upload_to_youtube(
     project_id: str,
     payload: YouTubeUploadRequest,
@@ -42,6 +83,9 @@ def upload_to_youtube(
             return {"ok": True, "url": url}
         else:
             raise HTTPException(status_code=500, detail="YouTube upload failed")
+    except PermissionError as e:
+        # 인증 필요 — 401로 반환하여 프론트에서 재인증 트리거
+        raise HTTPException(status_code=401, detail=str(e))
     except Exception as e:
         logger.error(f"YouTube upload error: {e}")
         raise HTTPException(status_code=500, detail=str(e))

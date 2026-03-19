@@ -12,6 +12,11 @@ backup/
 
 # DB & Data
 data/*.db
+data/*.db-shm
+data/*.db-wal
+
+# Secrets
+client_secret.json
 
 # Outputs (영상 파일)
 outputs/

@@ -21,6 +21,13 @@ class Project(Base):
     message    = Column(Text, default="")
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    # BGM
+    bgm_filename = Column(String(300), default="")   # uploaded BGM file name
+    bgm_volume   = Column(Float, default=0.3)         # 0.0 ~ 1.0
+    # Aspect ratio
+    aspect_ratio = Column(String(10), default="16:9") # '16:9' | '9:16' | '1:1'
+    # Master TTS Volume
+    tts_master_volume = Column(Float, default=1.0)     # 0.0 ~ 2.0 — 전역 TTS 볼륨
 
     slides = relationship("Slide", back_populates="project",
                           cascade="all, delete-orphan",
@@ -45,6 +52,9 @@ class Slide(Base):
     use_tts        = Column(Integer, default=1)             # 0 or 1 (SQLite has no BOOLEAN)
     trim_start     = Column(Float, default=0.0)             # Video trim start time (seconds)
     trim_end       = Column(Float, default=0.0)             # Video trim end time (seconds)
+    transition     = Column(String(50), default="none")     # Scene transition: 'none'|'crossfade'|'fade_black'|'slide_left'|'slide_right'
+    tts_volume     = Column(Float, default=1.0)              # TTS audio volume (0.0 ~ 2.0), independent of video volume
+    rotation       = Column(Integer, default=0)               # Image/Video rotation: 0, 90, 180, 270
 
     project = relationship("Project", back_populates="slides")
 

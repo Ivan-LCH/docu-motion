@@ -128,5 +128,31 @@ class TTSEngine:
             except Exception as e:
                 logger.error(f"TTS Generation failed: {e}")
                 return False
-        
+
         return False
+
+    def generate_with_fallback(self, text: str, output_file: str, language: str = "Auto") -> bool:
+        """
+        TTS 생성을 시도하고, 실패 시 edge-tts로 자동 폴백.
+        renderer.py에서 분산 처리하던 폴백 로직을 단일 책임으로 캡슐화.
+        """
+        import asyncio
+
+        # 1차: Remote TTS 서버 시도
+        if self.health_check():
+            success = self.generate(text, output_file, language=language)
+            if success:
+                return True
+            logger.warning("Remote TTS generate failed, falling back to edge-tts")
+        else:
+            logger.warning("TTS server unreachable, falling back to edge-tts")
+
+        # 2차: edge-tts 폴백
+        try:
+            import edge_tts
+            asyncio.run(edge_tts.Communicate(text, "ko-KR-SunHiNeural").save(output_file))
+            logger.info(f"edge-tts fallback succeeded: {output_file}")
+            return True
+        except Exception as e:
+            logger.error(f"edge-tts fallback also failed: {e}")
+            return False

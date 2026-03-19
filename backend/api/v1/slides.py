@@ -3,6 +3,8 @@ DocuMotion - 슬라이드 관리 API (업로드, 편집, 순서 변경)
 """
 import os
 import re
+import struct
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
@@ -35,6 +37,43 @@ def _assets_dir(project_id: str) -> Path:
 
 def _sanitize_filename(name: str) -> str:
     return re.sub(r'[<>:"/\\|?*]', '_', name)[:80]
+
+
+def _is_hevc(file_path: Path) -> bool:
+    """MP4 파일이 HEVC(H.265) 코덱인지 확인 — moov 박스에서 hvc1/hev1 검색"""
+    try:
+        with open(file_path, "rb") as f:
+            f.seek(0, 2)
+            fsize = f.tell()
+            # 파일 끝 1MB에서 코덱 시그니처 검색 (moov가 끝에 있는 경우 대비)
+            read_size = min(fsize, 1024 * 1024)
+            f.seek(fsize - read_size)
+            tail = f.read(read_size)
+            return b'hvc1' in tail or b'hev1' in tail
+    except Exception:
+        return False
+
+
+def _transcode_to_h264(src: Path, dst: Path) -> bool:
+    """HEVC → H.264 GPU(NVENC) 트랜스코딩, 실패 시 CPU(libx264) 폴백"""
+    for codec in ["h264_nvenc", "libx264"]:
+        try:
+            cmd = [
+                "ffmpeg", "-y", "-i", str(src),
+                "-c:v", codec, "-preset", "fast",
+                "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-b:a", "128k",
+                "-movflags", "+faststart",  # moov를 앞으로 이동 (스트리밍 최적화)
+                str(dst)
+            ]
+            result = subprocess.run(cmd, capture_output=True, timeout=600)
+            if result.returncode == 0 and dst.exists() and dst.stat().st_size > 1000:
+                logger.info(f"Transcoded HEVC→H.264 ({codec}): {src.name} → {dst.name}")
+                return True
+            logger.warning(f"Transcode with {codec} failed: {result.stderr[-200:]}")
+        except Exception as e:
+            logger.warning(f"Transcode with {codec} error: {e}")
+    return False
 
 
 def _process_pdf(pdf_path: Path, assets_dir: Path) -> list[dict]:
@@ -84,9 +123,10 @@ async def upload_slides(
         saved_filename = f"{safe_name}_{timestamp}{ext}"
         saved_path = assets_dir / saved_filename
 
-        content = await f.read()
+        # 청크 단위 스트리밍 저장 (대용량 영상 OOM 방지)
         with open(saved_path, "wb") as out:
-            out.write(content)
+            while chunk := await f.read(64 * 1024):
+                out.write(chunk)
 
         VIDEO_EXTS = {".mp4", ".mov", ".webm", ".avi", ".mkv", ".m4v", ".ts", ".3gp"}
 
@@ -94,6 +134,18 @@ async def upload_slides(
         logger.info(f"Upload: filename={f.filename!r} ext={ext!r} content_type={f.content_type!r} is_video={is_video}")
 
         if is_video:
+            # HEVC(H.265) → H.264 자동 트랜스코딩 (Chrome 호환)
+            if _is_hevc(saved_path):
+                logger.info(f"HEVC detected: {saved_filename}, transcoding to H.264...")
+                h264_name = f"{safe_name}_{timestamp}_h264.mp4"
+                h264_path = assets_dir / h264_name
+                if _transcode_to_h264(saved_path, h264_path):
+                    os.unlink(saved_path)  # 원본 HEVC 제거
+                    saved_filename = h264_name
+                    saved_path = h264_path
+                else:
+                    logger.warning(f"HEVC transcode failed, keeping original: {saved_filename}")
+
             slide = Slide(
                 project_id=project_id,
                 order_index=0,
@@ -190,6 +242,9 @@ def save_slides(
             slide.use_tts        = s_data.use_tts
             slide.trim_start     = getattr(s_data, 'trim_start', 0.0)
             slide.trim_end       = getattr(s_data, 'trim_end', 0.0)
+            slide.transition     = getattr(s_data, 'transition', 'none')
+            slide.tts_volume     = getattr(s_data, 'tts_volume', 1.0)
+            slide.rotation       = getattr(s_data, 'rotation', 0)
             logger.info(f"SaveSlide [{s_data.id[:8]}] RESULT: type={slide.slide_type!r} vid={slide.video_filename!r}")
 
     # stage 계산
@@ -230,6 +285,7 @@ from pydantic import BaseModel
 
 class CollageRequest(BaseModel):
     slide_ids: List[str]
+    layout: str = "auto"  # 'auto' | 'horizontal' | '2x2' | '3x1' | '1x3'
 
 @router.post("/{project_id}/slides/collage", response_model=SlideRead)
 def create_collage(
@@ -263,22 +319,54 @@ def create_collage(
     if not images:
         raise HTTPException(status_code=400, detail="No valid images found for the selected slides")
 
-    # 콜라주 병합 (간단한 가로 나열)
-    widths, heights = zip(*(i.size for i in images))
-    total_width = sum(widths)
-    max_height = max(heights)
+    # 콜라주 병합 — 레이아웃별 그리드 배치
+    layout = request.layout or "auto"
+    n = len(images)
 
-    collage_im = Image.new('RGBA', (total_width, max_height), (255, 255, 255, 0))
-    x_offset = 0
-    for im in images:
-        # 이미지를 높이에 맞춰 리사이즈
-        if im.size[1] != max_height:
-            new_w = int(im.size[0] * (max_height / im.size[1]))
-            resized = im.resize((new_w, max_height), Image.Resampling.LANCZOS)
+    # auto: 2장=가로, 3장=3x1, 4장=2x2
+    if layout == "auto":
+        if n == 4:
+            layout = "2x2"
+        elif n == 3:
+            layout = "3x1"
         else:
-            resized = im
-        collage_im.paste(resized, (x_offset, 0))
-        x_offset += resized.size[0]
+            layout = "horizontal"
+
+    if layout == "2x2":
+        cols, rows = 2, 2
+    elif layout == "3x1":
+        cols, rows = 3, 1
+    elif layout == "1x3":
+        cols, rows = 1, 3
+    else:  # horizontal
+        cols, rows = n, 1
+
+    # 셀 크기 균일화: 모든 이미지를 동일 셀 크기로 리사이즈
+    CELL_W, CELL_H = 640, 480
+    GAP = 4
+
+    canvas_w = cols * CELL_W + (cols - 1) * GAP
+    canvas_h = rows * CELL_H + (rows - 1) * GAP
+    collage_im = Image.new('RGBA', (canvas_w, canvas_h), (0, 0, 0, 255))
+
+    for idx, im in enumerate(images):
+        if idx >= cols * rows:
+            break
+        col = idx % cols
+        row = idx // cols
+        # 셀 영역에 맞춰 리사이즈 (비율 유지, 중앙 정렬)
+        im_ratio = im.width / im.height
+        cell_ratio = CELL_W / CELL_H
+        if im_ratio > cell_ratio:
+            new_w = CELL_W
+            new_h = int(CELL_W / im_ratio)
+        else:
+            new_h = CELL_H
+            new_w = int(CELL_H * im_ratio)
+        resized = im.resize((new_w, new_h), Image.Resampling.LANCZOS)
+        x = col * (CELL_W + GAP) + (CELL_W - new_w) // 2
+        y = row * (CELL_H + GAP) + (CELL_H - new_h) // 2
+        collage_im.paste(resized, (x, y))
 
     # 저장
     timestamp = datetime.now().strftime('%H%M%S%f')
