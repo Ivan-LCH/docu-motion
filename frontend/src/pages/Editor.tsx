@@ -399,6 +399,145 @@ function JsonModal({ slides, onApply, onClose }: {
   )
 }
 
+// ─── Global Settings Modal (6-10) ────────────
+function GlobalSettingsModal({ project, onClose, onSave }: {
+  project: ProjectDetail
+  onClose: () => void
+  onSave: (settings: Record<string, unknown>) => Promise<void>
+}) {
+  const [defaultTransition, setDefaultTransition] = useState(project.default_transition || 'none')
+  const [defaultSlideDuration, setDefaultSlideDuration] = useState(project.default_slide_duration || 3.0)
+  const [subtitleFontSize, setSubtitleFontSize] = useState(project.subtitle_font_size || 28)
+  const [subtitleFontColor, setSubtitleFontColor] = useState(project.subtitle_font_color || 'white')
+  const [watermarkText, setWatermarkText] = useState(project.watermark_text || '')
+  const [watermarkOpacity, setWatermarkOpacity] = useState(project.watermark_opacity ?? 0.3)
+  const [saving, setSaving] = useState(false)
+
+  const FONT_COLORS = [
+    { value: 'white', label: '흰색', color: '#fff' },
+    { value: 'yellow', label: '노란색', color: '#facc15' },
+    { value: '#00ff88', label: '초록색', color: '#00ff88' },
+    { value: '#60a5fa', label: '파란색', color: '#60a5fa' },
+    { value: '#f472b6', label: '분홍색', color: '#f472b6' },
+    { value: '#fb923c', label: '주황색', color: '#fb923c' },
+  ]
+
+  const handleSave = async () => {
+    setSaving(true)
+    await onSave({
+      default_transition: defaultTransition,
+      default_slide_duration: defaultSlideDuration,
+      subtitle_font_size: subtitleFontSize,
+      subtitle_font_color: subtitleFontColor,
+      watermark_text: watermarkText,
+      watermark_opacity: watermarkOpacity,
+    })
+    setSaving(false)
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" style={{ maxWidth: 520, maxHeight: '85vh', overflow: 'auto' }} onClick={e => e.stopPropagation()}>
+        <h2 style={{ margin: '0 0 1.2rem', fontSize: '1.1rem' }}>&#x2699;&#xFE0F; 전역 설정 (Master)</h2>
+
+        {/* ── Default Transition ── */}
+        <div style={{ marginBottom: '1rem' }}>
+          <label className="label">기본 장면 전환 효과</label>
+          <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', margin: '0 0 0.4rem' }}>
+            새 슬라이드에 적용될 기본 전환 효과 (개별 설정 우선)
+          </p>
+          <select className="input" value={defaultTransition} onChange={e => setDefaultTransition(e.target.value)}
+            style={{ width: '100%' }}>
+            <option value="none">없음 (Hard Cut)</option>
+            <option value="crossfade">크로스페이드</option>
+            <option value="fade_black">페이드 투 블랙</option>
+            <option value="slide_left">슬라이드 왼쪽</option>
+            <option value="slide_right">슬라이드 오른쪽</option>
+          </select>
+        </div>
+
+        {/* ── Default Slide Duration ── */}
+        <div style={{ marginBottom: '1rem' }}>
+          <label className="label">기본 슬라이드 시간</label>
+          <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', margin: '0 0 0.4rem' }}>
+            텍스트가 없는 이미지 슬라이드의 표시 시간
+          </p>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <input type="range" min={1} max={15} step={0.5} value={defaultSlideDuration}
+              style={{ flex: 1 }} onChange={e => setDefaultSlideDuration(parseFloat(e.target.value))} />
+            <span style={{ fontSize: '0.85rem', fontWeight: 600, width: 42 }}>{defaultSlideDuration}초</span>
+          </div>
+        </div>
+
+        {/* ── Subtitle Font Size ── */}
+        <div style={{ marginBottom: '1rem' }}>
+          <label className="label">자막 폰트 크기</label>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <input type="range" min={16} max={56} step={2} value={subtitleFontSize}
+              style={{ flex: 1 }} onChange={e => setSubtitleFontSize(parseInt(e.target.value))} />
+            <span style={{ fontSize: '0.85rem', fontWeight: 600, width: 42 }}>{subtitleFontSize}px</span>
+          </div>
+          {/* Preview */}
+          <div style={{
+            marginTop: '0.5rem', background: '#111', borderRadius: 'var(--radius-sm)',
+            padding: '0.8rem', textAlign: 'center', position: 'relative', overflow: 'hidden'
+          }}>
+            <span style={{ fontSize: `${Math.min(subtitleFontSize * 0.6, 28)}px`, color: subtitleFontColor }}>
+              자막 미리보기 Preview
+            </span>
+          </div>
+        </div>
+
+        {/* ── Subtitle Font Color ── */}
+        <div style={{ marginBottom: '1rem' }}>
+          <label className="label">자막 폰트 색상</label>
+          <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
+            {FONT_COLORS.map(c => (
+              <button key={c.value} onClick={() => setSubtitleFontColor(c.value)}
+                style={{
+                  width: 36, height: 36, borderRadius: 'var(--radius-sm)',
+                  background: c.color, border: subtitleFontColor === c.value ? '3px solid var(--accent)' : '2px solid var(--border)',
+                  cursor: 'pointer', transition: 'all 0.15s',
+                  boxShadow: subtitleFontColor === c.value ? '0 0 0 2px var(--accent-light)' : 'none'
+                }}
+                title={c.label}
+              />
+            ))}
+            <input type="color" value={subtitleFontColor.startsWith('#') ? subtitleFontColor : '#ffffff'}
+              onChange={e => setSubtitleFontColor(e.target.value)}
+              style={{ width: 36, height: 36, border: '2px solid var(--border)', borderRadius: 'var(--radius-sm)', cursor: 'pointer', padding: 0 }}
+              title="커스텀 색상"
+            />
+          </div>
+        </div>
+
+        {/* ── Watermark ── */}
+        <div style={{ marginBottom: '1rem' }}>
+          <label className="label">워터마크</label>
+          <input className="input" value={watermarkText} placeholder="워터마크 텍스트 (비워두면 미적용)"
+            onChange={e => setWatermarkText(e.target.value)} style={{ width: '100%', marginBottom: '0.4rem' }} />
+          {watermarkText && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>불투명도</span>
+              <input type="range" min={0.05} max={1} step={0.05} value={watermarkOpacity}
+                style={{ flex: 1 }} onChange={e => setWatermarkOpacity(parseFloat(e.target.value))} />
+              <span style={{ fontSize: '0.78rem', width: 36 }}>{Math.round(watermarkOpacity * 100)}%</span>
+            </div>
+          )}
+        </div>
+
+        {/* ── Actions ── */}
+        <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', marginTop: '1.2rem' }}>
+          <button className="btn btn-ghost" onClick={onClose}>취소</button>
+          <button className="btn btn-primary" onClick={handleSave} disabled={saving}>
+            {saving ? '저장 중...' : '설정 저장'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── Subtitle Entry Type ─────────────────────
 interface SubEntry { start: string; end: string; text: string; use_tts: boolean }
 
@@ -422,6 +561,172 @@ function secToMmss(v: number | string): string {
   const s = parseFloat(String(v)) || 0
   const m = Math.floor(s / 60), sec = Math.floor(s % 60)
   return `${m}:${String(sec).padStart(2, '0')}`
+}
+
+// ─── Subtitle Interactive Timeline (6-12) ────
+function SubtitleTimeline({ subs, videoDuration, onChange, videoRef }: {
+  subs: SubEntry[]
+  videoDuration: number
+  onChange: (subs: SubEntry[]) => void
+  videoRef: React.RefObject<HTMLVideoElement>
+}) {
+  const trackRef = useRef<HTMLDivElement>(null)
+  const [dragging, setDragging] = useState<{ idx: number; type: 'move' | 'left' | 'right'; startX: number; origStart: number; origEnd: number } | null>(null)
+  const [selectedIdx, setSelectedIdx] = useState<number | null>(null)
+
+  const pxToSec = (px: number) => {
+    if (!trackRef.current) return 0
+    return (px / trackRef.current.clientWidth) * videoDuration
+  }
+
+  const handleMouseDown = (idx: number, type: 'move' | 'left' | 'right') => (e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    const st = parseFloat(String(subs[idx].start)) || 0
+    const en = parseFloat(String(subs[idx].end)) || 0
+    setDragging({ idx, type, startX: e.clientX, origStart: st, origEnd: en })
+    setSelectedIdx(idx)
+  }
+
+  useEffect(() => {
+    if (!dragging) return
+    const handleMove = (e: MouseEvent) => {
+      const dx = e.clientX - dragging.startX
+      const dSec = pxToSec(dx)
+      const next = [...subs]
+      const sub = { ...next[dragging.idx] }
+      const minDur = 0.3
+
+      if (dragging.type === 'move') {
+        let newStart = dragging.origStart + dSec
+        let newEnd = dragging.origEnd + dSec
+        const dur = dragging.origEnd - dragging.origStart
+        if (newStart < 0) { newStart = 0; newEnd = dur }
+        if (newEnd > videoDuration) { newEnd = videoDuration; newStart = videoDuration - dur }
+        sub.start = String(Math.max(0, newStart))
+        sub.end = String(Math.min(videoDuration, newEnd))
+      } else if (dragging.type === 'left') {
+        const newStart = Math.max(0, Math.min(dragging.origEnd - minDur, dragging.origStart + dSec))
+        sub.start = String(newStart)
+      } else {
+        const newEnd = Math.min(videoDuration, Math.max(dragging.origStart + minDur, dragging.origEnd + dSec))
+        sub.end = String(newEnd)
+      }
+      next[dragging.idx] = sub
+      onChange(next)
+    }
+    const handleUp = () => setDragging(null)
+    window.addEventListener('mousemove', handleMove)
+    window.addEventListener('mouseup', handleUp)
+    return () => { window.removeEventListener('mousemove', handleMove); window.removeEventListener('mouseup', handleUp) }
+  })
+
+  const seekTo = (sec: number) => {
+    if (videoRef.current) {
+      videoRef.current.currentTime = sec
+    }
+  }
+
+  const handleTrackClick = (e: React.MouseEvent) => {
+    if (!trackRef.current) return
+    const rect = trackRef.current.getBoundingClientRect()
+    const sec = ((e.clientX - rect.left) / rect.width) * videoDuration
+    seekTo(sec)
+  }
+
+  return (
+    <div style={{ marginTop: '0.5rem' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
+        <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>타임라인 (드래그로 조절)</span>
+        {selectedIdx !== null && subs[selectedIdx] && (
+          <span style={{ fontSize: '0.68rem', color: 'var(--accent)' }}>
+            #{selectedIdx + 1}: {(parseFloat(String(subs[selectedIdx].start)) || 0).toFixed(1)}s ~ {(parseFloat(String(subs[selectedIdx].end)) || 0).toFixed(1)}s
+          </span>
+        )}
+      </div>
+      <div
+        ref={trackRef}
+        onClick={handleTrackClick}
+        style={{
+          position: 'relative', height: 52, background: 'var(--bg-secondary)',
+          borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)',
+          overflow: 'visible', cursor: 'pointer', userSelect: 'none'
+        }}
+      >
+        {/* Time markers */}
+        {Array.from({ length: Math.min(20, Math.ceil(videoDuration / 5)) }, (_, k) => {
+          const t = (k + 1) * 5
+          if (t >= videoDuration) return null
+          return <div key={k} style={{
+            position: 'absolute', left: `${(t / videoDuration) * 100}%`, top: 0, bottom: 0,
+            borderLeft: '1px dashed var(--border-light)', zIndex: 0
+          }}>
+            <span style={{ position: 'absolute', top: 1, left: 2, fontSize: '0.55rem', color: 'var(--text-muted)' }}>{t}s</span>
+          </div>
+        })}
+        {/* Subtitle blocks */}
+        {subs.map((s, idx) => {
+          const st = parseFloat(String(s.start)) || 0
+          const en = parseFloat(String(s.end)) || 0
+          if (en <= st) return null
+          const left = (st / videoDuration) * 100
+          const width = ((en - st) / videoDuration) * 100
+          const isSelected = selectedIdx === idx
+          const isDraggingThis = dragging?.idx === idx
+          return (
+            <div
+              key={idx}
+              title={`[${st.toFixed(1)}s - ${en.toFixed(1)}s] ${s.text}`}
+              style={{
+                position: 'absolute',
+                left: `${left}%`, width: `${Math.max(width, 1)}%`,
+                top: 4, height: 44,
+                background: s.use_tts ? 'var(--accent)' : 'var(--info)',
+                opacity: isDraggingThis ? 0.9 : isSelected ? 0.85 : 0.65,
+                borderRadius: 4,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                overflow: 'hidden', whiteSpace: 'nowrap',
+                fontSize: '0.6rem', color: '#fff', padding: '0 12px',
+                border: isSelected ? '2px solid #fff' : '1px solid rgba(255,255,255,0.2)',
+                boxShadow: isSelected ? '0 0 8px rgba(0,0,0,0.3)' : 'none',
+                zIndex: isSelected ? 2 : 1,
+                transition: isDraggingThis ? 'none' : 'opacity 0.15s',
+              }}
+              onClick={(e) => { e.stopPropagation(); setSelectedIdx(idx); seekTo(st) }}
+              onMouseDown={handleMouseDown(idx, 'move')}
+            >
+              {/* Left resize handle */}
+              <div
+                onMouseDown={handleMouseDown(idx, 'left')}
+                style={{
+                  position: 'absolute', left: 0, top: 0, bottom: 0, width: 8,
+                  cursor: 'ew-resize', background: 'rgba(255,255,255,0.15)',
+                  borderRadius: '4px 0 0 4px'
+                }}
+              />
+              {/* Content */}
+              <span style={{ pointerEvents: 'none', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {s.text.slice(0, 20)}{s.text.length > 20 ? '...' : ''}
+              </span>
+              {/* Right resize handle */}
+              <div
+                onMouseDown={handleMouseDown(idx, 'right')}
+                style={{
+                  position: 'absolute', right: 0, top: 0, bottom: 0, width: 8,
+                  cursor: 'ew-resize', background: 'rgba(255,255,255,0.15)',
+                  borderRadius: '0 4px 4px 0'
+                }}
+              />
+            </div>
+          )
+        })}
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.6rem', color: 'var(--text-muted)', marginTop: 2 }}>
+        <span>0s</span>
+        <span>{videoDuration.toFixed(1)}s</span>
+      </div>
+    </div>
+  )
 }
 
 // ─── Slide Card ──────────────────────────────
@@ -593,29 +898,48 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8rem' }}>
                 <thead>
                   <tr style={{ color: 'var(--text-muted)' }}>
-                    <th style={{ padding: '2px 6px', textAlign: 'left', width: 68 }}>시작</th>
-                    <th style={{ padding: '2px 6px', textAlign: 'left', width: 68 }}>종료</th>
+                    <th style={{ padding: '2px 6px', textAlign: 'left', width: 72 }}>시작(초)</th>
+                    <th style={{ padding: '2px 6px', textAlign: 'left', width: 72 }}>종료(초)</th>
                     <th style={{ padding: '2px 6px', textAlign: 'left' }}>자막 텍스트</th>
                     <th style={{ padding: '2px 6px', width: 44 }}>TTS</th>
                     <th style={{ width: 28 }}></th>
                   </tr>
                 </thead>
                 <tbody>
-                  {subs.map((s, idx) => (
+                  {subs.map((s, idx) => {
+                    const startSec = parseFloat(String(s.start)) || 0
+                    const endSec = parseFloat(String(s.end)) || 0
+                    return (
                     <tr key={idx} style={{ borderTop: '1px solid var(--border)' }}>
                       <td style={{ padding: '3px 4px' }}>
-                        <input className="input" style={{ padding: '2px 4px', fontSize: '0.78rem' }}
-                          value={s.start} placeholder="0:00"
-                          onChange={e => handleSubChange(idx, 'start', mmssToSec(e.target.value))}
-                          onBlur={e => handleSubChange(idx, 'start', secToMmss(parseFloat(e.target.value) || 0))}
-                        />
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                          <input type="number" className="input" style={{ padding: '2px 4px', fontSize: '0.78rem', width: 62 }}
+                            value={startSec.toFixed(1)} step={0.1} min={0} max={videoDuration || 999}
+                            onChange={e => handleSubChange(idx, 'start', e.target.value)}
+                          />
+                          {videoDuration > 0 && (
+                            <input type="range" min={0} max={videoDuration} step={0.1} value={startSec}
+                              style={{ width: 62, height: 12 }}
+                              onChange={e => handleSubChange(idx, 'start', e.target.value)}
+                              onMouseDown={() => { if (videoRef.current) videoRef.current.currentTime = startSec }}
+                            />
+                          )}
+                        </div>
                       </td>
                       <td style={{ padding: '3px 4px' }}>
-                        <input className="input" style={{ padding: '2px 4px', fontSize: '0.78rem' }}
-                          value={s.end} placeholder="0:05"
-                          onChange={e => handleSubChange(idx, 'end', mmssToSec(e.target.value))}
-                          onBlur={e => handleSubChange(idx, 'end', secToMmss(parseFloat(e.target.value) || 0))}
-                        />
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                          <input type="number" className="input" style={{ padding: '2px 4px', fontSize: '0.78rem', width: 62 }}
+                            value={endSec.toFixed(1)} step={0.1} min={0} max={videoDuration || 999}
+                            onChange={e => handleSubChange(idx, 'end', e.target.value)}
+                          />
+                          {videoDuration > 0 && (
+                            <input type="range" min={0} max={videoDuration} step={0.1} value={endSec}
+                              style={{ width: 62, height: 12 }}
+                              onChange={e => handleSubChange(idx, 'end', e.target.value)}
+                              onMouseDown={() => { if (videoRef.current) videoRef.current.currentTime = endSec }}
+                            />
+                          )}
+                        </div>
                       </td>
                       <td style={{ padding: '3px 4px' }}>
                         <input className="input" style={{ padding: '2px 4px', fontSize: '0.78rem', width: '100%' }}
@@ -630,70 +954,28 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
                         />
                       </td>
                       <td style={{ padding: '3px 4px', textAlign: 'center' }}>
-                        <button className="btn btn-danger btn-icon" style={{ fontSize: '0.75rem', padding: '2px 5px' }}
-                          onClick={() => handleDeleteSub(idx)}>🗑</button>
+                        <button className="slide-ctrl-btn danger" style={{ width: 24, height: 24, fontSize: '0.7rem' }}
+                          onClick={() => handleDeleteSub(idx)}>&#x2715;</button>
                       </td>
                     </tr>
-                  ))}
+                    )
+                  })}
                 </tbody>
               </table>
               <button className="btn btn-ghost" style={{ marginTop: '0.4rem', fontSize: '0.8rem', padding: '4px 10px' }}
                 onClick={handleAddSub}>+ 자막 추가</button>
 
-              {/* Subtitle Timeline Track View */}
+              {/* Subtitle Interactive Timeline (6-12) */}
               {subs.length > 0 && videoDuration > 0 && (
-                <div style={{ marginTop: '0.5rem' }}>
-                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.25rem' }}>타임라인</div>
-                  <div style={{
-                    position: 'relative', height: 32, background: 'var(--bg-secondary)',
-                    borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', overflow: 'hidden'
-                  }}>
-                    {/* Time markers */}
-                    {Array.from({ length: Math.min(10, Math.ceil(videoDuration / 5)) }, (_, k) => {
-                      const t = (k + 1) * 5
-                      if (t >= videoDuration) return null
-                      return <div key={k} style={{
-                        position: 'absolute', left: `${(t / videoDuration) * 100}%`, top: 0, bottom: 0,
-                        borderLeft: '1px dashed var(--border-light)', zIndex: 0
-                      }}>
-                        <span style={{ position: 'absolute', top: 1, left: 2, fontSize: '0.6rem', color: 'var(--text-muted)' }}>{t}s</span>
-                      </div>
-                    })}
-                    {/* Subtitle blocks */}
-                    {subs.map((s, idx) => {
-                      const st = parseFloat(String(s.start)) || 0
-                      const en = parseFloat(String(s.end)) || 0
-                      if (en <= st) return null
-                      const left = (st / videoDuration) * 100
-                      const width = ((en - st) / videoDuration) * 100
-                      return (
-                        <div
-                          key={idx}
-                          title={`[${st.toFixed(1)}s - ${en.toFixed(1)}s] ${s.text}`}
-                          style={{
-                            position: 'absolute',
-                            left: `${left}%`, width: `${Math.max(width, 0.5)}%`,
-                            top: 4, height: 24,
-                            background: s.use_tts ? 'var(--accent)' : 'var(--info)',
-                            opacity: 0.7,
-                            borderRadius: 3,
-                            cursor: 'pointer',
-                            display: 'flex', alignItems: 'center', justifyContent: 'center',
-                            overflow: 'hidden', whiteSpace: 'nowrap',
-                            fontSize: '0.6rem', color: '#fff', padding: '0 3px',
-                            border: '1px solid rgba(255,255,255,0.2)'
-                          }}
-                        >
-                          {s.text.slice(0, 15)}{s.text.length > 15 ? '...' : ''}
-                        </div>
-                      )
-                    })}
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.6rem', color: 'var(--text-muted)', marginTop: 2 }}>
-                    <span>0s</span>
-                    <span>{videoDuration.toFixed(1)}s</span>
-                  </div>
-                </div>
+                <SubtitleTimeline
+                  subs={subs}
+                  videoDuration={videoDuration}
+                  onChange={(newSubs) => {
+                    setSubs(newSubs)
+                    onUpdate({ ...slide, subtitles: serializeSubtitles(newSubs) })
+                  }}
+                  videoRef={videoRef}
+                />
               )}
             </div>
             {/* TTS Volume (video slide) */}
@@ -758,15 +1040,15 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
       </div>
 
       {/* Controls */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
-        <button className="btn btn-ghost btn-icon" title="위로" onClick={onMoveUp} disabled={index === 0}>⬆️</button>
-        <button className="btn btn-ghost btn-icon" title="아래로" onClick={onMoveDown} disabled={index === total - 1}>⬇️</button>
-        <button className="btn btn-ghost btn-icon" title={`회전 (현재 ${rotation}°)`} onClick={() => {
+      <div className="slide-controls">
+        <button className="slide-ctrl-btn" title="위로" onClick={onMoveUp} disabled={index === 0}>&#x25B2;</button>
+        <button className="slide-ctrl-btn" title="아래로" onClick={onMoveDown} disabled={index === total - 1}>&#x25BC;</button>
+        <button className="slide-ctrl-btn" title={`회전 (현재 ${rotation}°)`} onClick={() => {
           const next = (rotation + 90) % 360
           setRotation(next)
           onUpdate({ ...slide, rotation: next })
-        }}>↻</button>
-        <button className="btn btn-danger btn-icon" title="삭제" onClick={onDelete}>🗑️</button>
+        }}>&#x21BB;</button>
+        <button className="slide-ctrl-btn danger" title="삭제" onClick={onDelete}>&#x2715;</button>
       </div>
 
       {/* Transition selector — 첫 슬라이드 제외 */}
@@ -816,6 +1098,7 @@ export default function Editor() {
   const [showJson, setShowJson] = useState(false)
   const [showYoutube, setShowYoutube] = useState(false)
   const [showPhotos, setShowPhotos] = useState(false)
+  const [showSettings, setShowSettings] = useState(false)
   const [isDragging, setIsDragging] = useState(false)
   const [previewImage, setPreviewImage] = useState<string | null>(null)
   const [selectedSlideIds, setSelectedSlideIds] = useState<Set<string>>(new Set())
@@ -1063,56 +1346,72 @@ export default function Editor() {
       )}
 
       {/* Sidebar */}
-      <aside style={{ background: 'var(--bg-secondary)', borderRight: '1px solid var(--border)', padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem', position: 'sticky', top: '64px', height: 'calc(100vh - 64px)', overflowY: 'auto' }}>
-        <button className="btn btn-secondary btn-full" onClick={() => navigate('/')}>
-          🔙 목록으로
+      <aside style={{ background: 'var(--bg-secondary)', borderRight: '1px solid var(--border)', padding: '1rem 0.85rem', display: 'flex', flexDirection: 'column', gap: '0.6rem', position: 'sticky', top: '64px', height: 'calc(100vh - 64px)', overflowY: 'auto' }}>
+        <button className="action-card" onClick={() => navigate('/')} style={{ padding: '0.45rem 0.65rem' }}>
+          <div className="action-icon" style={{ background: 'var(--bg-secondary)', width: 28, height: 28, fontSize: '0.85rem' }}>&#x2190;</div>
+          <span style={{ fontSize: '0.8rem', fontWeight: 500 }}>목록으로</span>
         </button>
 
-        <hr className="divider" />
+        <hr className="divider" style={{ margin: '0.25rem 0' }} />
 
-        {/* Upload */}
-        <div>
-          <label className="label">자료 업로드</label>
-          <div style={{ marginBottom: '0.5rem' }}>
-            <select
-              className="input"
-              value={insertAt}
-              onChange={e => setInsertAt(Number(e.target.value))}
-              style={{ width: '100%', padding: '0.4rem', fontSize: '0.85rem' }}
-            >
-              <option value={-1}>맨 끝에 추가</option>
-              {slides.map((_, i) => (
-                <option key={i} value={i}>{i + 1}번 슬라이드 앞에 추가</option>
-              ))}
-            </select>
-          </div>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/*,.pdf,video/mp4,video/webm,video/quicktime,video/x-msvideo,video/x-matroska"
-            multiple={true}
-            style={{ display: 'none' }}
-            onChange={handleUpload}
-            id="file-upload"
-          />
-          <label htmlFor="file-upload" className="btn btn-secondary btn-full" style={{ cursor: 'pointer', display: 'flex', justifyContent: 'center' }}>
-            {uploading ? <><span className="spinner" /> 업로드 중...</> : '📁 자료 추가 (이미지/PDF/영상)'}
-          </label>
-          <button className="btn btn-secondary btn-full" onClick={() => setShowPhotos(true)} style={{ marginTop: '0.4rem' }}>
-            Google Photos에서 가져오기
-          </button>
+        {/* ── Upload Section ── */}
+        <div className="sidebar-section-title">&#x1F4E4; 미디어 추가</div>
+        <div style={{ marginBottom: '0.15rem' }}>
+          <select
+            className="input"
+            value={insertAt}
+            onChange={e => setInsertAt(Number(e.target.value))}
+            style={{ width: '100%', padding: '0.35rem 0.5rem', fontSize: '0.78rem' }}
+          >
+            <option value={-1}>맨 끝에 추가</option>
+            {slides.map((_, i) => (
+              <option key={i} value={i}>{i + 1}번 슬라이드 앞에</option>
+            ))}
+          </select>
         </div>
-
-        {/* JSON Batch */}
-        <button className="btn btn-secondary btn-full" onClick={() => setShowJson(true)}>
-          🛠️ JSON 대사 일괄 입력
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*,.pdf,video/mp4,video/webm,video/quicktime,video/x-msvideo,video/x-matroska"
+          multiple={true}
+          style={{ display: 'none' }}
+          onChange={handleUpload}
+          id="file-upload"
+        />
+        <label htmlFor="file-upload" className="upload-zone">
+          {uploading ? (
+            <><span className="spinner" /><span className="upload-title">업로드 중...</span></>
+          ) : (
+            <>
+              <span className="upload-icon">&#x1F4C1;</span>
+              <span className="upload-title">파일 선택 / 드래그</span>
+              <span className="upload-hint">이미지, PDF, 영상 지원</span>
+            </>
+          )}
+        </label>
+        <button className="action-card" onClick={() => setShowPhotos(true)}>
+          <div className="action-icon" style={{ background: 'rgba(34,197,94,0.12)' }}>&#x1F4F7;</div>
+          <div className="action-label">
+            <span>Google Photos</span>
+            <span>사진 가져오기</span>
+          </div>
         </button>
 
-        <hr className="divider" />
+        <hr className="divider" style={{ margin: '0.25rem 0' }} />
+
+        {/* ── Settings Section ── */}
+        <div className="sidebar-section-title">&#x2699;&#xFE0F; 프로젝트 설정</div>
+        <button className="action-card" onClick={() => setShowSettings(true)} style={{ padding: '0.45rem 0.65rem' }}>
+          <div className="action-icon" style={{ background: 'rgba(139,92,246,0.12)', width: 28, height: 28, fontSize: '0.85rem' }}>&#x2699;</div>
+          <div className="action-label">
+            <span>전역 설정 (Master)</span>
+            <span>전환, 자막, 워터마크 등</span>
+          </div>
+        </button>
 
         {/* Aspect Ratio */}
         <div>
-          <label className="label">화면 비율</label>
+          <label className="label" style={{ fontSize: '0.72rem' }}>화면 비율</label>
           <select
             className="input"
             value={project?.aspect_ratio || '16:9'}
@@ -1125,24 +1424,25 @@ export default function Editor() {
                 toast(`화면 비율: ${val}`, 'success')
               } catch { toast('설정 저장 실패', 'error') }
             }}
-            style={{ width: '100%', padding: '0.4rem', fontSize: '0.85rem' }}
+            style={{ width: '100%', padding: '0.35rem 0.5rem', fontSize: '0.78rem' }}
           >
-            <option value="16:9">16:9 (가로 — YouTube)</option>
-            <option value="9:16">9:16 (세로 — Shorts/Reels)</option>
-            <option value="1:1">1:1 (정사각형 — Instagram)</option>
+            <option value="16:9">16:9 (가로)</option>
+            <option value="9:16">9:16 (세로)</option>
+            <option value="1:1">1:1 (정사각형)</option>
           </select>
         </div>
 
         {/* BGM */}
         <div>
-          <label className="label">BGM 배경음악</label>
+          <label className="label" style={{ fontSize: '0.72rem' }}>BGM 배경음악</label>
           {project?.bgm_filename ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+            <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '0.5rem 0.6rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.78rem', color: 'var(--text-secondary)', marginBottom: '0.35rem' }}>
+                <span style={{ fontSize: '1rem' }}>&#x1F3B5;</span>
                 <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  🎵 {project.bgm_filename.replace('bgm_', '')}
+                  {project.bgm_filename.replace('bgm_', '')}
                 </span>
-                <button className="btn btn-danger btn-icon" style={{ fontSize: '0.7rem', padding: '2px 5px' }}
+                <button className="slide-ctrl-btn danger" style={{ width: 22, height: 22, fontSize: '0.7rem' }}
                   onClick={async () => {
                     if (!projectId) return
                     try {
@@ -1150,10 +1450,10 @@ export default function Editor() {
                       setProject(prev => prev ? { ...prev, bgm_filename: updated.bgm_filename } : prev)
                       toast('BGM 삭제됨', 'info')
                     } catch { toast('BGM 삭제 실패', 'error') }
-                  }}>✕</button>
+                  }}>&#x2715;</button>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>볼륨</span>
+                <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>볼륨</span>
                 <input type="range" min={0} max={1} step={0.05}
                   value={project.bgm_volume ?? 0.3}
                   style={{ flex: 1 }}
@@ -1167,7 +1467,7 @@ export default function Editor() {
                     catch { toast('설정 저장 실패', 'error') }
                   }}
                 />
-                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', width: 30 }}>{Math.round((project.bgm_volume ?? 0.3) * 100)}%</span>
+                <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', width: 30 }}>{Math.round((project.bgm_volume ?? 0.3) * 100)}%</span>
               </div>
             </div>
           ) : (
@@ -1185,8 +1485,12 @@ export default function Editor() {
                   e.target.value = ''
                 }}
               />
-              <label htmlFor="bgm-upload" className="btn btn-secondary btn-full" style={{ cursor: 'pointer', display: 'flex', justifyContent: 'center' }}>
-                🎵 BGM 추가
+              <label htmlFor="bgm-upload" className="action-card" style={{ cursor: 'pointer' }}>
+                <div className="action-icon" style={{ background: 'rgba(245,158,11,0.12)' }}>&#x1F3B5;</div>
+                <div className="action-label">
+                  <span>BGM 추가</span>
+                  <span>오디오 파일 업로드</span>
+                </div>
               </label>
             </>
           )}
@@ -1195,7 +1499,7 @@ export default function Editor() {
         {/* Master TTS Volume */}
         {project && (
           <div>
-            <label className="label">Master TTS 볼륨</label>
+            <label className="label" style={{ fontSize: '0.72rem' }}>Master TTS 볼륨</label>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
               <input type="range" min={0} max={2} step={0.05}
                 value={project.tts_master_volume ?? 1.0}
@@ -1215,28 +1519,63 @@ export default function Editor() {
                   } catch { toast('설정 저장 실패', 'error') }
                 }}
               />
-              <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', width: 36 }}>{Math.round((project.tts_master_volume ?? 1.0) * 100)}%</span>
+              <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', width: 36 }}>{Math.round((project.tts_master_volume ?? 1.0) * 100)}%</span>
             </div>
-            <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>개별 슬라이드 TTS 볼륨에 곱해집니다</span>
+            <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>개별 TTS 볼륨에 곱해집니다</span>
           </div>
         )}
 
-        <hr className="divider" />
+        <hr className="divider" style={{ margin: '0.25rem 0' }} />
 
-        {/* Save */}
-        <button className="btn btn-secondary btn-full" onClick={handleSave} disabled={saving}>
-          {saving ? <><span className="spinner" /> 저장 중...</> : '💾 저장'}
+        {/* ── Tools Section ── */}
+        <div className="sidebar-section-title">&#x1F6E0;&#xFE0F; 도구</div>
+        <button className="action-card" onClick={() => setShowJson(true)}>
+          <div className="action-icon" style={{ background: 'rgba(59,130,246,0.12)' }}>&#x007B;&#x007D;</div>
+          <div className="action-label">
+            <span>JSON 일괄 입력</span>
+            <span>대사 텍스트 일괄 적용</span>
+          </div>
+        </button>
+        <button className="action-card" onClick={() => {
+          const trans = project?.default_transition || 'none'
+          const updated = slides.map((s, i) => i === 0 ? s : { ...s, transition: trans })
+          setSlides(updated)
+          toast(`전체 전환 효과: ${trans === 'none' ? '없음' : trans}`, 'success')
+        }} style={{ padding: '0.45rem 0.65rem' }}>
+          <div className="action-icon" style={{ background: 'rgba(168,85,247,0.12)', width: 28, height: 28, fontSize: '0.85rem' }}>&#x21C4;</div>
+          <div className="action-label">
+            <span>전환 일괄 적용</span>
+            <span>전역 설정 값으로 통일</span>
+          </div>
+        </button>
+        <button className="action-card" onClick={() => {
+          const allOn = slides.every(s => s.use_tts === 1)
+          const updated = slides.map(s => s.slide_type === 'image' ? { ...s, use_tts: allOn ? 0 : 1 } : s)
+          setSlides(updated)
+          toast(allOn ? 'TTS 전체 OFF' : 'TTS 전체 ON', 'info')
+        }} style={{ padding: '0.45rem 0.65rem' }}>
+          <div className="action-icon" style={{ background: 'rgba(14,165,233,0.12)', width: 28, height: 28, fontSize: '0.85rem' }}>&#x1F50A;</div>
+          <div className="action-label">
+            <span>TTS 일괄 On/Off</span>
+            <span>이미지 슬라이드 전체 토글</span>
+          </div>
         </button>
 
-        {/* Render */}
-        <button className="btn btn-primary btn-full" onClick={handleRender} disabled={isActive || slides.length === 0}>
-          {isActive ? <><span className="spinner" /> 렌더링 중...</> : '🚀 렌더링 시작'}
+        <hr className="divider" style={{ margin: '0.25rem 0' }} />
+
+        {/* ── Actions Section ── */}
+        <div className="sidebar-section-title">&#x25B6;&#xFE0F; 실행</div>
+        <button className="btn-action-primary save" onClick={handleSave} disabled={saving}>
+          {saving ? <><span className="spinner" /> 저장 중...</> : '저장'}
+        </button>
+        <button className="btn-action-primary render" onClick={handleRender} disabled={isActive || slides.length === 0}>
+          {isActive ? <><span className="spinner" /> 렌더링 중...</> : '렌더링 시작'}
         </button>
 
         {/* Render Progress */}
         {isActive && (
-          <div>
-            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.4rem' }}>
+          <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '0.6rem' }}>
+            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '0.35rem' }}>
               {progressMsg} ({progress}%)
             </div>
             <div className="progress-bar-wrap">
@@ -1249,41 +1588,38 @@ export default function Editor() {
         {!isActive && project?.status === 'ERROR' && (
           <div style={{
             background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.4)',
-            borderRadius: 'var(--radius-md)', padding: '0.75rem', fontSize: '0.78rem'
+            borderRadius: 'var(--radius-md)', padding: '0.65rem', fontSize: '0.75rem'
           }}>
-            <div style={{ color: '#f87171', fontWeight: 700, marginBottom: '0.3rem' }}>❌ 렌더링 실패</div>
+            <div style={{ color: '#f87171', fontWeight: 700, marginBottom: '0.25rem' }}>렌더링 실패</div>
             <div style={{ color: 'var(--text-muted)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{project.message}</div>
           </div>
         )}
 
-        <hr className="divider" />
-
-        {/* Video Preview */}
+        {/* ── Output Section ── */}
         {hasVideo && (
-          <div>
-            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.4rem', fontWeight: 600 }}>🎬 영상 미리보기</div>
-            <video
-              key={api.downloadUrl(projectId!)}
-              controls
-              style={{ width: '100%', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)', background: '#000' }}
-            >
-              <source src={api.downloadUrl(projectId!)} type="video/mp4" />
-            </video>
-          </div>
-        )}
-
-        {/* Download */}
-        {hasVideo && (
-          <a className="btn btn-secondary btn-full" href={api.downloadUrl(projectId!)} download>
-            💾 MP4 다운로드
-          </a>
-        )}
-
-        {/* YouTube */}
-        {hasVideo && (
-          <button className="btn btn-secondary btn-full" onClick={() => setShowYoutube(true)}>
-            📺 YouTube 업로드
-          </button>
+          <>
+            <hr className="divider" style={{ margin: '0.25rem 0' }} />
+            <div className="sidebar-section-title">&#x1F3AC; 결과물</div>
+            <div>
+              <video
+                key={api.downloadUrl(projectId!)}
+                controls
+                style={{ width: '100%', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)', background: '#000' }}
+              >
+                <source src={api.downloadUrl(projectId!)} type="video/mp4" />
+              </video>
+            </div>
+            <div className="action-grid">
+              <a className="action-grid-item" href={api.downloadUrl(projectId!)} download>
+                <span className="grid-icon">&#x1F4E5;</span>
+                <span>MP4 다운로드</span>
+              </a>
+              <button className="action-grid-item" onClick={() => setShowYoutube(true)}>
+                <span className="grid-icon">&#x25B6;&#xFE0F;</span>
+                <span>YouTube 업로드</span>
+              </button>
+            </div>
+          </>
         )}
 
       </aside>
@@ -1458,6 +1794,26 @@ export default function Editor() {
           projectId={projectId!}
           onClose={() => setShowPhotos(false)}
           onImported={loadProject}
+        />
+      )}
+      {showSettings && project && (
+        <GlobalSettingsModal
+          project={project}
+          onClose={() => setShowSettings(false)}
+          onSave={async (settings) => {
+            if (!projectId) return
+            try {
+              const updated = await api.updateSettings(projectId, {
+                bgm_volume: project.bgm_volume ?? 0.3,
+                aspect_ratio: project.aspect_ratio || '16:9',
+                tts_master_volume: project.tts_master_volume ?? 1.0,
+                ...settings,
+              })
+              setProject(prev => prev ? { ...prev, ...updated } : prev)
+              toast('전역 설정 저장 완료', 'success')
+              setShowSettings(false)
+            } catch { toast('설정 저장 실패', 'error') }
+          }}
         />
       )}
 

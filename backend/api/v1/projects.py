@@ -5,6 +5,7 @@ import os
 import shutil
 from datetime import datetime
 
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -42,6 +43,13 @@ def _enrich_project(project: Project) -> dict:
         "bgm_filename": getattr(project, "bgm_filename", "") or "",
         "bgm_volume"  : getattr(project, "bgm_volume", 0.3) or 0.3,
         "aspect_ratio": getattr(project, "aspect_ratio", "16:9") or "16:9",
+        "tts_master_volume": getattr(project, "tts_master_volume", 1.0) or 1.0,
+        "default_transition": getattr(project, "default_transition", "none") or "none",
+        "default_slide_duration": getattr(project, "default_slide_duration", 3.0) or 3.0,
+        "subtitle_font_size": getattr(project, "subtitle_font_size", 28) or 28,
+        "subtitle_font_color": getattr(project, "subtitle_font_color", "white") or "white",
+        "watermark_text": getattr(project, "watermark_text", "") or "",
+        "watermark_opacity": getattr(project, "watermark_opacity", 0.3) or 0.3,
     }
 
 
@@ -137,6 +145,12 @@ class ProjectSettingsUpdate(PydanticBase):
     bgm_volume: float = 0.3
     aspect_ratio: str = "16:9"
     tts_master_volume: float = 1.0
+    default_transition: Optional[str] = None
+    default_slide_duration: Optional[float] = None
+    subtitle_font_size: Optional[int] = None
+    subtitle_font_color: Optional[str] = None
+    watermark_text: Optional[str] = None
+    watermark_opacity: Optional[float] = None
 
 
 
@@ -202,6 +216,18 @@ def update_project_settings(project_id: str, payload: ProjectSettingsUpdate, db:
     project.bgm_volume        = payload.bgm_volume
     project.aspect_ratio      = payload.aspect_ratio
     project.tts_master_volume = payload.tts_master_volume
+    if payload.default_transition is not None:
+        project.default_transition = payload.default_transition
+    if payload.default_slide_duration is not None:
+        project.default_slide_duration = payload.default_slide_duration
+    if payload.subtitle_font_size is not None:
+        project.subtitle_font_size = payload.subtitle_font_size
+    if payload.subtitle_font_color is not None:
+        project.subtitle_font_color = payload.subtitle_font_color
+    if payload.watermark_text is not None:
+        project.watermark_text = payload.watermark_text
+    if payload.watermark_opacity is not None:
+        project.watermark_opacity = payload.watermark_opacity
     project.updated_at   = datetime.utcnow()
     db.commit()
     return _enrich_project(project)

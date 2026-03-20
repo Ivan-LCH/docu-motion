@@ -116,6 +116,12 @@ class ProjectRead(BaseModel):
     bgm_volume: float = 0.3
     aspect_ratio: str = "16:9"
     tts_master_volume: float = 1.0
+    default_transition: str = "none"
+    default_slide_duration: float = 3.0
+    subtitle_font_size: int = 28
+    subtitle_font_color: str = "white"
+    watermark_text: str = ""
+    watermark_opacity: float = 0.3
 
     model_config = {"from_attributes": True}
 

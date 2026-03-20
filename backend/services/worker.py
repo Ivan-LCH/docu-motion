@@ -111,6 +111,13 @@ def run_render(project_id: str):
             if tts_loaded:
                 tts.unload_model()
 
+        # 전역 설정 (6-10)
+        subtitle_font_size = getattr(project, 'subtitle_font_size', 28) or 28
+        subtitle_font_color = getattr(project, 'subtitle_font_color', 'white') or 'white'
+        watermark_text = getattr(project, 'watermark_text', '') or ''
+        watermark_opacity = getattr(project, 'watermark_opacity', 0.3) or 0.3
+        default_slide_duration = getattr(project, 'default_slide_duration', 3.0) or 3.0
+
         # 렌더링 실행
         renderer.render_project(
             project_id=project_id,
@@ -123,6 +130,11 @@ def run_render(project_id: str):
             bgm_volume=bgm_vol,
             canvas_size=canvas_size,
             tts_master_volume=tts_master_volume,
+            subtitle_font_size=subtitle_font_size,
+            subtitle_font_color=subtitle_font_color,
+            watermark_text=watermark_text,
+            watermark_opacity=watermark_opacity,
+            default_slide_duration=default_slide_duration,
         )
 
         # 완료

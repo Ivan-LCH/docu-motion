@@ -182,7 +182,10 @@ def load_tts_engine():
 def render_project(project_id: str, slides: list, assets_dir: Path, output_file: Path,
                    progress_callback, on_tts_done=None,
                    bgm_path: str = "", bgm_volume: float = 0.3,
-                   canvas_size: tuple = None, tts_master_volume: float = 1.0):
+                   canvas_size: tuple = None, tts_master_volume: float = 1.0,
+                   subtitle_font_size: int = 28, subtitle_font_color: str = "white",
+                   watermark_text: str = "", watermark_opacity: float = 0.3,
+                   default_slide_duration: float = 3.0):
     """
     영상 렌더링 메인 함수
     slides: [{"image_filename": ..., "text": ...}, ...]
@@ -190,9 +193,17 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
     bgm_path: BGM 파일 절대 경로 (없으면 비어있음)
     canvas_size: (width, height) 튜플, None이면 CANVAS_SIZE(1280x720) 사용
     tts_master_volume: 전역 TTS 볼륨 (개별 tts_volume에 곱해짐)
+    subtitle_font_size: 자막 폰트 크기 (기본 28)
+    subtitle_font_color: 자막 폰트 색상 (기본 white)
+    watermark_text: 워터마크 텍스트 (빈 문자열이면 미적용)
+    watermark_opacity: 워터마크 불투명도 (0.0~1.0)
+    default_slide_duration: 텍스트 없는 슬라이드 기본 시간(초)
     """
     if canvas_size is None:
         canvas_size = CANVAS_SIZE
+    # 자막 폰트 설정 (전역)
+    _font_size = subtitle_font_size or FONT_SIZE
+    _font_color = subtitle_font_color or TEXT_COLOR
     temp_dir = assets_dir / "temp_render"
     temp_dir.mkdir(exist_ok=True)
 
@@ -266,8 +277,8 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
                         # TextClip 자막
                         tc = (
                             TextClip(
-                                txt=sub_txt, font=FONT_PATH, fontsize=FONT_SIZE,
-                                color=TEXT_COLOR, size=(canvas_size[0] - 100, None),
+                                txt=sub_txt, font=FONT_PATH, fontsize=_font_size,
+                                color=_font_color, size=(canvas_size[0] - 100, None),
                                 method='caption', align='center', interline=8
                             )
                             .set_start(start)
@@ -343,8 +354,8 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
             use_tts_flag = bool(item.get('use_tts', 1))
 
             if not text:
-                # 텍스트가 없으면 3초간 이미지 유지
-                total_duration = 3.0
+                # 텍스트가 없으면 기본 슬라이드 시간만큼 이미지 유지
+                total_duration = default_slide_duration
             elif not use_tts_flag:
                 # TTS 꺼짐 → 텍스트 길이에 비례해 시간 계산 (글자당 0.15초, 최소 3초)
                 total_duration = max(3.0, len(text) * 0.15)
@@ -360,8 +371,8 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
                         TextClip(
                             txt       = s, 
                             font      = FONT_PATH, 
-                            fontsize  = FONT_SIZE,
-                            color     = TEXT_COLOR, 
+                            fontsize  = _font_size,
+                            color     = _font_color, 
                             size      = (canvas_size[0] - 100, None),
                             method    = 'caption',
                             align     = 'center',
@@ -413,8 +424,8 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
                     dur = char_ratio * available_sub_time
                     txt_clip = (
                         TextClip(
-                            txt=s, font=FONT_PATH, fontsize=FONT_SIZE,
-                            color=TEXT_COLOR, size=(canvas_size[0] - 100, None),
+                            txt=s, font=FONT_PATH, fontsize=_font_size,
+                            color=_font_color, size=(canvas_size[0] - 100, None),
                             method='caption', align='center', interline=8
                         )
                         .set_start(current_start)
@@ -513,6 +524,24 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
         # ── 임시 연결 (BGM 문제 없음) ─────────────────────────────────
         # 클립 연결
         combined = concatenate_videoclips(final_clips, method="compose")
+
+        # ── 워터마크 오버레이 ──────────────────────────────────────
+        if watermark_text:
+            try:
+                wm_clip = (
+                    TextClip(
+                        txt=watermark_text, font=FONT_PATH, fontsize=max(16, _font_size // 2),
+                        color='white', method='label'
+                    )
+                    .set_duration(combined.duration)
+                    .set_position(('right', 'bottom'))
+                    .margin(right=20, bottom=20, opacity=0)
+                    .set_opacity(watermark_opacity)
+                )
+                combined = CompositeVideoClip([combined, wm_clip])
+                logger.info(f"Watermark applied: '{watermark_text}' opacity={watermark_opacity}")
+            except Exception as wm_err:
+                logger.warning(f"Watermark failed (skipping): {wm_err}")
 
         # ── BGM 믹싱 ───────────────────────────────────────────────
         if bgm_path and Path(bgm_path).exists():

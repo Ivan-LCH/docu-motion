@@ -146,3 +146,23 @@
         . 개별 슬라이드 TTS 볼륨은 Master 대비 곱셈으로 적용 (최종 볼륨 = 개별 × Master)
         . UI: 프로젝트 설정 영역에 'Master TTS Volume' 슬라이더 추가
         . 완료: Project.tts_master_volume 컬럼, 사이드바 슬라이더, renderer에서 곱셈 적용
+
+## 2026-03-20 (완료)
+
+──────────────────────────────────────────────────────────────────────────────
+6. 🎨 에디터 UI/UX 고도화 (Editor UI Overhaul) — 계속
+──────────────────────────────────────────────────────────────────────────────
+  - [C] 6-10. [Editor.tsx] 전역 설정(Master) 전용 관리 메뉴 구축
+        . Master TTS 볼륨, 장면 전환 전체 적용, TTS 자동 생성 일괄 On/Off
+        . 추천 기능: 전역 자막 스타일(폰트/색상), 기본 슬라이드 시간, 워터마크 설정 등
+        . 완료: GlobalSettingsModal 모달 구현, 전환/자막스타일/워터마크/슬라이드시간 설정, 전환 일괄적용 & TTS 일괄 On/Off 도구 버튼 추가
+        . Backend: Project 모델에 6개 컬럼 추가 (default_transition, default_slide_duration, subtitle_font_size, subtitle_font_color, watermark_text, watermark_opacity)
+        . renderer.py: 자막 폰트 크기/색상 파라미터화, 워터마크 TextClip 오버레이 추가, 기본 슬라이드 시간 파라미터화
+  - [C] 6-11. [Editor.tsx] 미디어 업로드 및 버튼 UI 현대화 (디자인 개편)
+        . 텍스트 위주 버튼 -> 아이콘+카드 형태의 세련된 디자인으로 교체
+        . 전체적인 UI/UX 가시성 및 심미성 강화 (모던 앱 스타일)
+        . 완료: action-card, upload-zone, btn-action-primary, slide-ctrl-btn, action-grid 등 CSS 클래스 추가, 사이드바 전면 리디자인 (섹션 분리, 아이콘+라벨 카드, 드롭존 스타일)
+  - [C] 6-12. [Editor.tsx] 자막 편집 UX 개선 (타임라인 싱크 및 직관적 입력)
+        . 현재 시작/종료 시간 수동 입력 방식의 불편함 개선
+        . 영상 싱크에 맞게 직관적으로 조절하거나 타임라인에서 제어하는 방식 검토
+        . 완료: SubtitleTimeline 드래그 컴포넌트 구현(블록 이동/좌우 리사이즈), 초 단위 숫자+range slider 병행 입력, 타임라인 클릭 시 비디오 시크 연동

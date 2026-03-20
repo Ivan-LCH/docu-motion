@@ -55,6 +55,12 @@ export interface Project {
   bgm_volume: number
   aspect_ratio: string
   tts_master_volume: number
+  default_transition: string
+  default_slide_duration: number
+  subtitle_font_size: number
+  subtitle_font_color: string
+  watermark_text: string
+  watermark_opacity: number
 }
 
 export interface ProjectDetail extends Project {
@@ -133,7 +139,7 @@ export const api = {
   deleteBgm: (projectId: string) => request<Project>('DELETE', `/projects/${projectId}/bgm`),
 
   // 프로젝트 설정 (BGM 볼륨, 화면 비율, TTS 마스터 볼륨)
-  updateSettings: (projectId: string, settings: { bgm_volume: number; aspect_ratio: string; tts_master_volume?: number }) =>
+  updateSettings: (projectId: string, settings: Record<string, unknown>) =>
     request<Project>('PATCH', `/projects/${projectId}/settings`, settings),
 
   // 갤러리 이미지 콜라주

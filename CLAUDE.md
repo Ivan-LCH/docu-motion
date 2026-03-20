@@ -96,6 +96,7 @@ Browser → React SPA → /api/v1/* → FastAPI → Services → SQLite / FFmpeg
 ## Development Policies (from .cursorrules)
 
 - All development happens inside the Docker container (mounted at `/DATA/my_prog/docu_motion`)
+- **All shell commands (tsc, npm, node 등) must be executed inside the Docker container** — host에서 직접 실행 금지
+- **빌드/서버 시작 명령**: `docker exec docu_motion_app bash /app/start_server.sh` — 코드 변경 완료 후 AI가 직접 실행한다
 - Backend auto-reloads via uvicorn `--reload` — do not manually restart the server
-- Frontend builds (`npm run build`) must be triggered by the user, not by AI autonomously
 - When the user wants to review or discuss changes, explain the approach first and get agreement before modifying code
