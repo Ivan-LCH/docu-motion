@@ -150,7 +150,7 @@ export default function Dashboard() {
       </aside>
 
       {/* Main Content */}
-      <main className="page" style={{ padding: '1.5rem' }}>
+      <main className="page" style={{ padding: '1rem 1.5cm' }}>
         {/* Header */}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '2rem', gap: '1rem', flexWrap: 'wrap' }}>
           <div>
@@ -248,7 +248,7 @@ export default function Dashboard() {
                     {p.has_video && (
                       <a
                         className="btn btn-ghost btn-icon"
-                        href={api.downloadUrl(p.id)}
+                        href={api.downloadUrl(p.id, p.updated_at)}
                         download={`${p.name}.mp4`}
                         title="다운로드"
                       >💾</a>
@@ -266,12 +266,12 @@ export default function Dashboard() {
                 {previewId === p.id && p.has_video && (
                   <div style={{ marginTop: '1rem', borderTop: '1px solid var(--border)', paddingTop: '1rem' }}>
                     <video
-                      key={api.downloadUrl(p.id)}
+                      key={api.downloadUrl(p.id, p.updated_at)}
                       controls
                       autoPlay
                       style={{ width: '100%', maxHeight: 360, borderRadius: 'var(--radius-md)', background: '#000' }}
                     >
-                      <source src={api.downloadUrl(p.id)} type="video/mp4" />
+                      <source src={api.downloadUrl(p.id, p.updated_at)} type="video/mp4" />
                     </video>
                   </div>
                 )}

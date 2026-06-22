@@ -17,6 +17,7 @@ import logging
 import re
 import shutil
 import time
+import numpy as np
 from pathlib import Path
 
 from moviepy.editor import (
@@ -84,6 +85,103 @@ def cleanup_temp_files(temp_dir: Path):
 
 
 TRANSITION_DURATION = 0.7  # seconds for crossfade / fade transitions
+
+
+# ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── #
+# Apply Overlays (모자이크 / 블러 / 이모지 / 텍스트)
+# ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── #
+
+import json as _json_mod
+import numpy as _np
+from PIL import ImageFilter, ImageDraw, ImageFont
+
+def _apply_overlays_to_pil(img: Image.Image, overlays: list) -> Image.Image:
+    """PIL Image에 오버레이 목록 적용 후 반환"""
+    if not overlays:
+        return img
+    img = img.copy().convert("RGBA")
+    iw, ih = img.size
+
+    for ov in overlays:
+        otype = ov.get("type", "")
+        x = int(ov.get("x", 0) * iw)
+        y = int(ov.get("y", 0) * ih)
+        w = max(1, int(ov.get("w", 0.1) * iw))
+        h = max(1, int(ov.get("h", 0.1) * ih))
+        x2, y2 = min(x + w, iw), min(y + h, ih)
+
+        if otype in ("mosaic", "blur"):
+            region = img.crop((x, y, x2, y2)).convert("RGB")
+            if otype == "mosaic":
+                block = max(1, min(w, h) // 10)
+                small = region.resize((max(1, w // block), max(1, h // block)), Image.NEAREST)
+                processed = small.resize((w, h), Image.NEAREST)
+            else:
+                radius = max(5, min(w, h) // 8)
+                processed = region.filter(ImageFilter.GaussianBlur(radius=radius))
+            img.paste(processed.convert("RGBA"), (x, y))
+
+        elif otype == "emoji":
+            content = ov.get("content", "⭐")
+            # fontSize가 있으면 우선 사용, 없으면 기존 방식(h 기반)으로 폴백
+            font_frac = ov.get("fontSize")
+            font_size = max(12, int((font_frac if font_frac else ov.get("h", 0.1)) * ih))
+            draw = ImageDraw.Draw(img)
+            try:
+                font = ImageFont.truetype(FONT_PATH, font_size)
+            except Exception:
+                font = ImageFont.load_default()
+            # 박스 중앙 정렬
+            try:
+                bbox = draw.textbbox((0, 0), content, font=font, anchor="lt")
+                tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+            except Exception:
+                tw, th = font_size, font_size
+            cx = x + w // 2 - tw // 2 - bbox[0]
+            cy = y + h // 2 - th // 2 - bbox[1]
+            draw.text((cx, cy), content, font=font, fill=(255, 255, 255, 255))
+
+        elif otype == "text":
+            content = ov.get("content", "")
+            color_str = ov.get("color", "white")
+            font_frac = ov.get("fontSize")
+            font_size = max(12, int((font_frac if font_frac else ov.get("h", 0.05)) * ih))
+            color_map = {"white": (255,255,255,255), "black": (0,0,0,255),
+                         "red": (255,0,0,255), "yellow": (255,220,0,255), "blue": (80,150,255,255)}
+            color = color_map.get(color_str, (255,255,255,255))
+            draw = ImageDraw.Draw(img)
+            try:
+                font = ImageFont.truetype(FONT_PATH, font_size)
+            except Exception:
+                font = ImageFont.load_default()
+            # 박스 중앙 정렬을 위한 텍스트 크기 측정
+            try:
+                bbox_t = draw.textbbox((0, 0), content, font=font, anchor="lt")
+                tw, th = bbox_t[2] - bbox_t[0], bbox_t[3] - bbox_t[1]
+                ox, oy = bbox_t[0], bbox_t[1]
+            except Exception:
+                tw, th, ox, oy = font_size * len(content) // 2, font_size, 0, 0
+            cx = x + w // 2 - tw // 2 - ox
+            cy = y + h // 2 - th // 2 - oy
+            # 반투명 배경 (실제 텍스트 위치 기준)
+            pad = 4
+            bg = Image.new("RGBA", img.size, (0, 0, 0, 0))
+            bg_draw = ImageDraw.Draw(bg)
+            bg_draw.rectangle((cx + ox - pad, cy + oy - pad, cx + ox + tw + pad, cy + oy + th + pad), fill=(0,0,0,140))
+            img = Image.alpha_composite(img, bg)
+            draw = ImageDraw.Draw(img)
+            draw.text((cx, cy), content, font=font, fill=color)
+
+    return img.convert("RGB")
+
+
+def make_overlay_frame_fn(overlays: list):
+    """MoviePy fl_image용 함수 반환 (비디오 슬라이드)"""
+    def apply(frame):
+        img = Image.fromarray(frame)
+        result = _apply_overlays_to_pil(img, overlays)
+        return _np.array(result)
+    return apply
 
 
 # ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── #
@@ -185,7 +283,7 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
                    canvas_size: tuple = None, tts_master_volume: float = 1.0,
                    subtitle_font_size: int = 28, subtitle_font_color: str = "white",
                    watermark_text: str = "", watermark_opacity: float = 0.3,
-                   default_slide_duration: float = 3.0):
+                   default_slide_duration: float = 3.0, title_text: str = ""):
     """
     영상 렌더링 메인 함수
     slides: [{"image_filename": ..., "text": ...}, ...]
@@ -198,6 +296,7 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
     watermark_text: 워터마크 텍스트 (빈 문자열이면 미적용)
     watermark_opacity: 워터마크 불투명도 (0.0~1.0)
     default_slide_duration: 텍스트 없는 슬라이드 기본 시간(초)
+    title_text: 인트로 타이틀 — 영상 시작 3초간 화면 중앙에 페이드 인/아웃 (빈 문자열이면 미적용)
     """
     if canvas_size is None:
         canvas_size = CANVAS_SIZE
@@ -206,6 +305,10 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
     _font_color = subtitle_font_color or TEXT_COLOR
     temp_dir = assets_dir / "temp_render"
     temp_dir.mkdir(exist_ok=True)
+    # 이전 렌더링의 wav 캐시 제거 (텍스트 변경 시 재사용 방지)
+    for _old_wav in temp_dir.glob("v_*.wav"):
+        try: os.unlink(_old_wav)
+        except: pass
 
     total_slides = len(slides)
     final_clips  = []
@@ -275,15 +378,17 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
                             continue
 
                         # TextClip 자막
+                        tc = TextClip(
+                            txt=sub_txt, font=FONT_PATH, fontsize=_font_size,
+                            color=_font_color, size=(canvas_size[0] - 100, None),
+                            method='caption', align='center', interline=8
+                        )
+                        tc_y = canvas_size[1] - 30 - tc.size[1]
                         tc = (
-                            TextClip(
-                                txt=sub_txt, font=FONT_PATH, fontsize=_font_size,
-                                color=_font_color, size=(canvas_size[0] - 100, None),
-                                method='caption', align='center', interline=8
-                            )
+                            tc
                             .set_start(start)
                             .set_duration(min(dur, total_duration - start))
-                            .set_position(('center', canvas_size[1] - 90))
+                            .set_position(('center', tc_y))
                         )
                         subtitle_clips.append(tc)
 
@@ -343,6 +448,12 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
 
                 bg_clip = ColorClip(size=canvas_size, color=BG_COLOR).set_duration(total_duration)
                 video_clip = video_clip.set_fps(24)
+
+                # 오버레이 적용 (모자이크 / 블러 / 이모지 / 텍스트)
+                overlays = _json_mod.loads(item.get('overlays', '[]') or '[]')
+                if overlays:
+                    video_clip = video_clip.fl_image(make_overlay_frame_fn(overlays))
+
                 final_clip = CompositeVideoClip([bg_clip, video_clip] + subtitle_clips)
                 if audio_clips:
                     final_clip = final_clip.set_audio(CompositeAudioClip(audio_clips))
@@ -367,75 +478,100 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
                 for idx, s in enumerate(sentences):
                     char_ratio = len(s) / total_chars if total_chars > 0 else 1.0 / num_sent
                     dur        = char_ratio * (total_duration - 0.2)
+                    txt_clip = TextClip(
+                        txt       = s,
+                        font      = FONT_PATH,
+                        fontsize  = _font_size,
+                        color     = _font_color,
+                        size      = (canvas_size[0] - 100, None),
+                        method    = 'caption',
+                        align     = 'center',
+                        interline = 8
+                    )
+                    _ty = canvas_size[1] - 30 - txt_clip.size[1]
                     txt_clip = (
-                        TextClip(
-                            txt       = s, 
-                            font      = FONT_PATH, 
-                            fontsize  = _font_size,
-                            color     = _font_color, 
-                            size      = (canvas_size[0] - 100, None),
-                            method    = 'caption',
-                            align     = 'center',
-                            interline = 8
-                        )
+                        txt_clip
                         .set_start(current_start)
                         .set_duration(dur)
-                        .set_position(('center', canvas_size[1] - 90))
+                        .set_position(('center', _ty))
                     )
                     subtitle_clips.append(txt_clip)
                     current_start += dur
             else:
-                # TTS - 이미 생성된 파일이 있으면 재사용 (재렌더링 속도 향상)
-                a_path = temp_dir / f"v_{i}.wav"
-                
-                if a_path.exists() and a_path.stat().st_size < 100:
-                    try: a_path.unlink()
-                    except: pass
-                    
-                if a_path.exists():
-                    logger.info(f"Reusing existing TTS file: {a_path}")
-                elif tts_engine:
-                    tts_engine.generate_with_fallback(text, str(a_path))
+                # TTS - 문장별로 따로 생성 후 순차 이어붙이기 (concatenate)
+                # CompositeAudioClip+set_start의 클립 누락 버그를 회피
+                from moviepy.editor import concatenate_audioclips
+                from moviepy.audio.AudioClip import AudioArrayClip
 
-                if not a_path.exists() or a_path.stat().st_size < 100:
-                    raise Exception(f"TTS 오디오 생성 실패 또는 타임아웃 (슬라이드 {i+1})")
-
-                # Audio 정상 생성됨
-                a_clip = AudioFileClip(str(a_path))
-                # TTS 볼륨 독립 조절 (개별 * 마스터)
+                sentences = split_sentences(text)
+                num_sent  = len(sentences)
+                PAD_DELAY     = 1.0   # 이미지 안정 표시 후 음성/자막 시작
+                SENTENCE_GAP  = 0.3   # 문장 간 쉬는 시간 (편안한 호흡)
                 tts_vol = item.get('tts_volume', 1.0) * tts_master_volume
-                if tts_vol != 1.0:
-                    a_clip = a_clip.volumex(tts_vol)
-                PAD_DELAY      = 0.5
-                total_duration = a_clip.duration + PAD_DELAY * 2
-                a_clip         = a_clip.set_start(PAD_DELAY)
 
-                # Subtitle timing
-                sentences   = split_sentences(text)
-                num_sent    = len(sentences)
-                total_chars = sum(len(s) for s in sentences)
-                SENTENCE_GAP       = 0.15
-                total_gap_time     = SENTENCE_GAP * (num_sent - 1) if num_sent > 1 else 0
-                available_sub_time = max(0, a_clip.duration - total_gap_time)
+                sent_audio_clips_raw = []   # 원본 오디오 클립 목록 (set_start 미적용)
+                sent_durations       = []   # 각 문장의 실제 음성 길이
 
-                current_start  = PAD_DELAY + 0.1
-                for idx, s in enumerate(sentences):
-                    char_ratio = len(s) / total_chars if total_chars > 0 else 1.0 / num_sent
-                    dur = char_ratio * available_sub_time
+                for sent_idx, s in enumerate(sentences):
+                    s_path = temp_dir / f"v_{i}_{sent_idx}.wav"
+
+                    # 기존 전체-텍스트 캐시 파일은 무시 (v_{i}.wav)
+                    if s_path.exists() and s_path.stat().st_size < 100:
+                        try: s_path.unlink()
+                        except: pass
+
+                    if not s_path.exists():
+                        if tts_engine:
+                            tts_engine.generate_with_fallback(s, str(s_path))
+
+                    if not s_path.exists() or s_path.stat().st_size < 100:
+                        raise Exception(f"TTS 오디오 생성 실패 (슬라이드 {i+1}, 문장 {sent_idx+1})")
+
+                    s_clip = AudioFileClip(str(s_path))
+                    if tts_vol != 1.0:
+                        s_clip = s_clip.volumex(tts_vol)
+
+                    sent_audio_clips_raw.append(s_clip)
+                    sent_durations.append(s_clip.duration)
+
+                # 무음 패딩(앞/뒤 PAD_DELAY, 문장 사이 SENTENCE_GAP) 클립 헬퍼
+                _ref = sent_audio_clips_raw[0]
+                _sr  = int(getattr(_ref, 'fps', 22050) or 22050)
+                _nch = 2  # AudioFileClip은 보통 stereo로 디코드. 안전하게 2채널 무음 사용
+                def _make_silence(d):
+                    n = max(1, int(_sr * d))
+                    return AudioArrayClip(np.zeros((n, _nch), dtype=np.float32), fps=_sr)
+
+                parts = [_make_silence(PAD_DELAY)]
+                for idx, c in enumerate(sent_audio_clips_raw):
+                    parts.append(c)
+                    if idx < num_sent - 1:
+                        parts.append(_make_silence(SENTENCE_GAP))
+                parts.append(_make_silence(PAD_DELAY))
+
+                a_clip = concatenate_audioclips(parts)
+                total_duration = a_clip.duration
+
+                # 자막 타이밍 — 실제 음성 길이 기반
+                sub_offset = PAD_DELAY
+                BOTTOM_MARGIN = 30
+                for sent_idx, (s, s_dur) in enumerate(zip(sentences, sent_durations)):
+                    txt_clip = TextClip(
+                        txt=s, font=FONT_PATH, fontsize=_font_size,
+                        color=_font_color, size=(canvas_size[0] - 100, None),
+                        method='caption', align='center', interline=8
+                    )
+                    txt_y = canvas_size[1] - BOTTOM_MARGIN - txt_clip.size[1]
                     txt_clip = (
-                        TextClip(
-                            txt=s, font=FONT_PATH, fontsize=_font_size,
-                            color=_font_color, size=(canvas_size[0] - 100, None),
-                            method='caption', align='center', interline=8
-                        )
-                        .set_start(current_start)
-                        .set_duration(dur)
-                        .set_position(('center', canvas_size[1] - 90))
+                        txt_clip
+                        .set_start(sub_offset)
+                        .set_duration(s_dur)
+                        .set_position(('center', txt_y))
                     )
                     subtitle_clips.append(txt_clip)
-                    current_start += dur
-                    if idx < num_sent - 1:
-                        current_start += SENTENCE_GAP
+                    sub_offset += s_dur
+                    if sent_idx < num_sent - 1:
+                        sub_offset += SENTENCE_GAP
 
             # Image clip with Ken Burns effect
             img_filename = item.get('image_filename', '')
@@ -453,33 +589,87 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
                         pil_img.save(str(rotated_path))
                     img_path = rotated_path
 
-                # Ken Burns: 슬라이드별 줌인/줌아웃 번갈아 적용
-                base_img = ImageClip(str(img_path)).resize(height=int(canvas_size[1] * 0.85))
-                kb_start = 1.0
-                kb_end = 1.08 if (i % 2 == 0) else 0.93  # 짝수: 줌인, 홀수: 줌아웃
+                # 오버레이 적용 (PIL로 이미지에 직접)
+                overlays = _json_mod.loads(item.get('overlays', '[]') or '[]')
+                if overlays:
+                    from PIL import Image as _PILImg
+                    ov_path = temp_dir / f"ov_{i}.png"
+                    pil_src = _PILImg.open(str(img_path))
+                    pil_src = _apply_overlays_to_pil(pil_src, overlays)
+                    pil_src.save(str(ov_path))
+                    img_path = ov_path
 
-                def _make_kb(clip, start_scale, end_scale, dur, csize):
+                # 이미지 표시 방식 + Ken Burns 강도
+                image_fit = item.get('image_fit', 'cover')  # 'cover' | 'fit'
+                ken_burns = max(0, min(100, int(item.get('ken_burns', 0) or 0)))  # 0~100
+                raw_img_clip = ImageClip(str(img_path))
+                iw, ih = raw_img_clip.size
+                cw, ch = canvas_size
+
+                # 강도 0이어도 cover 시 약간의 여유분 필요 → 최소 margin 1.02
+                kb_intensity = ken_burns / 100.0  # 0.0 ~ 1.0
+                margin = 1.02 + 0.13 * kb_intensity  # 1.02 (정적) ~ 1.15 (최대 줌)
+
+                if image_fit == 'fit':
+                    fit_h = int(ch * 0.82)  # 하단 18% 자막 영역 확보
+                    # contain: 이미지 전체가 잘리지 않고 (cw x fit_h) 안에 들어오도록
+                    contain_scale = min(cw / iw, fit_h / ih)
+                    fit_scale = contain_scale * margin
+                    base_img = raw_img_clip.resize((int(iw * fit_scale), int(ih * fit_scale)))
+                    # kb_area = contain 기준 크기 → 이 크기로 크롭하면 이미지 전체가 보임
+                    kb_area = (int(iw * contain_scale), int(ih * contain_scale))
+                else:
+                    cover_scale = max(cw / iw, ch / ih) * margin
+                    base_img = raw_img_clip.resize((int(iw * cover_scale), int(ih * cover_scale)))
+                    kb_area = (cw, ch)
+
+                # 짝수: 줌인, 홀수: 줌아웃 — 강도에 비례 (max ±13%)
+                if ken_burns > 0:
+                    max_zoom = 0.13 * kb_intensity
+                    kb_start = 1.0
+                    kb_end = (1.0 + max_zoom) if (i % 2 == 0) else (1.0 - max_zoom * 0.85)
+                else:
+                    kb_start = kb_end = 1.0
+
+                def _make_kb(clip, start_scale, end_scale, dur, area):
                     def make_frame(t):
-                        progress = t / dur if dur > 0 else 0
-                        scale = start_scale + (end_scale - start_scale) * progress
                         from PIL import Image as PILImage
                         import numpy as np
+                        progress = t / dur if dur > 0 else 0.0
+                        scale = start_scale + (end_scale - start_scale) * progress
                         frame = clip.get_frame(0)
                         h, w = frame.shape[:2]
-                        new_w, new_h = int(w * scale), int(h * scale)
-                        img = PILImage.fromarray(frame).resize((new_w, new_h), PILImage.LANCZOS)
-                        # 중앙 크롭
-                        left = (new_w - w) // 2
-                        top = (new_h - h) // 2
-                        cropped = img.crop((left, top, left + w, top + h))
-                        return np.array(cropped)
+                        target_w, target_h = area
+                        view_w = target_w / scale
+                        view_h = target_h / scale
+                        left = (w - view_w) / 2.0
+                        top  = (h - view_h) / 2.0
+                        cropped = PILImage.fromarray(frame).crop(
+                            (left, top, left + view_w, top + view_h)
+                        )
+                        return np.array(cropped.resize((target_w, target_h), PILImage.LANCZOS))
                     from moviepy.editor import VideoClip
                     return VideoClip(make_frame, duration=dur).set_fps(24)
 
-                img_clip = (
-                    _make_kb(base_img, kb_start, kb_end, total_duration, canvas_size)
-                    .set_position(('center', 'top'))
-                )
+                if ken_burns <= 0:
+                    # 정적 이미지: 한 번만 처리해서 ImageClip으로 (성능 최적화)
+                    import numpy as _np2
+                    target_w, target_h = kb_area
+                    src_frame = base_img.get_frame(0)
+                    sh, sw = src_frame.shape[:2]
+                    crop_left = (sw - target_w) / 2.0
+                    crop_top  = (sh - target_h) / 2.0
+                    static_pil = Image.fromarray(src_frame).crop(
+                        (crop_left, crop_top, crop_left + target_w, crop_top + target_h)
+                    )
+                    if static_pil.size != (target_w, target_h):
+                        static_pil = static_pil.resize((target_w, target_h), Image.LANCZOS)
+                    img_clip = ImageClip(_np2.array(static_pil)).set_duration(total_duration)
+                else:
+                    img_clip = _make_kb(base_img, kb_start, kb_end, total_duration, kb_area)
+
+                if image_fit == 'fit':
+                    img_clip = img_clip.set_position(('center', 'top'))
             else:
                 img_clip = ColorClip(size=canvas_size, color=(0, 0, 0)).set_duration(total_duration)
 
@@ -542,6 +732,37 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
                 logger.info(f"Watermark applied: '{watermark_text}' opacity={watermark_opacity}")
             except Exception as wm_err:
                 logger.warning(f"Watermark failed (skipping): {wm_err}")
+
+        # ── 인트로 타이틀 오버레이 (화면 중앙, 3초간 페이드 인/아웃) ──
+        if title_text:
+            try:
+                TITLE_DURATION = 3.0
+                t_dur = min(TITLE_DURATION, combined.duration)
+                fade  = min(0.8, t_dur * 0.3)
+                # 자막보다 큰 폰트로 제목 렌더
+                title_txt_clip = TextClip(
+                    txt=title_text, font=FONT_PATH,
+                    fontsize=max(48, _font_size * 2),
+                    color='white', method='caption', align='center',
+                    size=(canvas_size[0] - 120, None),
+                )
+                # 텍스트 뒤에 반투명 검정 배경 박스 (가독성 향상)
+                title_clip = (
+                    title_txt_clip
+                    .on_color(
+                        size=(title_txt_clip.w + 60, title_txt_clip.h + 40),
+                        color=(0, 0, 0), pos='center', col_opacity=0.5,
+                    )
+                    .set_start(0)
+                    .set_duration(t_dur)
+                    .set_position('center')
+                    .crossfadein(fade)
+                    .crossfadeout(fade)
+                )
+                combined = CompositeVideoClip([combined, title_clip])
+                logger.info(f"Intro title applied: '{title_text}' ({t_dur}s)")
+            except Exception as title_err:
+                logger.warning(f"Intro title failed (skipping): {title_err}")
 
         # ── BGM 믹싱 ───────────────────────────────────────────────
         if bgm_path and Path(bgm_path).exists():

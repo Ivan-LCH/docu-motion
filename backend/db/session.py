@@ -45,6 +45,10 @@ def _migrate_columns():
             ("slides", "tts_volume", "FLOAT DEFAULT 1.0"),
             ("slides", "rotation", "INTEGER DEFAULT 0"),
             ("projects", "tts_master_volume", "FLOAT DEFAULT 1.0"),
+            ("slides", "overlays", "TEXT DEFAULT '[]'"),
+            ("slides", "image_fit", "TEXT DEFAULT 'cover'"),
+            ("slides", "ken_burns", "INTEGER DEFAULT 0"),
+            ("projects", "title_text", "TEXT DEFAULT ''"),
         ]
         for table, column, col_type in migrations:
             try:

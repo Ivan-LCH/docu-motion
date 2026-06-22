@@ -55,6 +55,9 @@ def run_render(project_id: str):
                 "transition": s.transition or "none",
                 "tts_volume": s.tts_volume if s.tts_volume is not None else 1.0,
                 "rotation": s.rotation if s.rotation is not None else 0,
+                "overlays": s.overlays or "[]",
+                "image_fit": s.image_fit or "cover",
+                "ken_burns": s.ken_burns if s.ken_burns is not None else 0,
             }
             for s in slides
         ]
@@ -117,6 +120,8 @@ def run_render(project_id: str):
         watermark_text = getattr(project, 'watermark_text', '') or ''
         watermark_opacity = getattr(project, 'watermark_opacity', 0.3) or 0.3
         default_slide_duration = getattr(project, 'default_slide_duration', 3.0) or 3.0
+        # 인트로 타이틀: 전역 설정 입력이 비어있으면 프로젝트명을 사용
+        title_text = (getattr(project, 'title_text', '') or '').strip() or (project.name or '').strip()
 
         # 렌더링 실행
         renderer.render_project(
@@ -135,6 +140,7 @@ def run_render(project_id: str):
             watermark_text=watermark_text,
             watermark_opacity=watermark_opacity,
             default_slide_duration=default_slide_duration,
+            title_text=title_text,
         )
 
         # 완료

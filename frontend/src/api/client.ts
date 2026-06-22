@@ -38,6 +38,9 @@ export interface Slide {
   transition?: string  // 'none' | 'crossfade' | 'fade_black' | 'slide_left' | 'slide_right'
   tts_volume?: number  // TTS 볼륨 (0.0 ~ 2.0)
   rotation?: number    // 0, 90, 180, 270
+  overlays?: string    // JSON array of overlay objects
+  image_fit?: 'cover' | 'fit'  // cover: 전체화면, fit: 이미지 위쪽+하단 자막 영역
+  ken_burns?: number   // Ken Burns 강도 0~100 (0=정적, 100=최대 줌)
 }
 
 export interface Project {
@@ -61,6 +64,7 @@ export interface Project {
   subtitle_font_color: string
   watermark_text: string
   watermark_opacity: number
+  title_text: string
 }
 
 export interface ProjectDetail extends Project {
@@ -85,6 +89,17 @@ export interface PickerImportResult {
   count: number
 }
 
+export type PhotosSortOrder = 'selected' | 'oldest' | 'newest' | 'api'
+
+export interface BgmHit {
+  id: number
+  title: string
+  tags: string
+  duration: number
+  preview_url: string
+  page_url: string
+}
+
 // ─── Projects ───────────────────────────────
 export const api = {
   // 프로젝트
@@ -92,6 +107,7 @@ export const api = {
   createProject: (name: string) => request<Project>('POST', '/projects', { name }),
   getProject: (id: string) => request<ProjectDetail>('GET', `/projects/${id}`),
   deleteProject: (id: string) => request<void>('DELETE', `/projects/${id}`),
+  renameProject: (id: string, name: string) => request<Project>('PATCH', `/projects/${id}/rename`, { name }),
 
   // 슬라이드
   getSlides: (id: string) => request<Slide[]>('GET', `/projects/${id}/slides`),
@@ -116,7 +132,8 @@ export const api = {
   // 렌더링
   startRender: (id: string) => request<{ ok: boolean }>('POST', `/projects/${id}/render`),
   getRenderStatus: (id: string) => request<RenderStatus>('GET', `/projects/${id}/render/status`),
-  downloadUrl: (id: string) => `${BASE}/projects/${id}/download`,
+  downloadUrl: (id: string, version?: string | number) =>
+    `${BASE}/projects/${id}/download${version ? `?v=${encodeURIComponent(version)}` : ''}`,
 
   // YouTube
   uploadYouTube: (id: string, payload: { title: string; description: string; tags?: string }) =>
@@ -137,6 +154,12 @@ export const api = {
     return res.json()
   },
   deleteBgm: (projectId: string) => request<Project>('DELETE', `/projects/${projectId}/bgm`),
+  searchBgm: (projectId: string, q: string, page = 1) =>
+    request<{ total: number; hits: BgmHit[] }>('GET', `/projects/${projectId}/bgm/search?q=${encodeURIComponent(q)}&page=${page}`),
+  suggestBgm: (projectId: string) =>
+    request<{ keyword: string; hits: BgmHit[] }>('POST', `/projects/${projectId}/bgm/suggest`),
+  downloadBgm: (projectId: string, url: string, filename: string) =>
+    request<Project>('POST', `/projects/${projectId}/bgm/download`, { url, filename }),
 
   // 프로젝트 설정 (BGM 볼륨, 화면 비율, TTS 마스터 볼륨)
   updateSettings: (projectId: string, settings: Record<string, unknown>) =>
@@ -153,6 +176,6 @@ export const api = {
   photosExchangeCode: (code: string) => request<{ ok: boolean }>('POST', '/photos/exchange-code', { code }),
   photosCreateSession: () => request<PickerSession>('POST', '/photos/session'),
   photosPollSession: (sessionId: string) => request<PickerSession>('GET', `/photos/session/${sessionId}`),
-  photosImport: (projectId: string, sessionId: string) =>
-    request<PickerImportResult>('POST', `/photos/import/${projectId}`, { session_id: sessionId }),
+  photosImport: (projectId: string, sessionId: string, sortOrder: PhotosSortOrder = 'selected') =>
+    request<PickerImportResult>('POST', `/photos/import/${projectId}`, { session_id: sessionId, sort_order: sortOrder }),
 }

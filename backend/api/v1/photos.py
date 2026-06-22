@@ -91,6 +91,7 @@ def poll_picker_session(session_id: str):
 # ─── 선택 미디어 가져오기 (다운로드 + 슬라이드 생성) ──
 class ImportSessionRequest(BaseModel):
     session_id: str
+    sort_order: str = "selected"  # selected | oldest | newest | api
 
 
 def _sanitize(name: str) -> str:
@@ -146,7 +147,7 @@ def import_from_session(
 
     # 선택된 미디어 목록 조회
     try:
-        items = photos_manager.list_picked_items(req.session_id)
+        items = photos_manager.list_picked_items(req.session_id, req.sort_order)
     except Exception as e:
         logger.error(f"Failed to list picked items: {e}")
         raise HTTPException(status_code=500, detail=str(e))

@@ -4,6 +4,9 @@ DocuMotion - App Configuration
 """
 import os
 from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")
 
 # ─────────────────────────────────────────────
 # 경로 설정
@@ -21,6 +24,8 @@ DATABASE_URL     = f"sqlite:///{DATA_DIR}/docu_motion.db"
 TTS_SERVER_URL   = os.getenv("TTS_SERVER_URL", "http://localhost:8002")
 TTS_VOICE_NAME   = os.getenv("TTS_VOICE_NAME", "myvoice")
 YOUTUBE_TOKEN    = os.getenv("YOUTUBE_TOKEN_JSON", "")
+GOOGLE_API_KEY   = os.getenv("GOOGLE_API_KEY", "")
+JAMENDO_CLIENT_ID = os.getenv("JAMENDO_CLIENT_ID", "")
 DEBUG            = os.getenv("DEBUG", "false").lower() == "true"
 
 # ─────────────────────────────────────────────

@@ -109,12 +109,16 @@ def generate_auth_url(redirect_uri: str) -> str:
     auth_url, _ = flow.authorization_url(
         access_type='offline',
         include_granted_scopes='true',  # 기존 YouTube 권한 유지
+        prompt='consent',                # 항상 동의 화면 → refresh_token 강제 발급
     )
     return auth_url
 
 
 def exchange_code(code: str, redirect_uri: str) -> bool:
-    """Authorization code → token.json 저장."""
+    """Authorization code → token.json 저장.
+
+    새 응답에 refresh_token이 없으면 기존 token.json의 refresh_token을 보존.
+    """
     from google_auth_oauthlib.flow import Flow
     client_config = _load_client_config()
     if not client_config:
@@ -125,8 +129,21 @@ def exchange_code(code: str, redirect_uri: str) -> bool:
         redirect_uri=redirect_uri,
     )
     flow.fetch_token(code=code)
-    TOKEN_PATH.write_text(flow.credentials.to_json())
-    logger.info("Photos Picker: OAuth token saved")
+
+    new_data = json.loads(flow.credentials.to_json())
+    # refresh_token 보존: 새 토큰에 없으면 기존 token.json에서 가져오기
+    if not new_data.get("refresh_token") and TOKEN_PATH.exists():
+        try:
+            old_data = json.loads(TOKEN_PATH.read_text())
+            if old_data.get("refresh_token"):
+                new_data["refresh_token"] = old_data["refresh_token"]
+                logger.info("Photos Picker: preserved existing refresh_token")
+        except Exception:
+            pass
+
+    TOKEN_PATH.write_text(json.dumps(new_data))
+    has_refresh = "refresh_token" in new_data and new_data["refresh_token"]
+    logger.info(f"Photos Picker: OAuth token saved (refresh_token={'yes' if has_refresh else 'NO'})")
     return True
 
 
@@ -194,9 +211,15 @@ def poll_session(session_id: str) -> dict:
     }
 
 
-def list_picked_items(session_id: str) -> list[dict]:
+def list_picked_items(session_id: str, sort_order: str = "selected") -> list[dict]:
     """
     선택 완료된 세션에서 미디어 아이템 목록 조회.
+
+    sort_order:
+        - "selected"   : 사용자가 picker 상에서 선택한 순서 (item.createTime 오름차순)
+        - "oldest"     : 촬영 시각 오래된 순 (mediaFileMetadata.creationTime 오름차순)
+        - "newest"     : 촬영 시각 최신 순 (mediaFileMetadata.creationTime 내림차순)
+        - "api"        : Picker API 응답 순서 그대로 (기본 fallback)
     """
     headers = _get_headers()
     items = []
@@ -213,19 +236,32 @@ def list_picked_items(session_id: str) -> list[dict]:
 
         for item in data.get("mediaItems", []):
             media_file = item.get("mediaFile", {})
+            metadata = media_file.get("mediaFileMetadata", {}) or {}
             items.append({
                 "id": item.get("id", ""),
                 "baseUrl": media_file.get("baseUrl", ""),
                 "mimeType": media_file.get("mimeType", ""),
                 "filename": media_file.get("filename", ""),
                 "isVideo": media_file.get("mimeType", "").startswith("video/"),
+                # 정렬용 필드 (둘 다 RFC3339 ISO 문자열, 사전순 = 시간순)
+                "selectedTime": item.get("createTime", ""),         # picker 상에서 선택된 시각
+                "creationTime": metadata.get("creationTime", ""),   # 사진 원본 촬영 시각
             })
 
         page_token = data.get("nextPageToken")
         if not page_token:
             break
 
-    logger.info(f"Picker session {session_id[:12]}...: {len(items)} items selected")
+    # 정렬 적용 — 빈 문자열은 끝으로 보내기
+    if sort_order == "selected":
+        items.sort(key=lambda i: (i["selectedTime"] == "", i["selectedTime"]))
+    elif sort_order == "oldest":
+        items.sort(key=lambda i: (i["creationTime"] == "", i["creationTime"]))
+    elif sort_order == "newest":
+        items.sort(key=lambda i: (i["creationTime"] == "", i["creationTime"]), reverse=True)
+    # "api"는 정렬 안 함
+
+    logger.info(f"Picker session {session_id[:12]}...: {len(items)} items, sort={sort_order}")
     return items
 
 

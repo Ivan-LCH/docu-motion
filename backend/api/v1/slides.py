@@ -218,8 +218,6 @@ def save_slides(
     for s_data in slides:
         slide = db.query(Slide).filter(Slide.id == s_data.id, Slide.project_id == project_id).first()
         if slide:
-            # 디버그: 프론트에서 보낸 데이터 vs DB 기존 값 비교
-            logger.info(f"SaveSlide [{s_data.id[:8]}] frontend: type={s_data.slide_type!r} vid={s_data.video_filename!r} | db: type={slide.slide_type!r} vid={slide.video_filename!r}")
             slide.order_index    = s_data.order_index
             slide.text           = s_data.text
             slide.image_filename = s_data.image_filename
@@ -245,7 +243,9 @@ def save_slides(
             slide.transition     = getattr(s_data, 'transition', 'none')
             slide.tts_volume     = getattr(s_data, 'tts_volume', 1.0)
             slide.rotation       = getattr(s_data, 'rotation', 0)
-            logger.info(f"SaveSlide [{s_data.id[:8]}] RESULT: type={slide.slide_type!r} vid={slide.video_filename!r}")
+            slide.overlays       = getattr(s_data, 'overlays', '[]')
+            slide.image_fit      = getattr(s_data, 'image_fit', 'cover')
+            slide.ken_burns      = getattr(s_data, 'ken_burns', 0)
 
     # stage 계산
     all_slides = db.query(Slide).filter(Slide.project_id == project_id).all()

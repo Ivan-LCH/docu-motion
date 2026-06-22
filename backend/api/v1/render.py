@@ -78,5 +78,6 @@ def download_video(project_id: str, db: Session = Depends(get_db)):
     return FileResponse(
         path=str(video_path),
         media_type="video/mp4",
-        filename=f"{safe_name}.mp4"
+        filename=f"{safe_name}.mp4",
+        headers={"Cache-Control": "no-cache, must-revalidate"}
     )

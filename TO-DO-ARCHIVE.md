@@ -166,3 +166,43 @@
         . 현재 시작/종료 시간 수동 입력 방식의 불편함 개선
         . 영상 싱크에 맞게 직관적으로 조절하거나 타임라인에서 제어하는 방식 검토
         . 완료: SubtitleTimeline 드래그 컴포넌트 구현(블록 이동/좌우 리사이즈), 초 단위 숫자+range slider 병행 입력, 타임라인 클릭 시 비디오 시크 연동
+
+## 2026-06-23 (완료)
+
+──────────────────────────────────────────────────────────────────────────────
+6. 🎨 에디터 UI/UX 고도화 (Editor UI Overhaul) — 계속
+──────────────────────────────────────────────────────────────────────────────
+  - [C] 6-9. [Editor.tsx + API] 무료 BGM 라이브러리 연동
+        . Jamendo API 연동 (Creative Commons 무료 음악 대규모 DB)
+        . Gemini AI로 슬라이드 나레이션 텍스트 분석 → 음악 키워드 자동 추천 → Jamendo 검색
+        . UI: BGM 영역에 '무료 음악 검색' 버튼, 검색/AI추천/미리듣기/적용 팝업 모달 구현
+        . 완료: projects.py Jamendo 검색(/bgm/search) + Gemini 키워드 추천(/bgm/recommend) 엔드포인트, config.py GOOGLE_API_KEY/JAMENDO_CLIENT_ID, Editor.tsx BGM 검색 모달
+  - [C] 6-13. [Editor.tsx] 오버레이/회전 저장 및 미리보기 버그 수정
+        . 오버레이 설정 후 저장 버튼 없이 페이지 이동 시 유실 → 슬라이드 변경 시 자동 저장(debounce 2s) 추가
+        . 회전 적용 후 저장 안 됨 → 동일 자동 저장으로 해결
+        . 오버레이 편집 모달에서 회전 미적용 → canvas에 rotation 반영, 좌표계 일치
+        . 썸네일/전체화면 미리보기에도 rotation 미반영 → SidebarThumb·FullPreviewCanvas에 rotation 전달
+        . [근본원인] get_project 응답에서 rotation/overlays 필드 누락 → projects.py:114 dict에 두 필드 추가
+        . slidesRef 패턴 도입(stale closure 방지), updateSlide를 Partial<Slide> delta 방식으로 변경
+  - [C] 6-14. [photos_manager.py + Editor.tsx] 구글 포토 가져오기 정렬 옵션 추가
+        . 현재: Picker API 반환 순서 그대로 import (정렬 보장 X)
+        . 개선: 가져오기 UI에 정렬 드롭다운 추가 — selected/oldest/newest/api
+          - "선택 순서" (item.createTime 오름차순) [기본값]
+          - "촬영 오래된 순" (mediaFileMetadata.creationTime 오름차순)
+          - "촬영 최신 순" (mediaFileMetadata.creationTime 내림차순)
+          - "기본 (API 응답 순서)" — 정렬 없음
+        . 완료: list_picked_items(session_id, sort_order), photos.py ImportSessionRequest.sort_order, Editor.tsx GooglePhotosModal 정렬 select
+
+──────────────────────────────────────────────────────────────────────────────
+7. ✨ 추가 기능 (보너스 구현)
+──────────────────────────────────────────────────────────────────────────────
+  - [C] 6-15. [projects.py + Editor.tsx + Dashboard.tsx] 프로젝트 이름 변경 기능
+        . 프로젝트 생성 후 이름 수정 불가 → 인라인 rename 기능 추가
+        . 완료: PATCH /{project_id}/rename 엔드포인트, Dashboard/Editor에서 이름 편집 UI
+  - [C] 6-16. [models.py + renderer.py + Editor.tsx] 인트로 타이틀 오버레이
+        . 영상 시작 3초간 화면 중앙에 프로젝트 타이틀 페이드 인/아웃 (빈 문자열이면 미적용)
+        . 완료: Project.title_text 컬럼(비우면 프로젝트명 사용), renderer.py title_text 파라미터화·페이드 클립 렌더링, settings 적용
+  - [C] 6-17. [models.py + renderer.py + Editor.tsx] 이미지 맞춤 모드 + Ken Burns 강도 제어
+        . image_fit: 'cover'(기본) | 'fit' — fit 모드는 이미지 상단 정렬 + 하단 18% 자막 영역 확보(이미지 잘림 없음)
+        . ken_burns: 슬라이드별 줌 강도 0~100 (0=정지, 100=±13% 줌), 짝수 슬라이드 줌인·홀수 줌아웃 교차 적용
+        . 완료: Slide.image_fit/ken_burns 컬럼, renderer.py contain 스케일링 + 강도 기반 줌, schema/Editor UI 컨트롤

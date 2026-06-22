@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { api, Slide, ProjectDetail } from '../api/client'
+import { api, Slide, ProjectDetail, BgmHit, PhotosSortOrder } from '../api/client'
 import { useToast } from '../components/ToastContext'
 import GoogleAuthSection, { extractCodeFromUrl } from '../components/GoogleAuthSection'
 
@@ -149,7 +149,11 @@ function GooglePhotosModal({ projectId, onClose, onImported }: {
   const [sessionId, setSessionId] = useState<string>('')
   const [codeInput, setCodeInput] = useState('')
   const [exchanging, setExchanging] = useState(false)
+  const [sortOrder, setSortOrder] = useState<PhotosSortOrder>('selected')
+  const sortOrderRef = useRef<PhotosSortOrder>('selected')
+  useEffect(() => { sortOrderRef.current = sortOrder }, [sortOrder])
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const importingRef = useRef(false)
 
   // 인증 확인
   useEffect(() => {
@@ -228,15 +232,18 @@ function GooglePhotosModal({ projectId, onClose, onImported }: {
   }
 
   const doImport = async (sid: string) => {
+    if (importingRef.current) return
+    importingRef.current = true
     setPhase('importing')
     try {
-      const res = await api.photosImport(projectId, sid)
+      const res = await api.photosImport(projectId, sid, sortOrderRef.current)
       toast(`${res.count}개 미디어 가져오기 완료!`, 'success')
       setPhase('done')
       onImported()
       onClose()
     } catch (e: unknown) {
       toast(e instanceof Error ? e.message : '가져오기 실패', 'error')
+      importingRef.current = false
       setPhase('idle')
     }
   }
@@ -296,10 +303,23 @@ function GooglePhotosModal({ projectId, onClose, onImported }: {
           <div style={{ textAlign: 'center', padding: '1.5rem 1rem' }}>
             {phase === 'idle' && (
               <>
-                <p style={{ color: 'var(--text-secondary)', marginBottom: '1.2rem', fontSize: '0.9rem', lineHeight: 1.6 }}>
+                <p style={{ color: 'var(--text-secondary)', marginBottom: '1rem', fontSize: '0.9rem', lineHeight: 1.6 }}>
                   Google Photos Picker가 새 창에서 열립니다.<br />
                   원하는 사진/동영상을 선택하면 자동으로 가져옵니다.
                 </p>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', marginBottom: '1.2rem', textAlign: 'left', maxWidth: 320, marginLeft: 'auto', marginRight: 'auto' }}>
+                  <label style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', fontWeight: 600 }}>정렬 순서</label>
+                  <select
+                    value={sortOrder}
+                    onChange={e => setSortOrder(e.target.value as PhotosSortOrder)}
+                    style={{ fontSize: '0.85rem', padding: '0.5rem 0.7rem', background: 'var(--bg-card)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)' }}
+                  >
+                    <option value="selected">선택 순서 (Picker 클릭 순)</option>
+                    <option value="oldest">촬영 오래된 순</option>
+                    <option value="newest">촬영 최신 순</option>
+                    <option value="api">기본 (API 응답 순서)</option>
+                  </select>
+                </div>
                 <button className="btn btn-primary" onClick={handleOpenPicker} style={{ fontSize: '1rem', padding: '0.7rem 2rem' }}>
                   사진 선택하기
                 </button>
@@ -399,11 +419,222 @@ function JsonModal({ slides, onApply, onClose }: {
   )
 }
 
+// ─── Project Title Inline Editor ─────────────
+function ProjectTitleEditor({ name, onSave }: { name: string; onSave: (name: string) => Promise<void> }) {
+  const [editing, setEditing] = useState(false)
+  const [value, setValue] = useState(name)
+  const [saving, setSaving] = useState(false)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => { setValue(name) }, [name])
+  useEffect(() => { if (editing) inputRef.current?.select() }, [editing])
+
+  const commit = async () => {
+    const trimmed = value.trim()
+    if (!trimmed || trimmed === name) { setEditing(false); setValue(name); return }
+    setSaving(true)
+    await onSave(trimmed)
+    setSaving(false)
+    setEditing(false)
+  }
+
+  if (editing) {
+    return (
+      <div style={{ display: 'flex', gap: '0.3rem', alignItems: 'center' }}>
+        <input
+          ref={inputRef}
+          className="input"
+          value={value}
+          onChange={e => setValue(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') { setEditing(false); setValue(name) } }}
+          style={{ flex: 1, fontSize: '0.82rem', padding: '4px 8px' }}
+          disabled={saving}
+        />
+        <button className="btn btn-primary" onClick={commit} disabled={saving}
+          style={{ fontSize: '0.75rem', padding: '4px 8px', flexShrink: 0 }}>
+          {saving ? '...' : '✓'}
+        </button>
+        <button className="btn btn-ghost" onClick={() => { setEditing(false); setValue(name) }}
+          style={{ fontSize: '0.75rem', padding: '4px 6px', flexShrink: 0 }}>✕</button>
+      </div>
+    )
+  }
+
+  return (
+    <div onClick={() => setEditing(true)} title="클릭해서 제목 편집"
+      style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer', padding: '4px 6px', borderRadius: 'var(--radius-sm)', border: '1px solid transparent' }}
+      onMouseEnter={e => (e.currentTarget.style.borderColor = 'var(--border)')}
+      onMouseLeave={e => (e.currentTarget.style.borderColor = 'transparent')}
+    >
+      <span style={{ fontSize: '0.82rem', fontWeight: 600, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</span>
+      <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', flexShrink: 0 }}>✏️</span>
+    </div>
+  )
+}
+
+// ─── BGM Search Modal (6-9) ──────────────────
+function BgmSearchModal({ projectId, onClose, onApplied }: {
+  projectId: string
+  onClose: () => void
+  onApplied: (project: ProjectDetail) => void
+}) {
+  const { toast } = useToast()
+  const [query, setQuery] = useState('')
+  const [hits, setHits] = useState<BgmHit[]>([])
+  const [total, setTotal] = useState(0)
+  const [page, setPage] = useState(1)
+  const [loading, setLoading] = useState(false)
+  const [suggesting, setSuggesting] = useState(false)
+  const [suggestedKeyword, setSuggestedKeyword] = useState('')
+  const [playingId, setPlayingId] = useState<number | null>(null)
+  const [applyingId, setApplyingId] = useState<number | null>(null)
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+
+  const PER_PAGE = 15
+
+  const doSearch = async (q: string, p = 1) => {
+    if (!q.trim()) return
+    setLoading(true)
+    try {
+      const res = await api.searchBgm(projectId, q.trim(), p)
+      setHits(p === 1 ? res.hits : prev => [...prev, ...res.hits])
+      setTotal(res.total)
+      setPage(p)
+    } catch { toast('검색 실패', 'error') }
+    finally { setLoading(false) }
+  }
+
+  const handleSuggest = async () => {
+    setSuggesting(true)
+    try {
+      const res = await api.suggestBgm(projectId)
+      setSuggestedKeyword(res.keyword)
+      setQuery(res.keyword)
+      setHits(res.hits)
+      setTotal(res.hits.length)
+      setPage(1)
+      toast(`AI 추천: "${res.keyword}"`, 'success')
+    } catch { toast('AI 추천 실패', 'error') }
+    finally { setSuggesting(false) }
+  }
+
+  const togglePlay = (hit: BgmHit) => {
+    if (playingId === hit.id) {
+      audioRef.current?.pause()
+      setPlayingId(null)
+    } else {
+      if (audioRef.current) { audioRef.current.pause(); audioRef.current.src = hit.preview_url }
+      else { audioRef.current = new Audio(hit.preview_url) }
+      audioRef.current.src = hit.preview_url
+      audioRef.current.play().catch(() => {})
+      audioRef.current.onended = () => setPlayingId(null)
+      setPlayingId(hit.id)
+    }
+  }
+
+  const handleApply = async (hit: BgmHit) => {
+    setApplyingId(hit.id)
+    try {
+      const updated = await api.downloadBgm(projectId, hit.preview_url, `${hit.title}.mp3`)
+      onApplied(updated as unknown as ProjectDetail)
+      toast(`"${hit.title}" BGM 적용 완료`, 'success')
+      audioRef.current?.pause()
+      onClose()
+    } catch { toast('BGM 적용 실패', 'error') }
+    finally { setApplyingId(null) }
+  }
+
+  const formatDuration = (sec: number) => `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" style={{ maxWidth: 580, maxHeight: '88vh', display: 'flex', flexDirection: 'column' }} onClick={e => e.stopPropagation()}>
+        <h2 style={{ margin: '0 0 1rem', fontSize: '1.1rem' }}>🎵 무료 음악 검색</h2>
+
+        {/* 검색창 */}
+        <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.5rem' }}>
+          <input
+            className="input" placeholder="예: calm, upbeat travel, cinematic..."
+            value={query} onChange={e => setQuery(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && doSearch(query)}
+            style={{ flex: 1 }}
+          />
+          <button className="btn btn-primary" onClick={() => doSearch(query)} disabled={loading || !query.trim()}>
+            {loading ? '...' : '검색'}
+          </button>
+          <button className="btn" onClick={handleSuggest} disabled={suggesting}
+            style={{ background: 'rgba(168,85,247,0.15)', color: '#a855f7', border: '1px solid rgba(168,85,247,0.3)', whiteSpace: 'nowrap' }}>
+            {suggesting ? '분석 중...' : '✨ AI 추천'}
+          </button>
+        </div>
+        {suggestedKeyword && (
+          <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', margin: '0 0 0.75rem' }}>
+            AI 추천 키워드: <strong style={{ color: '#a855f7' }}>{suggestedKeyword}</strong>
+          </p>
+        )}
+
+        {/* 결과 목록 */}
+        <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+          {hits.length === 0 && !loading && (
+            <p style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '2rem 0', fontSize: '0.85rem' }}>
+              검색어를 입력하거나 ✨ AI 추천을 눌러보세요
+            </p>
+          )}
+          {hits.map(hit => (
+            <div key={hit.id} style={{
+              display: 'flex', alignItems: 'center', gap: '0.6rem',
+              background: 'var(--bg-card)', border: '1px solid var(--border)',
+              borderRadius: 'var(--radius-sm)', padding: '0.5rem 0.7rem',
+            }}>
+              <button
+                onClick={() => togglePlay(hit)}
+                style={{
+                  width: 32, height: 32, borderRadius: '50%', border: 'none', cursor: 'pointer', flexShrink: 0,
+                  background: playingId === hit.id ? 'rgba(34,197,94,0.2)' : 'rgba(59,130,246,0.15)',
+                  color: playingId === hit.id ? '#22c55e' : '#3b82f6', fontSize: '0.85rem',
+                }}
+              >
+                {playingId === hit.id ? '⏸' : '▶'}
+              </button>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: '0.83rem', fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {hit.title}
+                </div>
+                <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {hit.tags}
+                </div>
+              </div>
+              <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', flexShrink: 0 }}>{formatDuration(hit.duration)}</span>
+              <button
+                className="btn btn-primary" onClick={() => handleApply(hit)}
+                disabled={applyingId === hit.id}
+                style={{ fontSize: '0.75rem', padding: '0.3rem 0.6rem', flexShrink: 0 }}
+              >
+                {applyingId === hit.id ? '적용 중...' : '사용'}
+              </button>
+            </div>
+          ))}
+          {hits.length > 0 && hits.length < total && (
+            <button className="btn btn-ghost" onClick={() => doSearch(query, page + 1)} disabled={loading}
+              style={{ marginTop: '0.5rem' }}>
+              {loading ? '로딩 중...' : `더 보기 (${hits.length}/${total})`}
+            </button>
+          )}
+        </div>
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '1rem' }}>
+          <button className="btn btn-ghost" onClick={() => { audioRef.current?.pause(); onClose() }}>닫기</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── Global Settings Modal (6-10) ────────────
 function GlobalSettingsModal({ project, onClose, onSave }: {
   project: ProjectDetail
   onClose: () => void
-  onSave: (settings: Record<string, unknown>) => Promise<void>
+  onSave: (settings: Record<string, unknown>, applyTransitionNow: boolean, defaultImageFit?: string, applyImageFitNow?: boolean, defaultKenBurns?: number, applyKenBurnsNow?: boolean) => Promise<void>
 }) {
   const [defaultTransition, setDefaultTransition] = useState(project.default_transition || 'none')
   const [defaultSlideDuration, setDefaultSlideDuration] = useState(project.default_slide_duration || 3.0)
@@ -411,7 +642,13 @@ function GlobalSettingsModal({ project, onClose, onSave }: {
   const [subtitleFontColor, setSubtitleFontColor] = useState(project.subtitle_font_color || 'white')
   const [watermarkText, setWatermarkText] = useState(project.watermark_text || '')
   const [watermarkOpacity, setWatermarkOpacity] = useState(project.watermark_opacity ?? 0.3)
+  const [titleText, setTitleText] = useState(project.title_text || '')
   const [saving, setSaving] = useState(false)
+  const [applyTransition, setApplyTransition] = useState(true)
+  const [defaultImageFit, setDefaultImageFit] = useState<string>('cover')
+  const [applyImageFit, setApplyImageFit] = useState(false)
+  const [defaultKenBurns, setDefaultKenBurns] = useState<number>(0)
+  const [applyKenBurns, setApplyKenBurns] = useState(false)
 
   const FONT_COLORS = [
     { value: 'white', label: '흰색', color: '#fff' },
@@ -431,7 +668,8 @@ function GlobalSettingsModal({ project, onClose, onSave }: {
       subtitle_font_color: subtitleFontColor,
       watermark_text: watermarkText,
       watermark_opacity: watermarkOpacity,
-    })
+      title_text: titleText,
+    }, applyTransition, defaultImageFit, applyImageFit, defaultKenBurns, applyKenBurns)
     setSaving(false)
   }
 
@@ -443,17 +681,18 @@ function GlobalSettingsModal({ project, onClose, onSave }: {
         {/* ── Default Transition ── */}
         <div style={{ marginBottom: '1rem' }}>
           <label className="label">기본 장면 전환 효과</label>
-          <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', margin: '0 0 0.4rem' }}>
-            새 슬라이드에 적용될 기본 전환 효과 (개별 설정 우선)
-          </p>
           <select className="input" value={defaultTransition} onChange={e => setDefaultTransition(e.target.value)}
-            style={{ width: '100%' }}>
+            style={{ width: '100%', marginBottom: '0.5rem' }}>
             <option value="none">없음 (Hard Cut)</option>
             <option value="crossfade">크로스페이드</option>
             <option value="fade_black">페이드 투 블랙</option>
             <option value="slide_left">슬라이드 왼쪽</option>
             <option value="slide_right">슬라이드 오른쪽</option>
           </select>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.82rem', color: 'var(--text-muted)', cursor: 'pointer' }}>
+            <input type="checkbox" checked={applyTransition} onChange={e => setApplyTransition(e.target.checked)} />
+            저장 시 기존 슬라이드에 즉시 일괄 적용
+          </label>
         </div>
 
         {/* ── Default Slide Duration ── */}
@@ -511,6 +750,50 @@ function GlobalSettingsModal({ project, onClose, onSave }: {
           </div>
         </div>
 
+        {/* ── Image Fit ── */}
+        <div style={{ marginBottom: '1rem' }}>
+          <label className="label">이미지 표시 방식 일괄 적용</label>
+          <select className="input" value={defaultImageFit} onChange={e => setDefaultImageFit(e.target.value)}
+            style={{ width: '100%', marginBottom: '0.5rem' }}>
+            <option value="cover">전체화면 꽉 채우기 (Cover)</option>
+            <option value="fit">위쪽 배치 + 하단 자막 영역 (Fit)</option>
+          </select>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.82rem', color: 'var(--text-muted)', cursor: 'pointer' }}>
+            <input type="checkbox" checked={applyImageFit} onChange={e => setApplyImageFit(e.target.checked)} />
+            저장 시 모든 이미지 슬라이드에 즉시 일괄 적용
+          </label>
+        </div>
+
+        {/* ── Ken Burns 줌 효과 일괄 적용 ── */}
+        <div style={{ marginBottom: '1rem' }}>
+          <label className="label">줌 효과 (Ken Burns) 일괄 적용</label>
+          <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', margin: '0 0 0.4rem' }}>
+            이미지에 천천히 줌인/줌아웃 효과를 적용 (슬라이드별로 번갈아 가며)
+          </p>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
+            <input type="range" min={0} max={100} step={5} value={defaultKenBurns}
+              style={{ flex: 1, accentColor: defaultKenBurns > 0 ? '#818cf8' : undefined }}
+              onChange={e => setDefaultKenBurns(parseInt(e.target.value))} />
+            <span style={{ fontSize: '0.85rem', fontWeight: 600, width: 56, textAlign: 'right', color: defaultKenBurns > 0 ? '#818cf8' : 'var(--text-muted)' }}>
+              {defaultKenBurns === 0 ? '꺼짐' : `${defaultKenBurns}%`}
+            </span>
+          </div>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.82rem', color: 'var(--text-muted)', cursor: 'pointer' }}>
+            <input type="checkbox" checked={applyKenBurns} onChange={e => setApplyKenBurns(e.target.checked)} />
+            저장 시 모든 이미지 슬라이드에 즉시 일괄 적용
+          </label>
+        </div>
+
+        {/* ── Intro Title ── */}
+        <div style={{ marginBottom: '1rem' }}>
+          <label className="label">영상 제목 (인트로)</label>
+          <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', margin: '0 0 0.4rem' }}>
+            영상 시작 3초간 화면 중앙에 제목이 나타났다 사라집니다. 비워두면 프로젝트 이름이 사용됩니다.
+          </p>
+          <input className="input" value={titleText} placeholder={project.name || '제목 (비우면 프로젝트 이름)'}
+            onChange={e => setTitleText(e.target.value)} style={{ width: '100%' }} />
+        </div>
+
         {/* ── Watermark ── */}
         <div style={{ marginBottom: '1rem' }}>
           <label className="label">워터마크</label>
@@ -534,6 +817,496 @@ function GlobalSettingsModal({ project, onClose, onSave }: {
           </button>
         </div>
       </div>
+    </div>
+  )
+}
+
+// ─── Overlay Types ───────────────────────────
+type OverlayType = 'mosaic' | 'blur' | 'emoji' | 'text'
+interface Overlay {
+  id: string
+  type: OverlayType
+  x: number; y: number; w: number; h: number
+  content?: string  // emoji/text
+  color?: string    // text color
+  fontSize?: number // text/emoji size as fraction of image height (e.g., 0.05 = 5%)
+}
+function parseOverlays(raw: string): Overlay[] {
+  try { return JSON.parse(raw || '[]') } catch { return [] }
+}
+function serializeOverlays(ovs: Overlay[]): string { return JSON.stringify(ovs) }
+
+// ─── Full Preview Canvas (전체화면 미리보기) ──
+function FullPreviewCanvas({ url, overlays, rotation = 0 }: { url: string; overlays: Overlay[]; rotation?: number }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  useOverlayCanvas(canvasRef, url, overlays, false, rotation, 1600)
+  return (
+    <canvas
+      ref={canvasRef}
+      style={{ maxWidth: '100%', maxHeight: 'calc(100vh - 6rem)', objectFit: 'contain', borderRadius: 'var(--radius-md)', boxShadow: '0 10px 25px rgba(0,0,0,0.5)', display: 'block' }}
+    />
+  )
+}
+
+// ─── Sidebar Thumbnail Canvas ─────────────────
+function SidebarThumb({ url, overlays, rotation = 0 }: { url: string; overlays: Overlay[]; rotation?: number }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  useOverlayCanvas(canvasRef, url, overlays, false, rotation, 240)
+  return <canvas ref={canvasRef} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+}
+
+// ─── Overlay Canvas Renderer ─────────────────
+function applyOverlayToCtx(
+  ctx: CanvasRenderingContext2D,
+  img: HTMLImageElement,
+  ov: Overlay,
+  W: number, H: number
+) {
+  const x = ov.x * W, y = ov.y * H, w = ov.w * W, h = ov.h * H
+  if (w <= 0 || h <= 0) return
+  if (ov.type === 'mosaic') {
+    const block = Math.max(5, Math.floor(Math.min(w, h) / 10))
+    for (let bx = x; bx < x + w; bx += block) {
+      for (let by = y; by < y + h; by += block) {
+        const d = ctx.getImageData(Math.floor(bx + block / 2), Math.floor(by + block / 2), 1, 1).data
+        ctx.fillStyle = `rgb(${d[0]},${d[1]},${d[2]})`
+        ctx.fillRect(bx, by, Math.min(block, x + w - bx), Math.min(block, y + h - by))
+      }
+    }
+  } else if (ov.type === 'blur') {
+    // 캔버스(스케일 적용된)에서 직접 영역을 추출 → blur 적용 → 같은 위치에 덮어쓰기
+    const blurPx = Math.max(6, Math.floor(Math.min(w, h) / 6))
+    const sw = Math.ceil(w), sh = Math.ceil(h)
+    const tmp = document.createElement('canvas')
+    tmp.width = sw; tmp.height = sh
+    const tctx = tmp.getContext('2d')!
+    tctx.drawImage(ctx.canvas, x, y, w, h, 0, 0, sw, sh)
+    ctx.save()
+    ctx.filter = `blur(${blurPx}px)`
+    ctx.drawImage(tmp, x, y, w, h)
+    ctx.restore()
+  } else if (ov.type === 'emoji') {
+    const fontPx = Math.max(12, (ov.fontSize ?? 0.08) * H)
+    ctx.font = `${fontPx}px serif`
+    ctx.textBaseline = 'middle'
+    ctx.textAlign = 'center'
+    ctx.fillText(ov.content || '?', x + w / 2, y + h / 2)
+    ctx.textAlign = 'left'
+  } else if (ov.type === 'text') {
+    const fontPx = Math.max(10, (ov.fontSize ?? 0.05) * H)
+    ctx.font = `bold ${fontPx}px sans-serif`
+    ctx.fillStyle = ov.color || 'white'
+    ctx.shadowColor = 'rgba(0,0,0,0.85)'
+    ctx.shadowBlur = 4
+    ctx.textBaseline = 'middle'
+    ctx.textAlign = 'center'
+    ctx.fillText(ov.content || '', x + w / 2, y + h / 2)
+    ctx.shadowBlur = 0
+    ctx.textAlign = 'left'
+  }
+}
+
+function useOverlayCanvas(
+  canvasRef: React.RefObject<HTMLCanvasElement>,
+  previewSrc: string,
+  overlays: Overlay[],
+  isVideo: boolean,
+  rotation: number = 0,
+  maxWidth: number = 1280  // 캔버스 백버퍼 최대 너비 — 메모리 절감
+) {
+  const imgRef = useRef<HTMLImageElement | null>(null)
+  const drawRef = useRef<() => void>(() => {})
+
+  drawRef.current = () => {
+    const canvas = canvasRef.current
+    const img = imgRef.current
+    if (!canvas || !img || isVideo) return
+    const Wn = img.naturalWidth, Hn = img.naturalHeight
+    // 회전 후 표시 너비 기준으로 maxWidth 적용
+    const swapped = rotation === 90 || rotation === 270
+    const dispW = swapped ? Hn : Wn
+    const scale = dispW > maxWidth ? maxWidth / dispW : 1
+    const W = Math.round(Wn * scale), H = Math.round(Hn * scale)
+    const rad = (rotation * Math.PI) / 180
+    canvas.width  = swapped ? H : W
+    canvas.height = swapped ? W : H
+    const cW = canvas.width, cH = canvas.height
+    const ctx = canvas.getContext('2d')!
+    ctx.save()
+    ctx.translate(cW / 2, cH / 2)
+    ctx.rotate(rad)
+    ctx.drawImage(img, -W / 2, -H / 2, W, H)
+    ctx.restore()
+    overlays.forEach(ov => applyOverlayToCtx(ctx, img, ov, cW, cH))
+  }
+
+  useEffect(() => {
+    if (!previewSrc || isVideo) return
+    const img = new Image()
+    let cancelled = false
+    img.onload = () => { if (!cancelled) { imgRef.current = img; drawRef.current() } }
+    img.src = previewSrc
+    return () => {
+      cancelled = true
+      img.onload = null
+      img.src = ''  // 디코딩된 이미지 데이터 해제 힌트
+      imgRef.current = null
+      // 캔버스 백버퍼 비우기
+      const canvas = canvasRef.current
+      if (canvas) { canvas.width = 0; canvas.height = 0 }
+    }
+  }, [previewSrc, isVideo])
+
+  useEffect(() => { drawRef.current() }, [overlays, rotation])
+}
+
+// ─── Overlay Modal ───────────────────────────
+function OverlayModal({ slide, projectId, overlays, onClose, onChange, rotation = 0 }: {
+  slide: Slide
+  projectId: string | undefined
+  overlays: Overlay[]
+  onClose: () => void
+  onChange: (ovs: Overlay[]) => void
+  rotation?: number
+}) {
+  const previewSrc = slide.image_filename ? `/api/v1/projects/${projectId}/assets/${slide.image_filename}` : ''
+
+  return (
+    <div
+      style={{
+        position: 'fixed', inset: 0, zIndex: 9000,
+        background: 'rgba(0,0,0,0.85)', display: 'flex', flexDirection: 'column',
+      }}
+      onClick={onClose}
+    >
+      <div
+        style={{ display: 'flex', flex: 1, overflow: 'hidden' }}
+        onClick={e => e.stopPropagation()}
+      >
+        {/* 좌측: 도구 패널 */}
+        <div style={{
+          width: 200, flexShrink: 0, background: 'var(--bg-secondary)',
+          borderRight: '1px solid var(--border)', padding: '1.2rem',
+          display: 'flex', flexDirection: 'column', gap: '0.75rem', overflowY: 'auto',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <h3 style={{ margin: 0, fontSize: '1rem' }}>🎨 오버레이 편집</h3>
+            <button onClick={onClose}
+              style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '1.1rem' }}>✕</button>
+          </div>
+
+          <OverlayToolPanel overlays={overlays} onChange={onChange} />
+        </div>
+
+        {/* 우측: 캔버스 (슬라이드 이미지 + 드래그) */}
+        <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0.75rem', overflow: 'hidden' }}>
+          <div style={{ maxWidth: '100%', maxHeight: '100%', width: '100%' }}>
+            <OverlayEditor
+              overlays={overlays}
+              isVideo={slide.slide_type === 'video'}
+              previewSrc={previewSrc}
+              onChange={onChange}
+              rotation={rotation}
+              large
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* 하단 바 */}
+      <div style={{
+        background: 'var(--bg-secondary)', borderTop: '1px solid var(--border)',
+        padding: '0.75rem 1.5rem', display: 'flex', alignItems: 'center', gap: '1rem',
+      }}
+        onClick={e => e.stopPropagation()}
+      >
+        <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+          오버레이 {overlays.length}개 · 저장은 슬라이드 저장 시 자동 적용
+        </span>
+        <div style={{ flex: 1 }} />
+        {overlays.length > 0 && (
+          <button onClick={() => onChange([])}
+            style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '0.4rem 0.9rem', cursor: 'pointer', color: 'var(--text-muted)', fontSize: '0.82rem' }}>
+            전체 삭제
+          </button>
+        )}
+        <button className="btn btn-primary" onClick={onClose} style={{ padding: '0.4rem 1.2rem' }}>완료</button>
+      </div>
+    </div>
+  )
+}
+
+// ─── Overlay Tool Panel (좌측 패널용) ─────────
+function OverlayToolPanel({ overlays, onChange }: { overlays: Overlay[]; onChange: (ovs: Overlay[]) => void }) {
+  const TOOL_LABELS: Record<OverlayType, string> = {
+    mosaic: '🔲 모자이크', blur: '🌫️ 블러', emoji: '😀 이모지', text: '🔤 텍스트',
+  }
+  const TOOL_DESC: Record<OverlayType, string> = {
+    mosaic: '드래그해서 영역 선택', blur: '드래그해서 영역 선택',
+    emoji: '캔버스 클릭 후 입력', text: '캔버스 클릭 후 입력',
+  }
+
+  return (
+    <>
+      <div>
+        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.5rem', fontWeight: 600 }}>도구 선택 후 오른쪽 이미지에서 작업하세요</div>
+        <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', background: 'rgba(99,102,241,0.08)', borderRadius: 'var(--radius-sm)', padding: '0.4rem 0.6rem', lineHeight: 1.6 }}>
+          <b>모자이크·블러</b>: 드래그로 영역 박스<br/>
+          <b>이모지·텍스트</b>: 클릭 → 입력창 작성
+        </div>
+      </div>
+
+      {/* 오버레이 목록 */}
+      {overlays.length > 0 && (
+        <div>
+          <div style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.4rem' }}>적용된 오버레이</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
+            {overlays.map((ov) => (
+              <div key={ov.id} style={{
+                display: 'flex', alignItems: 'center', gap: '0.4rem',
+                background: 'var(--bg-card)', border: '1px solid var(--border)',
+                borderRadius: 'var(--radius-sm)', padding: '0.35rem 0.6rem', fontSize: '0.78rem',
+              }}>
+                <span>{TOOL_LABELS[ov.type]}</span>
+                {ov.content && <span style={{ color: 'var(--text-muted)', fontSize: '0.7rem' }}>"{ov.content}"</span>}
+                <span style={{ color: 'var(--text-muted)', fontSize: '0.68rem', marginLeft: 'auto' }}>
+                  {Math.round(ov.x*100)},{Math.round(ov.y*100)}%
+                </span>
+                <button onClick={() => onChange(overlays.filter(o => o.id !== ov.id))}
+                  style={{ background: 'none', border: 'none', color: '#f87171', cursor: 'pointer', padding: '0 2px', fontSize: '0.8rem' }}>✕</button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {overlays.length === 0 && (
+        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textAlign: 'center', padding: '1rem 0' }}>
+          아직 오버레이가 없습니다.<br/>오른쪽 이미지에서 시작하세요.
+        </div>
+      )}
+    </>
+  )
+}
+
+// ─── Overlay Editor (캔버스 드로잉) ──────────
+function OverlayEditor({ overlays, onChange, previewSrc, isVideo, large, rotation = 0 }: {
+  overlays: Overlay[]
+  onChange: (ovs: Overlay[]) => void
+  previewSrc: string
+  isVideo?: boolean
+  large?: boolean
+  rotation?: number
+}) {
+  const [tool, setTool] = useState<OverlayType>('mosaic')
+  const [drawing, setDrawing] = useState<{ x: number; y: number; w: number; h: number } | null>(null)
+  const [dragStart, setDragStart] = useState<{ x: number; y: number } | null>(null)
+  const [pendingPlace, setPendingPlace] = useState<{ x: number; y: number } | null>(null)
+  const [inputVal, setInputVal] = useState('')
+  const [textColor, setTextColor] = useState('white')
+  const [textSize, setTextSize] = useState(0.05)  // text/emoji fontSize as fraction of image height
+  const containerRef = useRef<HTMLDivElement>(null)
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  useOverlayCanvas(canvasRef, previewSrc, overlays, !!isVideo, rotation, 1280)
+
+  const getRelFromClient = (clientX: number, clientY: number) => {
+    const rect = containerRef.current!.getBoundingClientRect()
+    return {
+      x: Math.max(0, Math.min(1, (clientX - rect.left) / rect.width)),
+      y: Math.max(0, Math.min(1, (clientY - rect.top) / rect.height)),
+    }
+  }
+
+  const getRelPos = (e: React.MouseEvent) => getRelFromClient(e.clientX, e.clientY)
+
+  // ── 마우스 이벤트 (데스크톱) ──
+  const handleMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault()
+    const pos = getRelPos(e)
+    if (tool === 'emoji' || tool === 'text') {
+      setPendingPlace(pos); setInputVal('')
+    } else {
+      setDragStart(pos)
+      setDrawing({ x: pos.x, y: pos.y, w: 0, h: 0 })
+    }
+  }
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+    if (!dragStart) return
+    const pos = getRelPos(e)
+    setDrawing({ x: Math.min(dragStart.x, pos.x), y: Math.min(dragStart.y, pos.y), w: Math.abs(pos.x - dragStart.x), h: Math.abs(pos.y - dragStart.y) })
+  }
+
+  const handleMouseUp = (e: React.MouseEvent) => {
+    if (!drawing || !dragStart) return
+    const pos = getRelPos(e)
+    const w = Math.abs(pos.x - dragStart.x), h = Math.abs(pos.y - dragStart.y)
+    if (w > 0.01 && h > 0.01)
+      onChange([...overlays, { id: Math.random().toString(36).slice(2), type: tool, x: Math.min(dragStart.x, pos.x), y: Math.min(dragStart.y, pos.y), w, h }])
+    setDragStart(null); setDrawing(null)
+  }
+
+  // ── 터치 이벤트 (모바일 — 손가락 드래그) ──
+  const handleTouchStart = (e: React.TouchEvent) => {
+    e.preventDefault()
+    const t = e.touches[0]
+    const pos = getRelFromClient(t.clientX, t.clientY)
+    if (tool === 'emoji' || tool === 'text') {
+      setPendingPlace(pos); setInputVal('')
+    } else {
+      setDragStart(pos)
+      setDrawing({ x: pos.x, y: pos.y, w: 0, h: 0 })
+    }
+  }
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    e.preventDefault()
+    if (!dragStart) return
+    const t = e.touches[0]
+    const pos = getRelFromClient(t.clientX, t.clientY)
+    setDrawing({ x: Math.min(dragStart.x, pos.x), y: Math.min(dragStart.y, pos.y), w: Math.abs(pos.x - dragStart.x), h: Math.abs(pos.y - dragStart.y) })
+  }
+
+  const handleTouchEnd = (e: React.TouchEvent) => {
+    e.preventDefault()
+    if (!drawing || !dragStart) return
+    const t = e.changedTouches[0]
+    const pos = getRelFromClient(t.clientX, t.clientY)
+    const w = Math.abs(pos.x - dragStart.x), h = Math.abs(pos.y - dragStart.y)
+    if (w > 0.02 && h > 0.02)
+      onChange([...overlays, { id: Math.random().toString(36).slice(2), type: tool, x: Math.min(dragStart.x, pos.x), y: Math.min(dragStart.y, pos.y), w, h }])
+    setDragStart(null); setDrawing(null)
+  }
+
+  const commitPlaced = () => {
+    if (!pendingPlace || !inputVal.trim()) { setPendingPlace(null); return }
+    // 박스는 텍스트의 위치 앵커로 사용 (가로 중앙 정렬). 텍스트 크기는 fontSize로 별도 지정.
+    const boxH = textSize * 1.4  // 박스 높이를 폰트보다 약간 크게
+    const boxW = tool === 'text' ? Math.max(0.2, inputVal.trim().length * textSize * 0.6) : textSize * 1.4
+    const newOv: Overlay = {
+      id: Math.random().toString(36).slice(2),
+      type: tool,
+      // 클릭 위치를 박스 중앙으로 설정
+      x: Math.max(0, pendingPlace.x - boxW / 2),
+      y: Math.max(0, pendingPlace.y - boxH / 2),
+      w: boxW, h: boxH,
+      content: inputVal.trim(),
+      color: tool === 'text' ? textColor : undefined,
+      fontSize: textSize,
+    }
+    onChange([...overlays, newOv])
+    setPendingPlace(null)
+    setInputVal('')
+  }
+
+  const TOOL_LABELS: Record<OverlayType, string> = {
+    mosaic: '🔲 모자이크', blur: '🌫️ 블러', emoji: '😀 이모지', text: '🔤 텍스트',
+  }
+  const OV_COLORS: Record<OverlayType, string> = {
+    mosaic: 'rgba(255,80,80,0.55)', blur: 'rgba(80,150,255,0.45)',
+    emoji: 'rgba(255,200,0,0.45)', text: 'rgba(100,220,100,0.45)',
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
+      {/* 도구 선택 탭 */}
+      <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
+        {(['mosaic', 'blur', 'emoji', 'text'] as OverlayType[]).map(t => (
+          <button key={t} onClick={() => setTool(t)}
+            style={{
+              padding: large ? '6px 16px' : '3px 10px',
+              fontSize: large ? '0.88rem' : '0.75rem',
+              borderRadius: 'var(--radius-sm)',
+              border: `1px solid ${tool === t ? 'var(--accent)' : 'var(--border)'}`,
+              background: tool === t ? 'rgba(99,102,241,0.18)' : 'var(--bg-card)',
+              color: tool === t ? 'var(--accent)' : 'var(--text)', cursor: 'pointer', fontWeight: tool === t ? 600 : 400,
+            }}>{TOOL_LABELS[t]}</button>
+        ))}
+        <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', alignSelf: 'center', marginLeft: '0.25rem' }}>
+          {tool === 'mosaic' || tool === 'blur' ? '→ 드래그(또는 터치 스와이프)로 영역 선택' : '→ 클릭/탭 후 내용 입력'}
+        </span>
+      </div>
+
+      {/* 프리뷰 + 드래그 캔버스 */}
+      <div ref={containerRef} style={{ position: 'relative', userSelect: 'none', cursor: 'crosshair', lineHeight: 0, boxShadow: large ? '0 0 0 2px var(--border)' : 'none', borderRadius: 'var(--radius-sm)' }}>
+        {isVideo
+          ? <div style={{ background: '#111', width: '100%', aspectRatio: '16/9', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontSize: large ? '1rem' : '0.8rem' }}>🎬 비디오 슬라이드 — 오버레이는 렌더링 시 매 프레임에 적용됩니다</div>
+          : <canvas ref={canvasRef} style={{ width: '100%', display: 'block', borderRadius: 'var(--radius-sm)' }} />
+        }
+
+        {/* 오버레이 영역 테두리 + 삭제 버튼 */}
+        {overlays.map(ov => (
+          <div key={ov.id} style={{
+            position: 'absolute',
+            left: `${ov.x * 100}%`, top: `${ov.y * 100}%`,
+            width: `${ov.w * 100}%`, height: `${ov.h * 100}%`,
+            border: '2px solid rgba(255,255,255,0.75)',
+            boxSizing: 'border-box',
+            display: 'flex', alignItems: 'flex-start', justifyContent: 'flex-end',
+          }}>
+            <button onClick={() => onChange(overlays.filter(o => o.id !== ov.id))}
+              style={{ background: 'rgba(0,0,0,0.65)', border: 'none', color: '#fff', cursor: 'pointer', borderRadius: 2, padding: '0 4px', fontSize: large ? '0.8rem' : '0.6rem', lineHeight: 1.5 }}>✕</button>
+          </div>
+        ))}
+
+        {/* 드래그/두-탭 중인 박스 미리보기 */}
+        {drawing && drawing.w > 0 && (
+          <div style={{
+            position: 'absolute', pointerEvents: 'none',
+            left: `${drawing.x * 100}%`, top: `${drawing.y * 100}%`,
+            width: `${drawing.w * 100}%`, height: `${drawing.h * 100}%`,
+            border: '2px dashed white', background: OV_COLORS[tool], boxSizing: 'border-box',
+          }} />
+        )}
+
+        {/* 이벤트 레이어 */}
+        <div style={{ position: 'absolute', inset: 0 }}
+          onMouseDown={handleMouseDown}
+          onMouseMove={handleMouseMove}
+          onMouseUp={handleMouseUp}
+          onTouchStart={handleTouchStart}
+          onTouchMove={handleTouchMove}
+          onTouchEnd={handleTouchEnd}
+        />
+      </div>
+
+      {/* 이모지/텍스트 입력 */}
+      {pendingPlace && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '0.5rem 0.75rem' }}>
+          <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center', flexWrap: 'wrap' }}>
+            <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{TOOL_LABELS[tool]}:</span>
+            <input
+              autoFocus className="input"
+              placeholder={tool === 'emoji' ? '이모지 입력 (예: 😀 ⭐ 🔴)' : '텍스트 입력'}
+              value={inputVal} onChange={e => setInputVal(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && commitPlaced()}
+              style={{ flex: 1, fontSize: '0.85rem', padding: '5px 10px' }}
+            />
+            {tool === 'text' && (
+              <select value={textColor} onChange={e => setTextColor(e.target.value)}
+                style={{ fontSize: '0.8rem', padding: '5px 8px', background: 'var(--bg-card)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)' }}>
+                <option value="white">흰색</option>
+                <option value="black">검정</option>
+                <option value="yellow">노란색</option>
+                <option value="red">빨간색</option>
+                <option value="blue">파란색</option>
+              </select>
+            )}
+            <button className="btn btn-primary" onClick={commitPlaced} style={{ fontSize: '0.82rem', padding: '5px 12px' }}>추가</button>
+            <button className="btn btn-ghost" onClick={() => setPendingPlace(null)} style={{ fontSize: '0.82rem', padding: '5px 8px' }}>취소</button>
+          </div>
+          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+            <span>크기:</span>
+            <input
+              type="range" min={0.02} max={0.20} step={0.005}
+              value={textSize}
+              onChange={e => setTextSize(parseFloat(e.target.value))}
+              style={{ flex: 1 }}
+            />
+            <span style={{ minWidth: 42, textAlign: 'right', fontFamily: 'monospace' }}>{Math.round(textSize * 100)}%</span>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -732,11 +1505,11 @@ function SubtitleTimeline({ subs, videoDuration, onChange, videoRef }: {
 // ─── Slide Card ──────────────────────────────
 function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveUp, onMoveDown, onPreviewImage, isSelected, onToggleSelect }: {
   slide: Slide; index: number; total: number; projectId: string
-  onUpdate: (s: Slide) => void
+  onUpdate: (delta: Partial<Slide>) => void
   onDelete: () => void
   onMoveUp: () => void
   onMoveDown: () => void
-  onPreviewImage?: (url: string) => void
+  onPreviewImage?: (url: string, overlays: Overlay[], rotation: number) => void
   isSelected?: boolean
   onToggleSelect?: () => void
 }) {
@@ -750,7 +1523,14 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
   const [transition, setTransition] = useState<string>(slide.transition ?? 'none')
   const [ttsVolume, setTtsVolume] = useState(slide.tts_volume ?? 1.0)
   const [rotation, setRotation] = useState(slide.rotation ?? 0)
+  const [overlays, setOverlays] = useState<Overlay[]>(() => parseOverlays(slide.overlays ?? '[]'))
+  const [imageFit, setImageFit] = useState<'cover' | 'fit'>(slide.image_fit ?? 'cover')
+  const [kenBurns, setKenBurns] = useState<number>(slide.ken_burns ?? 0)
+  const [showOverlayModal, setShowOverlayModal] = useState(false)
   const videoRef = useRef<HTMLVideoElement>(null)
+  const thumbCanvasRef = useRef<HTMLCanvasElement>(null)
+  const thumbSrc = slide.image_filename ? api.assetUrl(projectId, slide.image_filename) : ''
+  useOverlayCanvas(thumbCanvasRef, thumbSrc, overlays, slide.slide_type === 'video', rotation, 600)
 
   useEffect(() => { setText(slide.text) }, [slide.text])
   useEffect(() => { setVolume(slide.volume ?? 1.0) }, [slide.volume])
@@ -759,49 +1539,50 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
   useEffect(() => { setTransition(slide.transition ?? 'none') }, [slide.transition])
   useEffect(() => { setTtsVolume(slide.tts_volume ?? 1.0) }, [slide.tts_volume])
   useEffect(() => { setRotation(slide.rotation ?? 0) }, [slide.rotation])
+  useEffect(() => { setOverlays(parseOverlays(slide.overlays ?? '[]')) }, [slide.overlays])
+  useEffect(() => { setImageFit(slide.image_fit ?? 'cover') }, [slide.image_fit])
+  useEffect(() => { setKenBurns(slide.ken_burns ?? 0) }, [slide.ken_burns])
 
   const handleBlur = () => {
-    if (text !== slide.text) onUpdate({ ...slide, text })
+    if (text !== slide.text) onUpdate({ text })
   }
   const handleTransitionChange = (val: string) => {
     setTransition(val)
-    onUpdate({ ...slide, transition: val })
+    onUpdate({ transition: val })
   }
   const handleVolumeChange = (v: number) => {
     setVolume(v)
     if (videoRef.current) videoRef.current.volume = v
-    onUpdate({ ...slide, volume: v })
+    onUpdate({ volume: v })
   }
   const handleSubChange = (idx: number, field: keyof SubEntry, val: string | boolean) => {
     const next = subs.map((s, i) => i === idx ? { ...s, [field]: val } : s)
     setSubs(next)
-    onUpdate({ ...slide, subtitles: serializeSubtitles(next) })
+    onUpdate({ subtitles: serializeSubtitles(next) })
   }
   const handleAddSub = () => {
     const next = [...subs, { start: '0:00', end: '0:05', text: '', use_tts: false }]
     setSubs(next)
-    onUpdate({ ...slide, subtitles: serializeSubtitles(next) })
+    onUpdate({ subtitles: serializeSubtitles(next) })
   }
   const handleDeleteSub = (idx: number) => {
     const next = subs.filter((_, i) => i !== idx)
     setSubs(next)
-    onUpdate({ ...slide, subtitles: serializeSubtitles(next) })
+    onUpdate({ subtitles: serializeSubtitles(next) })
   }
 
   const isVideo = slide.slide_type === 'video'
 
   return (
-    <div className="card" style={{ padding: '1rem', display: 'grid', gridTemplateColumns: isVideo ? '1fr 40px' : '120px 1fr 40px', gap: '1rem', alignItems: 'start' }}>
+    <div className="card" style={{ padding: '1rem', display: 'grid', gridTemplateColumns: isVideo ? '1fr 40px' : '400px 1fr 40px', gap: '1rem', alignItems: 'start' }}>
       {/* Image Slide: Thumbnail */}
       {!isVideo && (
         <div style={{ borderRadius: 'var(--radius-sm)', overflow: 'hidden', background: 'var(--bg-secondary)', aspectRatio: '16/9', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           {slide.image_filename ? (
-            <img
-              src={api.assetUrl(projectId, slide.image_filename)}
-              alt={`Slide ${index + 1}`}
-              style={{ width: '100%', height: '100%', objectFit: 'contain', cursor: onPreviewImage ? 'pointer' : 'default', transform: rotation ? `rotate(${rotation}deg)` : undefined }}
-              onClick={() => onPreviewImage && onPreviewImage(api.assetUrl(projectId, slide.image_filename!))}
-              onError={e => { (e.target as HTMLImageElement).src = '' }}
+            <canvas
+              ref={thumbCanvasRef}
+              style={{ width: '100%', height: '100%', objectFit: 'contain', cursor: onPreviewImage ? 'pointer' : 'default', transform: rotation ? `rotate(${rotation}deg)` : undefined, display: 'block' }}
+              onClick={() => onPreviewImage && onPreviewImage(api.assetUrl(projectId, slide.image_filename!), overlays, rotation)}
             />
           ) : (
             <span style={{ color: 'var(--text-muted)', fontSize: '1.5rem' }}>🖼️</span>
@@ -872,7 +1653,7 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
                       const v = Math.min(parseFloat(e.target.value), (trimEnd || videoDuration) - 0.1)
                       setTrimStart(v)
                     }}
-                    onMouseUp={() => onUpdate({ ...slide, trim_start: trimStart })}
+                    onMouseUp={() => onUpdate({ trim_start: trimStart })}
                   />
                   <input type="range" min={0} max={videoDuration} step={0.1}
                     value={trimEnd || videoDuration}
@@ -882,7 +1663,7 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
                       const v = Math.max(parseFloat(e.target.value), trimStart + 0.1)
                       setTrimEnd(v >= videoDuration ? 0 : v)
                     }}
-                    onMouseUp={() => onUpdate({ ...slide, trim_end: trimEnd })}
+                    onMouseUp={() => onUpdate({ trim_end: trimEnd })}
                   />
                 </div>
               )}
@@ -894,14 +1675,17 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
             </div>
             {/* Subtitle Row Editor */}
             <div>
-              <div style={{ fontSize: '0.85rem', fontWeight: 600, marginBottom: '0.4rem', color: 'var(--text-secondary)' }}>📝 자막</div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.4rem' }}>
+                <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-secondary)' }}>📝 자막</span>
+                <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>🔇 자막만 &nbsp;|&nbsp; 🔊 자막+음성(TTS)</span>
+              </div>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8rem' }}>
                 <thead>
                   <tr style={{ color: 'var(--text-muted)' }}>
                     <th style={{ padding: '2px 6px', textAlign: 'left', width: 72 }}>시작(초)</th>
                     <th style={{ padding: '2px 6px', textAlign: 'left', width: 72 }}>종료(초)</th>
                     <th style={{ padding: '2px 6px', textAlign: 'left' }}>자막 텍스트</th>
-                    <th style={{ padding: '2px 6px', width: 44 }}>TTS</th>
+                    <th style={{ padding: '2px 6px', width: 44, textAlign: 'center' }}>🔊 TTS</th>
                     <th style={{ width: 28 }}></th>
                   </tr>
                 </thead>
@@ -972,7 +1756,7 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
                   videoDuration={videoDuration}
                   onChange={(newSubs) => {
                     setSubs(newSubs)
-                    onUpdate({ ...slide, subtitles: serializeSubtitles(newSubs) })
+                    onUpdate({ subtitles: serializeSubtitles(newSubs) })
                   }}
                   videoRef={videoRef}
                 />
@@ -989,7 +1773,7 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
                   onChange={e => {
                     const v = parseFloat(e.target.value)
                     setTtsVolume(v)
-                    onUpdate({ ...slide, tts_volume: v })
+                    onUpdate({ tts_volume: v })
                   }}
                 />
                 <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', width: 36 }}>{Math.round(ttsVolume * 100)}%</span>
@@ -1003,7 +1787,7 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
               className="textarea"
               value={text}
               onChange={e => setText(e.target.value)}
-              onBlur={() => { if (text !== slide.text) onUpdate({ ...slide, text }) }}
+              onBlur={() => { if (text !== slide.text) onUpdate({ text }) }}
               placeholder="TTS 대사 / 자막 텍스트를 입력하세요..."
               rows={4}
             />
@@ -1014,7 +1798,7 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
                 onChange={e => {
                   const v = e.target.checked
                   setUseTts(v)
-                  onUpdate({ ...slide, use_tts: v ? 1 : 0 })
+                  onUpdate({ use_tts: v ? 1 : 0 })
                 }}
               />
               🔊 TTS 음성 생성 {useTts ? '(켜짐 — 음성 + 자막)' : '(꺼짐 — 자막만)'}
@@ -1029,7 +1813,7 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
                   onChange={e => {
                     const v = parseFloat(e.target.value)
                     setTtsVolume(v)
-                    onUpdate({ ...slide, tts_volume: v })
+                    onUpdate({ tts_volume: v })
                   }}
                 />
                 <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', width: 36 }}>{Math.round(ttsVolume * 100)}%</span>
@@ -1046,7 +1830,7 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
         <button className="slide-ctrl-btn" title={`회전 (현재 ${rotation}°)`} onClick={() => {
           const next = (rotation + 90) % 360
           setRotation(next)
-          onUpdate({ ...slide, rotation: next })
+          onUpdate({ rotation: next })
         }}>&#x21BB;</button>
         <button className="slide-ctrl-btn danger" title="삭제" onClick={onDelete}>&#x2715;</button>
       </div>
@@ -1075,6 +1859,91 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
           </select>
         </div>
       )}
+
+      {/* ── Image Fit (이미지 슬라이드만) ── */}
+      {!isVideo && (
+        <div style={{ borderTop: '1px dashed var(--border)', marginTop: '0.25rem', paddingTop: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+          <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>🖼️ 이미지 표시:</span>
+          <button
+            onClick={() => { const next = imageFit === 'cover' ? 'fit' : 'cover'; setImageFit(next); onUpdate({ image_fit: next }) }}
+            style={{
+              display: 'flex', alignItems: 'center', gap: '0.4rem',
+              background: imageFit === 'fit' ? 'rgba(99,102,241,0.12)' : 'var(--bg-card)',
+              border: `1px solid ${imageFit === 'fit' ? 'rgba(99,102,241,0.5)' : 'var(--border)'}`,
+              borderRadius: 'var(--radius-sm)', padding: '0.25rem 0.7rem',
+              cursor: 'pointer', fontSize: '0.8rem',
+              color: imageFit === 'fit' ? '#818cf8' : 'var(--text-secondary)',
+            }}
+          >
+            {imageFit === 'cover' ? '전체화면' : '자막 영역 확보'}
+          </button>
+        </div>
+      )}
+
+      {/* ── Ken Burns 강도 + Overlay 버튼 (5:5 배치) ── */}
+      <div style={{
+        gridColumn: '1 / -1',
+        borderTop: '1px dashed var(--border)',
+        marginTop: '0.5rem', paddingTop: '0.5rem',
+        display: 'grid',
+        gridTemplateColumns: isVideo ? '1fr' : '1fr 1fr',
+        gap: '0.75rem',
+        alignItems: 'center',
+      }}>
+        {!isVideo && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', minWidth: 0 }}>
+            <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>🎞️ 줌 효과:</span>
+            <input
+              type="range" min={0} max={100} step={5} value={kenBurns}
+              onChange={e => setKenBurns(parseInt(e.target.value))}
+              onMouseUp={() => onUpdate({ ken_burns: kenBurns })}
+              onTouchEnd={() => onUpdate({ ken_burns: kenBurns })}
+              style={{ flex: 1, minWidth: 0, accentColor: kenBurns > 0 ? '#818cf8' : undefined }}
+            />
+            <span style={{ fontSize: '0.78rem', color: kenBurns > 0 ? '#818cf8' : 'var(--text-muted)', minWidth: 44, textAlign: 'right' }}>
+              {kenBurns === 0 ? '꺼짐' : `${kenBurns}%`}
+            </span>
+          </div>
+        )}
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', minWidth: 0 }}>
+          <button
+            onClick={() => setShowOverlayModal(true)}
+            style={{
+              flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: '0.5rem',
+              background: overlays.length > 0 ? 'rgba(168,85,247,0.1)' : 'var(--bg-card)',
+              border: `1px solid ${overlays.length > 0 ? 'rgba(168,85,247,0.4)' : 'var(--border)'}`,
+              borderRadius: 'var(--radius-sm)', padding: '0.35rem 0.6rem',
+              cursor: 'pointer', color: overlays.length > 0 ? '#a855f7' : 'var(--text-secondary)',
+              fontSize: '0.8rem', fontWeight: 500,
+            }}
+          >
+            <span>🎨 오버레이</span>
+            {overlays.length > 0 && <span style={{ marginLeft: 'auto', fontSize: '0.7rem', background: 'rgba(168,85,247,0.2)', borderRadius: 10, padding: '1px 7px' }}>{overlays.length}개</span>}
+          </button>
+          {overlays.length > 0 && (
+            <button onClick={() => { setOverlays([]); onUpdate({ overlays: '[]' }) }}
+              style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '0.35rem 0.5rem', cursor: 'pointer', color: 'var(--text-muted)', fontSize: '0.75rem' }}>
+              전체 삭제
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Overlay Modal */}
+      {showOverlayModal && (
+        <OverlayModal
+          slide={slide}
+          projectId={projectId}
+          overlays={overlays}
+          rotation={rotation}
+          onClose={() => setShowOverlayModal(false)}
+          onChange={newOvs => {
+            setOverlays(newOvs)
+            onUpdate({ overlays: serializeOverlays(newOvs) })
+          }}
+        />
+      )}
     </div>
   )
 }
@@ -1099,8 +1968,9 @@ export default function Editor() {
   const [showYoutube, setShowYoutube] = useState(false)
   const [showPhotos, setShowPhotos] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
+  const [showBgmSearch, setShowBgmSearch] = useState(false)
   const [isDragging, setIsDragging] = useState(false)
-  const [previewImage, setPreviewImage] = useState<string | null>(null)
+  const [previewImage, setPreviewImage] = useState<{ url: string; overlays: Overlay[]; rotation: number } | null>(null)
   const [selectedSlideIds, setSelectedSlideIds] = useState<Set<string>>(new Set())
   const [collageLayout, setCollageLayout] = useState('auto')
   const [dragIdx, setDragIdx] = useState<number | null>(null)
@@ -1117,6 +1987,7 @@ export default function Editor() {
       const data = await api.getProject(projectId)
       setProject(data)
       setSlides(data.slides)
+      slidesRef.current = data.slides
       if (['QUEUED', 'PROCESSING'].includes(data.status)) {
         setRendering(true)
         setProgress(data.progress)
@@ -1158,9 +2029,8 @@ export default function Editor() {
     if (!projectId) return
     setSaving(true)
     try {
-      const reindexed = slides.map((s, i) => ({ ...s, order_index: i }))
-      await api.saveSlides(projectId, reindexed)
-      setSlides(reindexed)
+      const toSave = slidesRef.current.map((s, i) => ({ ...s, order_index: i }))
+      await api.saveSlides(projectId, toSave)
       toast('저장 완료', 'success')
     } catch (e: unknown) {
       toast(e instanceof Error ? e.message : '저장 실패', 'error')
@@ -1177,7 +2047,9 @@ export default function Editor() {
       setSlides(prev => {
         const insertIdx = insertAt === -1 ? prev.length : Math.min(insertAt, prev.length)
         const updated = [...prev.slice(0, insertIdx), ...newSlides, ...prev.slice(insertIdx)]
-        return updated.map((s, idx) => ({ ...s, order_index: idx }))
+        const result = updated.map((s, idx) => ({ ...s, order_index: idx }))
+        slidesRef.current = result
+        return result
       })
       toast(`${newSlides.length}장 업로드 완료!`, 'success')
       setInsertAt(-1)
@@ -1250,7 +2122,7 @@ export default function Editor() {
 
   const handleRender = async () => {
     if (!projectId) return
-    const unsaved = slides.map((s, i) => ({ ...s, order_index: i }))
+    const unsaved = slidesRef.current.map((s, i) => ({ ...s, order_index: i }))
     await api.saveSlides(projectId, unsaved)
     try {
       await api.startRender(projectId)
@@ -1266,6 +2138,7 @@ export default function Editor() {
   const moveSlide = (i: number, dir: -1 | 1) => {
     const arr = [...slides]
       ;[arr[i], arr[i + dir]] = [arr[i + dir], arr[i]]
+    slidesRef.current = arr
     setSlides(arr)
   }
 
@@ -1286,6 +2159,7 @@ export default function Editor() {
     const arr = [...slides]
     const [moved] = arr.splice(dragIdx, 1)
     arr.splice(idx, 0, moved)
+    slidesRef.current = arr
     setSlides(arr)
     setDragIdx(null)
     setDropIdx(null)
@@ -1303,14 +2177,33 @@ export default function Editor() {
     const slide = slides[i]
     try {
       await api.deleteSlide(projectId, slide.id)
-      setSlides(prev => prev.filter((_, idx) => idx !== i))
+      setSlides(prev => { const next = prev.filter((_, idx) => idx !== i); slidesRef.current = next; return next })
     } catch (e: unknown) {
       toast(e instanceof Error ? e.message : '삭제 실패', 'error')
     }
   }
 
-  const updateSlide = (i: number, updated: Slide) => {
-    setSlides(prev => prev.map((s, idx) => idx === i ? updated : s))
+  const autoSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const slidesRef = useRef<Slide[]>([])
+
+  // slides state와 slidesRef를 항상 동기화 (setSlides만 호출하는 경로 포함)
+  useEffect(() => {
+    slidesRef.current = slides
+  }, [slides])
+
+  const updateSlide = (i: number, delta: Partial<Slide>) => {
+    setSlides(prev => {
+      const next = prev.map((s, idx) => idx === i ? { ...s, ...delta } : s)
+      slidesRef.current = next
+      if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current)
+      autoSaveTimer.current = setTimeout(async () => {
+        if (!projectId) return
+        try {
+          await api.saveSlides(projectId, slidesRef.current.map((s, j) => ({ ...s, order_index: j })))
+        } catch { /* silent */ }
+      }, 2000)
+      return next
+    })
   }
 
   if (loading) return (
@@ -1346,11 +2239,24 @@ export default function Editor() {
       )}
 
       {/* Sidebar */}
-      <aside style={{ background: 'var(--bg-secondary)', borderRight: '1px solid var(--border)', padding: '1rem 0.85rem', display: 'flex', flexDirection: 'column', gap: '0.6rem', position: 'sticky', top: '64px', height: 'calc(100vh - 64px)', overflowY: 'auto' }}>
+      <aside style={{ background: 'var(--bg-secondary)', borderRight: '1px solid var(--border)', padding: '0.75rem 0.6rem', display: 'flex', flexDirection: 'column', gap: '0.5rem', position: 'sticky', top: '64px', height: 'calc(100vh - 64px)', overflowY: 'auto' }}>
         <button className="action-card" onClick={() => navigate('/')} style={{ padding: '0.45rem 0.65rem' }}>
           <div className="action-icon" style={{ background: 'var(--bg-secondary)', width: 28, height: 28, fontSize: '0.85rem' }}>&#x2190;</div>
           <span style={{ fontSize: '0.8rem', fontWeight: 500 }}>목록으로</span>
         </button>
+
+        {/* 프로젝트 제목 인라인 편집 */}
+        {project && <ProjectTitleEditor
+          name={project.name}
+          onSave={async (name) => {
+            if (!projectId) return
+            try {
+              await api.renameProject(projectId, name)
+              setProject(prev => prev ? { ...prev, name } : prev)
+              toast('제목 변경 완료', 'success')
+            } catch { toast('제목 변경 실패', 'error') }
+          }}
+        />}
 
         <hr className="divider" style={{ margin: '0.25rem 0' }} />
 
@@ -1492,6 +2398,13 @@ export default function Editor() {
                   <span>오디오 파일 업로드</span>
                 </div>
               </label>
+              <button className="action-card" onClick={() => setShowBgmSearch(true)}>
+                <div className="action-icon" style={{ background: 'rgba(168,85,247,0.12)' }}>🔍</div>
+                <div className="action-label">
+                  <span>무료 음악 검색</span>
+                  <span>Pixabay · AI 추천 포함</span>
+                </div>
+              </button>
             </>
           )}
         </div>
@@ -1539,6 +2452,7 @@ export default function Editor() {
         <button className="action-card" onClick={() => {
           const trans = project?.default_transition || 'none'
           const updated = slides.map((s, i) => i === 0 ? s : { ...s, transition: trans })
+          slidesRef.current = updated
           setSlides(updated)
           toast(`전체 전환 효과: ${trans === 'none' ? '없음' : trans}`, 'success')
         }} style={{ padding: '0.45rem 0.65rem' }}>
@@ -1551,6 +2465,7 @@ export default function Editor() {
         <button className="action-card" onClick={() => {
           const allOn = slides.every(s => s.use_tts === 1)
           const updated = slides.map(s => s.slide_type === 'image' ? { ...s, use_tts: allOn ? 0 : 1 } : s)
+          slidesRef.current = updated
           setSlides(updated)
           toast(allOn ? 'TTS 전체 OFF' : 'TTS 전체 ON', 'info')
         }} style={{ padding: '0.45rem 0.65rem' }}>
@@ -1602,15 +2517,15 @@ export default function Editor() {
             <div className="sidebar-section-title">&#x1F3AC; 결과물</div>
             <div>
               <video
-                key={api.downloadUrl(projectId!)}
+                key={api.downloadUrl(projectId!, project?.updated_at)}
                 controls
                 style={{ width: '100%', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)', background: '#000' }}
               >
-                <source src={api.downloadUrl(projectId!)} type="video/mp4" />
+                <source src={api.downloadUrl(projectId!, project?.updated_at)} type="video/mp4" />
               </video>
             </div>
             <div className="action-grid">
-              <a className="action-grid-item" href={api.downloadUrl(projectId!)} download>
+              <a className="action-grid-item" href={api.downloadUrl(projectId!, project?.updated_at)} download>
                 <span className="grid-icon">&#x1F4E5;</span>
                 <span>MP4 다운로드</span>
               </a>
@@ -1628,7 +2543,7 @@ export default function Editor() {
       <div style={{
         background: 'var(--bg-secondary)', borderRight: '1px solid var(--border)',
         position: 'sticky', top: '64px', height: 'calc(100vh - 64px)', overflowY: 'auto',
-        padding: '0.5rem', display: 'flex', flexDirection: 'column', gap: '4px'
+        padding: '0.35rem', display: 'flex', flexDirection: 'column', gap: '3px'
       }}>
         <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', textAlign: 'center', fontWeight: 600, padding: '0.25rem 0' }}>
           슬라이드 ({slides.length})
@@ -1659,11 +2574,10 @@ export default function Editor() {
                 {isVideo ? (
                   <span style={{ fontSize: '1.2rem' }}>🎬</span>
                 ) : slide.image_filename ? (
-                  <img
-                    src={api.assetUrl(projectId!, slide.image_filename)}
-                    alt=""
-                    style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                    onError={e => { (e.target as HTMLImageElement).style.display = 'none' }}
+                  <SidebarThumb
+                    url={api.assetUrl(projectId!, slide.image_filename)}
+                    overlays={parseOverlays(slide.overlays ?? '[]')}
+                    rotation={slide.rotation ?? 0}
                   />
                 ) : (
                   <span style={{ fontSize: '1rem', color: 'var(--text-muted)' }}>🖼️</span>
@@ -1678,8 +2592,8 @@ export default function Editor() {
       </div>
 
       {/* Main Content */}
-      <main className="page" style={{ padding: '1.5rem' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
+      <main className="page" style={{ padding: '0.75rem 1.5cm' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
           <div>
             <h2 style={{ fontSize: '1.4rem', fontWeight: 700 }}>📝 {project?.name}</h2>
             <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>
@@ -1750,7 +2664,7 @@ export default function Editor() {
                     index={i}
                     total={slides.length}
                     projectId={projectId!}
-                    onUpdate={s => updateSlide(i, s)}
+                    onUpdate={delta => updateSlide(i, delta)}
                     onDelete={() => {
                       deleteSlide(i)
                       if (selectedSlideIds.has(slide.id)) {
@@ -1763,7 +2677,7 @@ export default function Editor() {
                     }}
                     onMoveUp={() => moveSlide(i, -1)}
                     onMoveDown={() => moveSlide(i, 1)}
-                    onPreviewImage={url => setPreviewImage(url)}
+                    onPreviewImage={(url, ovs, rot) => setPreviewImage({ url, overlays: ovs, rotation: rot })}
                     isSelected={selectedSlideIds.has(slide.id)}
                     onToggleSelect={() => toggleSelectSlide(slide.id)}
                   />
@@ -1800,7 +2714,7 @@ export default function Editor() {
         <GlobalSettingsModal
           project={project}
           onClose={() => setShowSettings(false)}
-          onSave={async (settings) => {
+          onSave={async (settings, applyTransitionNow, defaultImageFit, applyImageFitNow, defaultKenBurns, applyKenBurnsNow) => {
             if (!projectId) return
             try {
               const updated = await api.updateSettings(projectId, {
@@ -1810,10 +2724,34 @@ export default function Editor() {
                 ...settings,
               })
               setProject(prev => prev ? { ...prev, ...updated } : prev)
+              let updatedSlides = slidesRef.current
+              if (applyTransitionNow && settings.default_transition !== undefined) {
+                const trans = settings.default_transition as string
+                updatedSlides = updatedSlides.map((s, i) => i === 0 ? s : { ...s, transition: trans })
+              }
+              if (applyImageFitNow && defaultImageFit) {
+                updatedSlides = updatedSlides.map(s => s.slide_type === 'image' ? { ...s, image_fit: defaultImageFit as 'cover' | 'fit' } : s)
+              }
+              if (applyKenBurnsNow && defaultKenBurns !== undefined) {
+                updatedSlides = updatedSlides.map(s => s.slide_type === 'image' ? { ...s, ken_burns: defaultKenBurns } : s)
+              }
+              slidesRef.current = updatedSlides
+              setSlides(updatedSlides)
+              // 변경된 값 즉시 저장
+              await api.saveSlides(projectId, updatedSlides.map((s, j) => ({ ...s, order_index: j })))
               toast('전역 설정 저장 완료', 'success')
               setShowSettings(false)
             } catch { toast('설정 저장 실패', 'error') }
           }}
+        />
+      )}
+
+      {/* BGM Search Modal */}
+      {showBgmSearch && projectId && (
+        <BgmSearchModal
+          projectId={projectId}
+          onClose={() => setShowBgmSearch(false)}
+          onApplied={updated => setProject(prev => prev ? { ...prev, bgm_filename: updated.bgm_filename, bgm_volume: updated.bgm_volume } : prev)}
         />
       )}
 
@@ -1824,10 +2762,11 @@ export default function Editor() {
             <div style={{ width: '100%', display: 'flex', justifyContent: 'flex-end', marginBottom: '0.5rem' }}>
               <button className="btn btn-ghost btn-icon" onClick={() => setPreviewImage(null)} style={{ background: 'var(--bg-card)', color: 'var(--text)', borderRadius: '50%', width: '36px', height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: 'var(--shadow)' }}>✕</button>
             </div>
-            <img src={previewImage} alt="Preview" style={{ maxWidth: '100%', maxHeight: 'calc(100vh - 6rem)', objectFit: 'contain', borderRadius: 'var(--radius-md)', boxShadow: '0 10px 25px rgba(0,0,0,0.5)' }} />
+            <FullPreviewCanvas url={previewImage.url} overlays={previewImage.overlays} rotation={previewImage.rotation} />
           </div>
         </div>
       )}
+
     </div>
   )
 }

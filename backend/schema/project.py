@@ -33,6 +33,9 @@ class SlideBase(BaseModel):
     transition: str = "none"  # 'none'|'crossfade'|'fade_black'|'slide_left'|'slide_right'
     tts_volume: float = 1.0  # TTS 볼륨 (0.0 ~ 2.0)
     rotation: int = 0        # 회전 각도: 0, 90, 180, 270
+    overlays: str = "[]"     # JSON array of overlay objects
+    image_fit: str = "cover" # 'cover' | 'fit'
+    ken_burns: int = 0       # Ken Burns 줌 강도 0~100
 
 
 # ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── #
@@ -64,6 +67,9 @@ class SlideUpdate(BaseModel):
     transition: str = "none"
     tts_volume: float = 1.0
     rotation: int = 0
+    overlays: str = "[]"
+    image_fit: str = "cover" # 'cover' | 'fit'
+    ken_burns: int = 0       # Ken Burns 줌 강도 0~100
 
 
 # ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── #
@@ -84,6 +90,9 @@ class SlideRead(SlideBase):
     transition: str = "none"
     tts_volume: float = 1.0
     rotation: int = 0
+    overlays: str = "[]"
+    image_fit: str = "cover"
+    ken_burns: int = 0
 
     model_config = {"from_attributes": True}
 
@@ -122,6 +131,7 @@ class ProjectRead(BaseModel):
     subtitle_font_color: str = "white"
     watermark_text: str = ""
     watermark_opacity: float = 0.3
+    title_text: str = ""
 
     model_config = {"from_attributes": True}
 

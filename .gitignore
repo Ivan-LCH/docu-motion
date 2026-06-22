@@ -31,6 +31,7 @@ logs/
 
 # Token
 token.json
+token.json.broken-*
 
 # Node.js
 frontend/node_modules/
