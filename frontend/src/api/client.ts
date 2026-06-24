@@ -135,6 +135,32 @@ export const api = {
   downloadUrl: (id: string, version?: string | number) =>
     `${BASE}/projects/${id}/download${version ? `?v=${encodeURIComponent(version)}` : ''}`,
 
+  // 슬라이드 미리보기 (구간 렌더) — 6-19/6-20
+  requestPreview: (projectId: string, slideId: string,
+                   opts: { include_neighbors?: boolean; force_tts?: boolean }) =>
+    request<{ status: string; cached: boolean; hash: string }>(
+      'POST', `/projects/${projectId}/slides/${slideId}/preview`, opts),
+  previewVideoUrl: (projectId: string, slideId: string,
+                    opts: { include_neighbors?: boolean; force_tts?: boolean },
+                    cacheBust?: string | number) => {
+    const p = new URLSearchParams()
+    if (opts.include_neighbors) p.set('include_neighbors', 'true')
+    if (opts.force_tts) p.set('force_tts', 'true')
+    if (cacheBust !== undefined) p.set('v', String(cacheBust))
+    const q = p.toString()
+    return `${BASE}/projects/${projectId}/slides/${slideId}/preview${q ? `?${q}` : ''}`
+  },
+  // 미리보기 렌더 완료 여부 (본문 다운로드 없이 헤더로 판별)
+  previewReady: async (url: string): Promise<boolean> => {
+    try {
+      const res = await fetch(url, { method: 'GET', headers: { Range: 'bytes=0-1' }, cache: 'no-store' })
+      if (res.status === 202) return false
+      const ct = res.headers.get('content-type') || ''
+      try { await res.body?.cancel() } catch { /* ignore */ }
+      return res.ok && ct.includes('video')
+    } catch { return false }
+  },
+
   // YouTube
   uploadYouTube: (id: string, payload: { title: string; description: string; tags?: string }) =>
     request<{ ok: boolean; url: string }>('POST', `/projects/${id}/youtube/upload`, payload),

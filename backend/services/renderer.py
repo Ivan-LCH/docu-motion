@@ -274,6 +274,389 @@ def load_tts_engine():
 
 
 # ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── #
+# Build Single Slide Clip (슬라이드 1개 → MoviePy 클립)
+# ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── #
+def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: Path,
+                     canvas_size: tuple, tts_engine=None,
+                     font_size: int = FONT_SIZE, font_color: str = TEXT_COLOR,
+                     default_slide_duration: float = 3.0,
+                     tts_master_volume: float = 1.0):
+    """
+    단일 슬라이드 → MoviePy 클립 생성 (비디오 / 이미지 공용).
+    render_project()의 슬라이드 루프 본문을 추출한 것으로, 풀 렌더와
+    구간 미리보기(6-19) 양쪽에서 동일 로직을 재사용한다.
+
+    반환:
+      - MoviePy VideoClip: 정상 생성된 슬라이드 클립
+      - None: 비디오 파일 누락 등으로 스킵
+      (TTS 생성 실패 시 Exception 전파 — 기존과 동일)
+    """
+    # 루프 본문과 변수명을 일치시키기 위한 별칭 (동작 보존)
+    i = slide_index
+    _font_size = font_size
+    _font_color = font_color
+
+    text = item.get('text', '').strip()
+    slide_type = item.get('slide_type', 'image')
+
+    a_clip = None
+    subtitle_clips = []
+
+    # ── Video Slide ──────────────────────────────────
+    if slide_type == 'video':
+        import json as _json
+        video_filename = item.get('video_filename', '')
+        video_path = assets_dir / video_filename
+        if not video_path.exists():
+            logger.error(f"Video file not found: {video_path}")
+            return None
+
+        from moviepy.editor import VideoFileClip, CompositeAudioClip
+        video_clip = VideoFileClip(str(video_path))
+
+        # 볼륨 조절
+        volume = item.get('volume', 1.0)
+        if volume != 1.0:
+            video_clip = video_clip.volumex(volume)
+
+        # 비디오 자르기 (Trim)
+        trim_start = float(item.get('trim_start', 0.0))
+        trim_end = float(item.get('trim_end', 0.0))
+        if trim_end > trim_start:
+            video_clip = video_clip.subclip(trim_start, min(trim_end, video_clip.duration))
+        elif trim_start > 0:
+            video_clip = video_clip.subclip(trim_start, video_clip.duration)
+
+        # 회전 적용
+        rotation = item.get('rotation', 0)
+        if rotation and rotation % 360 != 0:
+            video_clip = video_clip.rotate(-rotation)  # MoviePy는 반시계 방향이므로 부호 반전
+
+        # 캔버스 크기 맞춤 (letterbox)
+        video_clip = video_clip.resize(height=canvas_size[1])
+        total_duration = video_clip.duration
+
+        # Subtitles & optional TTS
+        subtitle_entries = _json.loads(item.get('subtitles', '[]'))
+        tts_vol = item.get('tts_volume', 1.0) * tts_master_volume
+        original_audio = video_clip.audio
+        tts_audio_clips = []  # TTS 오디오만 별도 수집 (duck 처리용)
+
+        for sub_idx, entry in enumerate(subtitle_entries):
+            try:
+                start   = float(entry.get('start', 0))
+                end     = float(entry.get('end', 0))
+                sub_txt = entry.get('text', '').strip()
+                use_tts = entry.get('use_tts', False)
+                dur     = max(0, end - start)
+                if dur <= 0 or start >= total_duration or not sub_txt:
+                    continue
+
+                # TextClip 자막
+                tc = TextClip(
+                    txt=sub_txt, font=FONT_PATH, fontsize=_font_size,
+                    color=_font_color, size=(canvas_size[0] - 100, None),
+                    method='caption', align='center', interline=8
+                )
+                tc_y = canvas_size[1] - 30 - tc.size[1]
+                tc = (
+                    tc
+                    .set_start(start)
+                    .set_duration(min(dur, total_duration - start))
+                    .set_position(('center', tc_y))
+                )
+                subtitle_clips.append(tc)
+
+                # Optional TTS 오디오 생성
+                if use_tts and tts_engine:
+                    tts_path = temp_dir / f"v_{i}_{sub_idx}.wav"
+                    if tts_path.exists() and tts_path.stat().st_size < 100:
+                        try: tts_path.unlink()
+                        except: pass
+
+                    if not tts_path.exists():
+                        tts_engine.generate_with_fallback(sub_txt, str(tts_path))
+
+                    if tts_path.exists() and tts_path.stat().st_size >= 100:
+                        tts_audio = AudioFileClip(str(tts_path)).set_start(start)
+                        if tts_vol != 1.0:
+                            tts_audio = tts_audio.volumex(tts_vol)
+                        tts_audio_clips.append((start, end, tts_audio))
+                    else:
+                        logger.warning(f"TTS 오디오 생성 실패 (비디오 자막 [{i}][{sub_idx}]) - 자막만 표시")
+            except Exception as e:
+                logger.error(f"Error processing subtitle entry: {e}")
+
+        # 오디오 믹싱: TTS 구간에서 원본 오디오 duck (볼륨 30%로 감소)
+        audio_clips = []
+        if original_audio and tts_audio_clips:
+            DUCK_VOLUME = 0.3
+            FADE_DUR = 0.3  # duck fade-in/out 시간
+            # 원본 오디오를 TTS 구간에서 duck 처리
+            ducked_audio = original_audio
+            for tts_start, tts_end, _ in tts_audio_clips:
+                # MoviePy는 구간별 볼륨을 직접 지원하지 않으므로
+                # volumex 필터 함수로 구현
+                prev_audio = ducked_audio
+                def _make_duck_filter(t_start, t_end, duck_vol, fade):
+                    def volume_filter(get_frame, t):
+                        frame = get_frame(t)
+                        if t_start - fade <= t <= t_end + fade:
+                            if t < t_start:
+                                mix = (t - (t_start - fade)) / fade
+                                vol = 1.0 - mix * (1.0 - duck_vol)
+                            elif t > t_end:
+                                mix = (t - t_end) / fade
+                                vol = duck_vol + mix * (1.0 - duck_vol)
+                            else:
+                                vol = duck_vol
+                            return frame * vol
+                        return frame
+                    return volume_filter
+                ducked_audio = ducked_audio.fl(_make_duck_filter(tts_start, tts_end, DUCK_VOLUME, FADE_DUR))
+            audio_clips.append(ducked_audio)
+            audio_clips.extend(tts_clip for _, _, tts_clip in tts_audio_clips)
+        elif original_audio:
+            audio_clips.append(original_audio)
+        else:
+            audio_clips.extend(tts_clip for _, _, tts_clip in tts_audio_clips)
+
+        bg_clip = ColorClip(size=canvas_size, color=BG_COLOR).set_duration(total_duration)
+        video_clip = video_clip.set_fps(24)
+
+        # 오버레이 적용 (모자이크 / 블러 / 이모지 / 텍스트)
+        overlays = _json_mod.loads(item.get('overlays', '[]') or '[]')
+        if overlays:
+            video_clip = video_clip.fl_image(make_overlay_frame_fn(overlays))
+
+        final_clip = CompositeVideoClip([bg_clip, video_clip] + subtitle_clips)
+        if audio_clips:
+            final_clip = final_clip.set_audio(CompositeAudioClip(audio_clips))
+
+        return final_clip
+
+    # ── Image Slide ──────────────────────────────────
+    use_tts_flag = bool(item.get('use_tts', 1))
+
+    if not text:
+        # 텍스트가 없으면 기본 슬라이드 시간만큼 이미지 유지
+        total_duration = default_slide_duration
+    elif not use_tts_flag:
+        # TTS 꺼짐 → 텍스트 길이에 비례해 시간 계산 (글자당 0.15초, 최소 3초)
+        total_duration = max(3.0, len(text) * 0.15)
+        sentences      = split_sentences(text)
+        num_sent       = len(sentences)
+        total_chars    = sum(len(s) for s in sentences)
+        seg_dur        = total_duration / num_sent if num_sent > 0 else total_duration
+        current_start  = 0.1
+        for idx, s in enumerate(sentences):
+            char_ratio = len(s) / total_chars if total_chars > 0 else 1.0 / num_sent
+            dur        = char_ratio * (total_duration - 0.2)
+            txt_clip = TextClip(
+                txt       = s,
+                font      = FONT_PATH,
+                fontsize  = _font_size,
+                color     = _font_color,
+                size      = (canvas_size[0] - 100, None),
+                method    = 'caption',
+                align     = 'center',
+                interline = 8
+            )
+            _ty = canvas_size[1] - 30 - txt_clip.size[1]
+            txt_clip = (
+                txt_clip
+                .set_start(current_start)
+                .set_duration(dur)
+                .set_position(('center', _ty))
+            )
+            subtitle_clips.append(txt_clip)
+            current_start += dur
+    else:
+        # TTS - 문장별로 따로 생성 후 순차 이어붙이기 (concatenate)
+        # CompositeAudioClip+set_start의 클립 누락 버그를 회피
+        from moviepy.editor import concatenate_audioclips
+        from moviepy.audio.AudioClip import AudioArrayClip
+
+        sentences = split_sentences(text)
+        num_sent  = len(sentences)
+        PAD_DELAY     = 1.0   # 이미지 안정 표시 후 음성/자막 시작
+        SENTENCE_GAP  = 0.3   # 문장 간 쉬는 시간 (편안한 호흡)
+        tts_vol = item.get('tts_volume', 1.0) * tts_master_volume
+
+        sent_audio_clips_raw = []   # 원본 오디오 클립 목록 (set_start 미적용)
+        sent_durations       = []   # 각 문장의 실제 음성 길이
+
+        for sent_idx, s in enumerate(sentences):
+            s_path = temp_dir / f"v_{i}_{sent_idx}.wav"
+
+            # 기존 전체-텍스트 캐시 파일은 무시 (v_{i}.wav)
+            if s_path.exists() and s_path.stat().st_size < 100:
+                try: s_path.unlink()
+                except: pass
+
+            if not s_path.exists():
+                if tts_engine:
+                    tts_engine.generate_with_fallback(s, str(s_path))
+
+            if not s_path.exists() or s_path.stat().st_size < 100:
+                raise Exception(f"TTS 오디오 생성 실패 (슬라이드 {i+1}, 문장 {sent_idx+1})")
+
+            s_clip = AudioFileClip(str(s_path))
+            if tts_vol != 1.0:
+                s_clip = s_clip.volumex(tts_vol)
+
+            sent_audio_clips_raw.append(s_clip)
+            sent_durations.append(s_clip.duration)
+
+        # 무음 패딩(앞/뒤 PAD_DELAY, 문장 사이 SENTENCE_GAP) 클립 헬퍼
+        _ref = sent_audio_clips_raw[0]
+        _sr  = int(getattr(_ref, 'fps', 22050) or 22050)
+        _nch = 2  # AudioFileClip은 보통 stereo로 디코드. 안전하게 2채널 무음 사용
+        def _make_silence(d):
+            n = max(1, int(_sr * d))
+            return AudioArrayClip(np.zeros((n, _nch), dtype=np.float32), fps=_sr)
+
+        parts = [_make_silence(PAD_DELAY)]
+        for idx, c in enumerate(sent_audio_clips_raw):
+            parts.append(c)
+            if idx < num_sent - 1:
+                parts.append(_make_silence(SENTENCE_GAP))
+        parts.append(_make_silence(PAD_DELAY))
+
+        a_clip = concatenate_audioclips(parts)
+        total_duration = a_clip.duration
+
+        # 자막 타이밍 — 실제 음성 길이 기반
+        sub_offset = PAD_DELAY
+        BOTTOM_MARGIN = 30
+        for sent_idx, (s, s_dur) in enumerate(zip(sentences, sent_durations)):
+            txt_clip = TextClip(
+                txt=s, font=FONT_PATH, fontsize=_font_size,
+                color=_font_color, size=(canvas_size[0] - 100, None),
+                method='caption', align='center', interline=8
+            )
+            txt_y = canvas_size[1] - BOTTOM_MARGIN - txt_clip.size[1]
+            txt_clip = (
+                txt_clip
+                .set_start(sub_offset)
+                .set_duration(s_dur)
+                .set_position(('center', txt_y))
+            )
+            subtitle_clips.append(txt_clip)
+            sub_offset += s_dur
+            if sent_idx < num_sent - 1:
+                sub_offset += SENTENCE_GAP
+
+    # Image clip with Ken Burns effect
+    img_filename = item.get('image_filename', '')
+    img_path = Path(img_filename) if Path(img_filename).is_absolute() else assets_dir / img_filename
+
+    if img_path.exists():
+        # 회전 적용 (PIL로 이미지 전처리)
+        rotation = item.get('rotation', 0)
+        if rotation and rotation % 360 != 0:
+            from PIL import Image as PILImage
+            rotated_path = temp_dir / f"rot_{i}_{rotation}.png"
+            if not rotated_path.exists():
+                pil_img = PILImage.open(str(img_path))
+                pil_img = pil_img.rotate(-rotation, expand=True)  # PIL은 반시계 방향
+                pil_img.save(str(rotated_path))
+            img_path = rotated_path
+
+        # 오버레이 적용 (PIL로 이미지에 직접)
+        overlays = _json_mod.loads(item.get('overlays', '[]') or '[]')
+        if overlays:
+            from PIL import Image as _PILImg
+            ov_path = temp_dir / f"ov_{i}.png"
+            pil_src = _PILImg.open(str(img_path))
+            pil_src = _apply_overlays_to_pil(pil_src, overlays)
+            pil_src.save(str(ov_path))
+            img_path = ov_path
+
+        # 이미지 표시 방식 + Ken Burns 강도
+        image_fit = item.get('image_fit', 'cover')  # 'cover' | 'fit'
+        ken_burns = max(0, min(100, int(item.get('ken_burns', 0) or 0)))  # 0~100
+        raw_img_clip = ImageClip(str(img_path))
+        iw, ih = raw_img_clip.size
+        cw, ch = canvas_size
+
+        # 강도 0이어도 cover 시 약간의 여유분 필요 → 최소 margin 1.02
+        kb_intensity = ken_burns / 100.0  # 0.0 ~ 1.0
+        margin = 1.02 + 0.13 * kb_intensity  # 1.02 (정적) ~ 1.15 (최대 줌)
+
+        if image_fit == 'fit':
+            fit_h = int(ch * 0.82)  # 하단 18% 자막 영역 확보
+            # contain: 이미지 전체가 잘리지 않고 (cw x fit_h) 안에 들어오도록
+            contain_scale = min(cw / iw, fit_h / ih)
+            fit_scale = contain_scale * margin
+            base_img = raw_img_clip.resize((int(iw * fit_scale), int(ih * fit_scale)))
+            # kb_area = contain 기준 크기 → 이 크기로 크롭하면 이미지 전체가 보임
+            kb_area = (int(iw * contain_scale), int(ih * contain_scale))
+        else:
+            cover_scale = max(cw / iw, ch / ih) * margin
+            base_img = raw_img_clip.resize((int(iw * cover_scale), int(ih * cover_scale)))
+            kb_area = (cw, ch)
+
+        # 짝수: 줌인, 홀수: 줌아웃 — 강도에 비례 (max ±13%)
+        if ken_burns > 0:
+            max_zoom = 0.13 * kb_intensity
+            kb_start = 1.0
+            kb_end = (1.0 + max_zoom) if (i % 2 == 0) else (1.0 - max_zoom * 0.85)
+        else:
+            kb_start = kb_end = 1.0
+
+        def _make_kb(clip, start_scale, end_scale, dur, area):
+            def make_frame(t):
+                from PIL import Image as PILImage
+                import numpy as np
+                progress = t / dur if dur > 0 else 0.0
+                scale = start_scale + (end_scale - start_scale) * progress
+                frame = clip.get_frame(0)
+                h, w = frame.shape[:2]
+                target_w, target_h = area
+                view_w = target_w / scale
+                view_h = target_h / scale
+                left = (w - view_w) / 2.0
+                top  = (h - view_h) / 2.0
+                cropped = PILImage.fromarray(frame).crop(
+                    (left, top, left + view_w, top + view_h)
+                )
+                return np.array(cropped.resize((target_w, target_h), PILImage.LANCZOS))
+            from moviepy.editor import VideoClip
+            return VideoClip(make_frame, duration=dur).set_fps(24)
+
+        if ken_burns <= 0:
+            # 정적 이미지: 한 번만 처리해서 ImageClip으로 (성능 최적화)
+            import numpy as _np2
+            target_w, target_h = kb_area
+            src_frame = base_img.get_frame(0)
+            sh, sw = src_frame.shape[:2]
+            crop_left = (sw - target_w) / 2.0
+            crop_top  = (sh - target_h) / 2.0
+            static_pil = Image.fromarray(src_frame).crop(
+                (crop_left, crop_top, crop_left + target_w, crop_top + target_h)
+            )
+            if static_pil.size != (target_w, target_h):
+                static_pil = static_pil.resize((target_w, target_h), Image.LANCZOS)
+            img_clip = ImageClip(_np2.array(static_pil)).set_duration(total_duration)
+        else:
+            img_clip = _make_kb(base_img, kb_start, kb_end, total_duration, kb_area)
+
+        if image_fit == 'fit':
+            img_clip = img_clip.set_position(('center', 'top'))
+    else:
+        img_clip = ColorClip(size=canvas_size, color=(0, 0, 0)).set_duration(total_duration)
+
+    bg_clip = ColorClip(size=canvas_size, color=BG_COLOR).set_duration(total_duration)
+
+    # Assemble
+    final_clip = CompositeVideoClip([bg_clip, img_clip] + subtitle_clips)
+    if a_clip is not None:
+        final_clip = final_clip.set_audio(a_clip)
+    return final_clip
+
+
+# ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── #
 # Render Project
 # ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── #
 
@@ -318,368 +701,19 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
         progress_callback(0, "렌더링 시작...")
 
         for i, item in enumerate(slides):
-            text = item.get('text', '').strip()
-            slide_type = item.get('slide_type', 'image')
-
             current_progress = int((i / total_slides) * 50)
             progress_callback(current_progress, f"슬라이드 처리 중 {i+1}/{total_slides}")
 
-            a_clip = None
-            subtitle_clips = []
+            clip = build_slide_clip(
+                item, i, assets_dir, temp_dir, canvas_size,
+                tts_engine=tts_engine,
+                font_size=_font_size, font_color=_font_color,
+                default_slide_duration=default_slide_duration,
+                tts_master_volume=tts_master_volume,
+            )
+            if clip is not None:
+                final_clips.append(clip)
 
-            # ── Video Slide ──────────────────────────────────
-            if slide_type == 'video':
-                import json as _json
-                video_filename = item.get('video_filename', '')
-                video_path = assets_dir / video_filename
-                if not video_path.exists():
-                    logger.error(f"Video file not found: {video_path}")
-                    continue
-
-                from moviepy.editor import VideoFileClip, CompositeAudioClip
-                video_clip = VideoFileClip(str(video_path))
-
-                # 볼륨 조절
-                volume = item.get('volume', 1.0)
-                if volume != 1.0:
-                    video_clip = video_clip.volumex(volume)
-
-                # 비디오 자르기 (Trim)
-                trim_start = float(item.get('trim_start', 0.0))
-                trim_end = float(item.get('trim_end', 0.0))
-                if trim_end > trim_start:
-                    video_clip = video_clip.subclip(trim_start, min(trim_end, video_clip.duration))
-                elif trim_start > 0:
-                    video_clip = video_clip.subclip(trim_start, video_clip.duration)
-
-                # 회전 적용
-                rotation = item.get('rotation', 0)
-                if rotation and rotation % 360 != 0:
-                    video_clip = video_clip.rotate(-rotation)  # MoviePy는 반시계 방향이므로 부호 반전
-
-                # 캔버스 크기 맞춤 (letterbox)
-                video_clip = video_clip.resize(height=canvas_size[1])
-                total_duration = video_clip.duration
-
-                # Subtitles & optional TTS
-                subtitle_entries = _json.loads(item.get('subtitles', '[]'))
-                tts_vol = item.get('tts_volume', 1.0) * tts_master_volume
-                original_audio = video_clip.audio
-                tts_audio_clips = []  # TTS 오디오만 별도 수집 (duck 처리용)
-
-                for sub_idx, entry in enumerate(subtitle_entries):
-                    try:
-                        start   = float(entry.get('start', 0))
-                        end     = float(entry.get('end', 0))
-                        sub_txt = entry.get('text', '').strip()
-                        use_tts = entry.get('use_tts', False)
-                        dur     = max(0, end - start)
-                        if dur <= 0 or start >= total_duration or not sub_txt:
-                            continue
-
-                        # TextClip 자막
-                        tc = TextClip(
-                            txt=sub_txt, font=FONT_PATH, fontsize=_font_size,
-                            color=_font_color, size=(canvas_size[0] - 100, None),
-                            method='caption', align='center', interline=8
-                        )
-                        tc_y = canvas_size[1] - 30 - tc.size[1]
-                        tc = (
-                            tc
-                            .set_start(start)
-                            .set_duration(min(dur, total_duration - start))
-                            .set_position(('center', tc_y))
-                        )
-                        subtitle_clips.append(tc)
-
-                        # Optional TTS 오디오 생성
-                        if use_tts and tts_engine:
-                            tts_path = temp_dir / f"v_{i}_{sub_idx}.wav"
-                            if tts_path.exists() and tts_path.stat().st_size < 100:
-                                try: tts_path.unlink()
-                                except: pass
-
-                            if not tts_path.exists():
-                                tts_engine.generate_with_fallback(sub_txt, str(tts_path))
-
-                            if tts_path.exists() and tts_path.stat().st_size >= 100:
-                                tts_audio = AudioFileClip(str(tts_path)).set_start(start)
-                                if tts_vol != 1.0:
-                                    tts_audio = tts_audio.volumex(tts_vol)
-                                tts_audio_clips.append((start, end, tts_audio))
-                            else:
-                                logger.warning(f"TTS 오디오 생성 실패 (비디오 자막 [{i}][{sub_idx}]) - 자막만 표시")
-                    except Exception as e:
-                        logger.error(f"Error processing subtitle entry: {e}")
-
-                # 오디오 믹싱: TTS 구간에서 원본 오디오 duck (볼륨 30%로 감소)
-                audio_clips = []
-                if original_audio and tts_audio_clips:
-                    DUCK_VOLUME = 0.3
-                    FADE_DUR = 0.3  # duck fade-in/out 시간
-                    # 원본 오디오를 TTS 구간에서 duck 처리
-                    ducked_audio = original_audio
-                    for tts_start, tts_end, _ in tts_audio_clips:
-                        # MoviePy는 구간별 볼륨을 직접 지원하지 않으므로
-                        # volumex 필터 함수로 구현
-                        prev_audio = ducked_audio
-                        def _make_duck_filter(t_start, t_end, duck_vol, fade):
-                            def volume_filter(get_frame, t):
-                                frame = get_frame(t)
-                                if t_start - fade <= t <= t_end + fade:
-                                    if t < t_start:
-                                        mix = (t - (t_start - fade)) / fade
-                                        vol = 1.0 - mix * (1.0 - duck_vol)
-                                    elif t > t_end:
-                                        mix = (t - t_end) / fade
-                                        vol = duck_vol + mix * (1.0 - duck_vol)
-                                    else:
-                                        vol = duck_vol
-                                    return frame * vol
-                                return frame
-                            return volume_filter
-                        ducked_audio = ducked_audio.fl(_make_duck_filter(tts_start, tts_end, DUCK_VOLUME, FADE_DUR))
-                    audio_clips.append(ducked_audio)
-                    audio_clips.extend(tts_clip for _, _, tts_clip in tts_audio_clips)
-                elif original_audio:
-                    audio_clips.append(original_audio)
-                else:
-                    audio_clips.extend(tts_clip for _, _, tts_clip in tts_audio_clips)
-
-                bg_clip = ColorClip(size=canvas_size, color=BG_COLOR).set_duration(total_duration)
-                video_clip = video_clip.set_fps(24)
-
-                # 오버레이 적용 (모자이크 / 블러 / 이모지 / 텍스트)
-                overlays = _json_mod.loads(item.get('overlays', '[]') or '[]')
-                if overlays:
-                    video_clip = video_clip.fl_image(make_overlay_frame_fn(overlays))
-
-                final_clip = CompositeVideoClip([bg_clip, video_clip] + subtitle_clips)
-                if audio_clips:
-                    final_clip = final_clip.set_audio(CompositeAudioClip(audio_clips))
-
-                final_clips.append(final_clip)
-                continue  # 이미지 슬라이드 로직 건너뜀
-
-            # ── Image Slide ──────────────────────────────────
-            use_tts_flag = bool(item.get('use_tts', 1))
-
-            if not text:
-                # 텍스트가 없으면 기본 슬라이드 시간만큼 이미지 유지
-                total_duration = default_slide_duration
-            elif not use_tts_flag:
-                # TTS 꺼짐 → 텍스트 길이에 비례해 시간 계산 (글자당 0.15초, 최소 3초)
-                total_duration = max(3.0, len(text) * 0.15)
-                sentences      = split_sentences(text)
-                num_sent       = len(sentences)
-                total_chars    = sum(len(s) for s in sentences)
-                seg_dur        = total_duration / num_sent if num_sent > 0 else total_duration
-                current_start  = 0.1
-                for idx, s in enumerate(sentences):
-                    char_ratio = len(s) / total_chars if total_chars > 0 else 1.0 / num_sent
-                    dur        = char_ratio * (total_duration - 0.2)
-                    txt_clip = TextClip(
-                        txt       = s,
-                        font      = FONT_PATH,
-                        fontsize  = _font_size,
-                        color     = _font_color,
-                        size      = (canvas_size[0] - 100, None),
-                        method    = 'caption',
-                        align     = 'center',
-                        interline = 8
-                    )
-                    _ty = canvas_size[1] - 30 - txt_clip.size[1]
-                    txt_clip = (
-                        txt_clip
-                        .set_start(current_start)
-                        .set_duration(dur)
-                        .set_position(('center', _ty))
-                    )
-                    subtitle_clips.append(txt_clip)
-                    current_start += dur
-            else:
-                # TTS - 문장별로 따로 생성 후 순차 이어붙이기 (concatenate)
-                # CompositeAudioClip+set_start의 클립 누락 버그를 회피
-                from moviepy.editor import concatenate_audioclips
-                from moviepy.audio.AudioClip import AudioArrayClip
-
-                sentences = split_sentences(text)
-                num_sent  = len(sentences)
-                PAD_DELAY     = 1.0   # 이미지 안정 표시 후 음성/자막 시작
-                SENTENCE_GAP  = 0.3   # 문장 간 쉬는 시간 (편안한 호흡)
-                tts_vol = item.get('tts_volume', 1.0) * tts_master_volume
-
-                sent_audio_clips_raw = []   # 원본 오디오 클립 목록 (set_start 미적용)
-                sent_durations       = []   # 각 문장의 실제 음성 길이
-
-                for sent_idx, s in enumerate(sentences):
-                    s_path = temp_dir / f"v_{i}_{sent_idx}.wav"
-
-                    # 기존 전체-텍스트 캐시 파일은 무시 (v_{i}.wav)
-                    if s_path.exists() and s_path.stat().st_size < 100:
-                        try: s_path.unlink()
-                        except: pass
-
-                    if not s_path.exists():
-                        if tts_engine:
-                            tts_engine.generate_with_fallback(s, str(s_path))
-
-                    if not s_path.exists() or s_path.stat().st_size < 100:
-                        raise Exception(f"TTS 오디오 생성 실패 (슬라이드 {i+1}, 문장 {sent_idx+1})")
-
-                    s_clip = AudioFileClip(str(s_path))
-                    if tts_vol != 1.0:
-                        s_clip = s_clip.volumex(tts_vol)
-
-                    sent_audio_clips_raw.append(s_clip)
-                    sent_durations.append(s_clip.duration)
-
-                # 무음 패딩(앞/뒤 PAD_DELAY, 문장 사이 SENTENCE_GAP) 클립 헬퍼
-                _ref = sent_audio_clips_raw[0]
-                _sr  = int(getattr(_ref, 'fps', 22050) or 22050)
-                _nch = 2  # AudioFileClip은 보통 stereo로 디코드. 안전하게 2채널 무음 사용
-                def _make_silence(d):
-                    n = max(1, int(_sr * d))
-                    return AudioArrayClip(np.zeros((n, _nch), dtype=np.float32), fps=_sr)
-
-                parts = [_make_silence(PAD_DELAY)]
-                for idx, c in enumerate(sent_audio_clips_raw):
-                    parts.append(c)
-                    if idx < num_sent - 1:
-                        parts.append(_make_silence(SENTENCE_GAP))
-                parts.append(_make_silence(PAD_DELAY))
-
-                a_clip = concatenate_audioclips(parts)
-                total_duration = a_clip.duration
-
-                # 자막 타이밍 — 실제 음성 길이 기반
-                sub_offset = PAD_DELAY
-                BOTTOM_MARGIN = 30
-                for sent_idx, (s, s_dur) in enumerate(zip(sentences, sent_durations)):
-                    txt_clip = TextClip(
-                        txt=s, font=FONT_PATH, fontsize=_font_size,
-                        color=_font_color, size=(canvas_size[0] - 100, None),
-                        method='caption', align='center', interline=8
-                    )
-                    txt_y = canvas_size[1] - BOTTOM_MARGIN - txt_clip.size[1]
-                    txt_clip = (
-                        txt_clip
-                        .set_start(sub_offset)
-                        .set_duration(s_dur)
-                        .set_position(('center', txt_y))
-                    )
-                    subtitle_clips.append(txt_clip)
-                    sub_offset += s_dur
-                    if sent_idx < num_sent - 1:
-                        sub_offset += SENTENCE_GAP
-
-            # Image clip with Ken Burns effect
-            img_filename = item.get('image_filename', '')
-            img_path = Path(img_filename) if Path(img_filename).is_absolute() else assets_dir / img_filename
-
-            if img_path.exists():
-                # 회전 적용 (PIL로 이미지 전처리)
-                rotation = item.get('rotation', 0)
-                if rotation and rotation % 360 != 0:
-                    from PIL import Image as PILImage
-                    rotated_path = temp_dir / f"rot_{i}_{rotation}.png"
-                    if not rotated_path.exists():
-                        pil_img = PILImage.open(str(img_path))
-                        pil_img = pil_img.rotate(-rotation, expand=True)  # PIL은 반시계 방향
-                        pil_img.save(str(rotated_path))
-                    img_path = rotated_path
-
-                # 오버레이 적용 (PIL로 이미지에 직접)
-                overlays = _json_mod.loads(item.get('overlays', '[]') or '[]')
-                if overlays:
-                    from PIL import Image as _PILImg
-                    ov_path = temp_dir / f"ov_{i}.png"
-                    pil_src = _PILImg.open(str(img_path))
-                    pil_src = _apply_overlays_to_pil(pil_src, overlays)
-                    pil_src.save(str(ov_path))
-                    img_path = ov_path
-
-                # 이미지 표시 방식 + Ken Burns 강도
-                image_fit = item.get('image_fit', 'cover')  # 'cover' | 'fit'
-                ken_burns = max(0, min(100, int(item.get('ken_burns', 0) or 0)))  # 0~100
-                raw_img_clip = ImageClip(str(img_path))
-                iw, ih = raw_img_clip.size
-                cw, ch = canvas_size
-
-                # 강도 0이어도 cover 시 약간의 여유분 필요 → 최소 margin 1.02
-                kb_intensity = ken_burns / 100.0  # 0.0 ~ 1.0
-                margin = 1.02 + 0.13 * kb_intensity  # 1.02 (정적) ~ 1.15 (최대 줌)
-
-                if image_fit == 'fit':
-                    fit_h = int(ch * 0.82)  # 하단 18% 자막 영역 확보
-                    # contain: 이미지 전체가 잘리지 않고 (cw x fit_h) 안에 들어오도록
-                    contain_scale = min(cw / iw, fit_h / ih)
-                    fit_scale = contain_scale * margin
-                    base_img = raw_img_clip.resize((int(iw * fit_scale), int(ih * fit_scale)))
-                    # kb_area = contain 기준 크기 → 이 크기로 크롭하면 이미지 전체가 보임
-                    kb_area = (int(iw * contain_scale), int(ih * contain_scale))
-                else:
-                    cover_scale = max(cw / iw, ch / ih) * margin
-                    base_img = raw_img_clip.resize((int(iw * cover_scale), int(ih * cover_scale)))
-                    kb_area = (cw, ch)
-
-                # 짝수: 줌인, 홀수: 줌아웃 — 강도에 비례 (max ±13%)
-                if ken_burns > 0:
-                    max_zoom = 0.13 * kb_intensity
-                    kb_start = 1.0
-                    kb_end = (1.0 + max_zoom) if (i % 2 == 0) else (1.0 - max_zoom * 0.85)
-                else:
-                    kb_start = kb_end = 1.0
-
-                def _make_kb(clip, start_scale, end_scale, dur, area):
-                    def make_frame(t):
-                        from PIL import Image as PILImage
-                        import numpy as np
-                        progress = t / dur if dur > 0 else 0.0
-                        scale = start_scale + (end_scale - start_scale) * progress
-                        frame = clip.get_frame(0)
-                        h, w = frame.shape[:2]
-                        target_w, target_h = area
-                        view_w = target_w / scale
-                        view_h = target_h / scale
-                        left = (w - view_w) / 2.0
-                        top  = (h - view_h) / 2.0
-                        cropped = PILImage.fromarray(frame).crop(
-                            (left, top, left + view_w, top + view_h)
-                        )
-                        return np.array(cropped.resize((target_w, target_h), PILImage.LANCZOS))
-                    from moviepy.editor import VideoClip
-                    return VideoClip(make_frame, duration=dur).set_fps(24)
-
-                if ken_burns <= 0:
-                    # 정적 이미지: 한 번만 처리해서 ImageClip으로 (성능 최적화)
-                    import numpy as _np2
-                    target_w, target_h = kb_area
-                    src_frame = base_img.get_frame(0)
-                    sh, sw = src_frame.shape[:2]
-                    crop_left = (sw - target_w) / 2.0
-                    crop_top  = (sh - target_h) / 2.0
-                    static_pil = Image.fromarray(src_frame).crop(
-                        (crop_left, crop_top, crop_left + target_w, crop_top + target_h)
-                    )
-                    if static_pil.size != (target_w, target_h):
-                        static_pil = static_pil.resize((target_w, target_h), Image.LANCZOS)
-                    img_clip = ImageClip(_np2.array(static_pil)).set_duration(total_duration)
-                else:
-                    img_clip = _make_kb(base_img, kb_start, kb_end, total_duration, kb_area)
-
-                if image_fit == 'fit':
-                    img_clip = img_clip.set_position(('center', 'top'))
-            else:
-                img_clip = ColorClip(size=canvas_size, color=(0, 0, 0)).set_duration(total_duration)
-
-            bg_clip = ColorClip(size=canvas_size, color=BG_COLOR).set_duration(total_duration)
-
-            # Assemble
-            final_clip = CompositeVideoClip([bg_clip, img_clip] + subtitle_clips)
-            if a_clip is not None:
-                final_clip = final_clip.set_audio(a_clip)
-            final_clips.append(final_clip)
 
         # 클립 인코딩 - TTS 완료 직후 GPU 메모리 해제 후 NVENC 인코딩
         progress_callback(50, "클립 합치는 중...")

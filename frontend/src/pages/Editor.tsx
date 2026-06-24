@@ -631,11 +631,16 @@ function BgmSearchModal({ projectId, onClose, onApplied }: {
 }
 
 // ─── Global Settings Modal (6-10) ────────────
-function GlobalSettingsModal({ project, onClose, onSave }: {
+function GlobalSettingsModal({ project, projectId, onClose, onSave, onProjectUpdate, onOpenBgmSearch, onToggleAllTts }: {
   project: ProjectDetail
+  projectId: string
   onClose: () => void
   onSave: (settings: Record<string, unknown>, applyTransitionNow: boolean, defaultImageFit?: string, applyImageFitNow?: boolean, defaultKenBurns?: number, applyKenBurnsNow?: boolean) => Promise<void>
+  onProjectUpdate: (patch: Partial<ProjectDetail>) => void
+  onOpenBgmSearch: () => void
+  onToggleAllTts: () => void
 }) {
+  const { toast } = useToast()
   const [defaultTransition, setDefaultTransition] = useState(project.default_transition || 'none')
   const [defaultSlideDuration, setDefaultSlideDuration] = useState(project.default_slide_duration || 3.0)
   const [subtitleFontSize, setSubtitleFontSize] = useState(project.subtitle_font_size || 28)
@@ -659,6 +664,18 @@ function GlobalSettingsModal({ project, onClose, onSave }: {
     { value: '#fb923c', label: '주황색', color: '#fb923c' },
   ]
 
+  // ── 즉시 적용 헬퍼 (비율/오디오) — 변경 즉시 저장 (7-1 통합, 동작 보존) ──
+  const saveImmediate = async (patch: { aspect_ratio?: string; bgm_volume?: number; tts_master_volume?: number }) => {
+    try {
+      await api.updateSettings(projectId, {
+        bgm_volume: project.bgm_volume ?? 0.3,
+        aspect_ratio: project.aspect_ratio || '16:9',
+        tts_master_volume: project.tts_master_volume ?? 1.0,
+        ...patch,
+      })
+    } catch { toast('설정 저장 실패', 'error') }
+  }
+
   const handleSave = async () => {
     setSaving(true)
     await onSave({
@@ -676,7 +693,99 @@ function GlobalSettingsModal({ project, onClose, onSave }: {
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal" style={{ maxWidth: 520, maxHeight: '85vh', overflow: 'auto' }} onClick={e => e.stopPropagation()}>
-        <h2 style={{ margin: '0 0 1.2rem', fontSize: '1.1rem' }}>&#x2699;&#xFE0F; 전역 설정 (Master)</h2>
+        <h2 style={{ margin: '0 0 1.2rem', fontSize: '1.1rem' }}>&#x2699;&#xFE0F; 프로젝트 설정</h2>
+
+        {/* ── 영상 규격: 화면 비율 (즉시 적용) ── */}
+        <div style={{ marginBottom: '1rem' }}>
+          <label className="label">화면 비율</label>
+          <select className="input" value={project.aspect_ratio || '16:9'}
+            onChange={async e => {
+              const val = e.target.value
+              onProjectUpdate({ aspect_ratio: val })
+              await saveImmediate({ aspect_ratio: val })
+              toast(`화면 비율: ${val}`, 'success')
+            }}
+            style={{ width: '100%' }}>
+            <option value="16:9">16:9 (가로)</option>
+            <option value="9:16">9:16 (세로)</option>
+            <option value="1:1">1:1 (정사각형)</option>
+          </select>
+        </div>
+
+        {/* ── 오디오: BGM (즉시 적용) ── */}
+        <div style={{ marginBottom: '1rem' }}>
+          <label className="label">BGM 배경음악</label>
+          {project.bgm_filename ? (
+            <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '0.5rem 0.6rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.82rem', color: 'var(--text-secondary)', marginBottom: '0.35rem' }}>
+                <span style={{ fontSize: '1rem' }}>&#x1F3B5;</span>
+                <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {project.bgm_filename.replace('bgm_', '')}
+                </span>
+                <button className="slide-ctrl-btn danger" style={{ width: 22, height: 22, fontSize: '0.7rem' }}
+                  onClick={async () => {
+                    try {
+                      const updated = await api.deleteBgm(projectId)
+                      onProjectUpdate({ bgm_filename: updated.bgm_filename })
+                      toast('BGM 삭제됨', 'info')
+                    } catch { toast('BGM 삭제 실패', 'error') }
+                  }}>&#x2715;</button>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>볼륨</span>
+                <input type="range" min={0} max={1} step={0.05}
+                  value={project.bgm_volume ?? 0.3} style={{ flex: 1 }}
+                  onChange={e => onProjectUpdate({ bgm_volume: parseFloat(e.target.value) })}
+                  onMouseUp={() => saveImmediate({ bgm_volume: project.bgm_volume ?? 0.3 })}
+                />
+                <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', width: 30 }}>{Math.round((project.bgm_volume ?? 0.3) * 100)}%</span>
+              </div>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', gap: '0.5rem' }}>
+              <input type="file" accept="audio/*" style={{ display: 'none' }} id="bgm-upload-settings"
+                onChange={async e => {
+                  const file = e.target.files?.[0]
+                  if (!file) return
+                  try {
+                    const updated = await api.uploadBgm(projectId, file)
+                    onProjectUpdate({ bgm_filename: updated.bgm_filename, bgm_volume: updated.bgm_volume })
+                    toast('BGM 업로드 완료', 'success')
+                  } catch { toast('BGM 업로드 실패', 'error') }
+                  e.target.value = ''
+                }}
+              />
+              <label htmlFor="bgm-upload-settings" className="btn btn-ghost" style={{ flex: 1, textAlign: 'center', cursor: 'pointer', fontSize: '0.82rem' }}>
+                &#x1F3B5; 파일 업로드
+              </label>
+              <button className="btn btn-ghost" style={{ flex: 1, fontSize: '0.82rem' }} onClick={onOpenBgmSearch}>
+                🔍 무료 음악 검색
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* ── 오디오: Master TTS 볼륨 (즉시 적용) ── */}
+        <div style={{ marginBottom: '1rem' }}>
+          <label className="label">Master TTS 볼륨</label>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+            <input type="range" min={0} max={2} step={0.05}
+              value={project.tts_master_volume ?? 1.0} style={{ flex: 1 }}
+              onChange={e => onProjectUpdate({ tts_master_volume: parseFloat(e.target.value) })}
+              onMouseUp={() => saveImmediate({ tts_master_volume: project.tts_master_volume ?? 1.0 })}
+            />
+            <span style={{ fontSize: '0.82rem', color: 'var(--text-muted)', width: 36 }}>{Math.round((project.tts_master_volume ?? 1.0) * 100)}%</span>
+          </div>
+          <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>개별 TTS 볼륨에 곱해집니다</span>
+          <button className="btn btn-ghost" style={{ width: '100%', marginTop: '0.4rem', fontSize: '0.8rem' }} onClick={onToggleAllTts}>
+            &#x1F50A; TTS 전체 On/Off (이미지 슬라이드)
+          </button>
+        </div>
+
+        <hr className="divider" style={{ margin: '0.25rem 0 1rem' }} />
+        <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)', margin: '0 0 0.8rem' }}>
+          아래 장면 스타일 기본값은 하단 <strong>설정 저장</strong> 시 적용됩니다.
+        </p>
 
         {/* ── Default Transition ── */}
         <div style={{ marginBottom: '1rem' }}>
@@ -836,15 +945,144 @@ function parseOverlays(raw: string): Overlay[] {
 }
 function serializeOverlays(ovs: Overlay[]): string { return JSON.stringify(ovs) }
 
-// ─── Full Preview Canvas (전체화면 미리보기) ──
-function FullPreviewCanvas({ url, overlays, rotation = 0 }: { url: string; overlays: Overlay[]; rotation?: number }) {
+// ─── Ken Burns Fallback (서버 렌더 대기 중 즉각 체감용, 6-21) ──
+// 캔버스(이미지+오버레이)에 CSS scale 애니메이션을 적용해 백엔드 Ken Burns를 근사.
+function KenBurnsFallback({ projectId, slide }: { projectId: string; slide: Slide }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  useOverlayCanvas(canvasRef, url, overlays, false, rotation, 1600)
+  const overlays = parseOverlays(slide.overlays ?? '[]')
+  const url = slide.image_filename ? api.assetUrl(projectId, slide.image_filename) : ''
+  const rotation = slide.rotation ?? 0
+  useOverlayCanvas(canvasRef, url, overlays, false, rotation, 800)
+
+  const kb = Math.max(0, Math.min(100, slide.ken_burns ?? 0))
+  const zoomIn = (slide.order_index ?? 0) % 2 === 0          // 백엔드와 동일: 짝수=줌인
+  const maxZoom = 0.13 * (kb / 100)                          // 백엔드와 동일 강도 공식
+  const fromScale = zoomIn ? 1.0 : 1.0 + maxZoom
+  const toScale = zoomIn ? 1.0 + maxZoom : 1.0
+  const animate = kb > 0
+  const animName = `kb_${zoomIn ? 'in' : 'out'}_${Math.round(maxZoom * 1000)}`
+  const keyframes = `@keyframes ${animName} { from { transform: scale(${fromScale.toFixed(3)}); } to { transform: scale(${toScale.toFixed(3)}); } }`
+
   return (
-    <canvas
-      ref={canvasRef}
-      style={{ maxWidth: '100%', maxHeight: 'calc(100vh - 6rem)', objectFit: 'contain', borderRadius: 'var(--radius-md)', boxShadow: '0 10px 25px rgba(0,0,0,0.5)', display: 'block' }}
-    />
+    <div style={{ position: 'relative', width: '100%', aspectRatio: '16 / 9', overflow: 'hidden', background: '#000', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <style>{keyframes}</style>
+      <canvas
+        ref={canvasRef}
+        style={{
+          width: '100%', height: '100%', objectFit: 'cover',
+          transformOrigin: 'center center',
+          animation: animate ? `${animName} 4s ease-in-out infinite alternate` : undefined,
+        }}
+      />
+    </div>
+  )
+}
+
+// ─── Slide Preview Player (구간 렌더 미리보기, 6-20) ──
+function PreviewPlayerModal({ projectId, slide, onClose }: {
+  projectId: string; slide: Slide; onClose: () => void
+}) {
+  const [forceTts, setForceTts] = useState(false)
+  const [includeNeighbors, setIncludeNeighbors] = useState(false)
+  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading')
+  const [videoUrl, setVideoUrl] = useState<string>('')
+  const [version, setVersion] = useState(0)   // 강제 새로고침(캐시 버스팅)
+  const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // 슬라이드/forceTts 변경 시 미리보기 요청 → 준비되면 <video>에 반영
+  useEffect(() => {
+    let cancelled = false
+    setStatus('loading')
+    setVideoUrl('')
+    const opts = { include_neighbors: includeNeighbors, force_tts: forceTts }
+    // 캐시 버스팅: forceTts/neighbors/버전이 바뀌면 <video src> 문자열이 달라짐 → 재로드
+    const buildUrl = () => api.previewVideoUrl(projectId, slide.id, opts, `${includeNeighbors ? 1 : 0}-${forceTts ? 1 : 0}-${version}`)
+
+      ; (async () => {
+        try {
+          const res = await api.requestPreview(projectId, slide.id, opts)
+          if (cancelled) return
+          if (res.cached && res.status === 'ready') {
+            setStatus('ready'); setVideoUrl(buildUrl()); return
+          }
+          // rendering — 1.2s 간격 폴링
+          const poll = async () => {
+            if (cancelled) return
+            const ready = await api.previewReady(buildUrl())
+            if (cancelled) return
+            if (ready) { setStatus('ready'); setVideoUrl(buildUrl()) }
+            else { pollRef.current = setTimeout(poll, 1200) }
+          }
+          poll()
+        } catch {
+          if (!cancelled) setStatus('error')
+        }
+      })()
+
+    return () => {
+      cancelled = true
+      if (pollRef.current) { clearTimeout(pollRef.current); pollRef.current = null }
+    }
+  }, [projectId, slide.id, forceTts, includeNeighbors, version])
+
+  const toggleForceTts = () => { setForceTts(v => !v); setVersion(v => v + 1) }
+  const toggleNeighbors = () => { setIncludeNeighbors(v => !v); setVersion(v => v + 1) }
+  const isVideo = slide.slide_type === 'video'
+  const isImage = !isVideo
+  const hasImage = !!slide.image_filename
+  // 첫 슬라이드(order_index 0)는 이전 슬라이드가 없으므로 트랜지션 미리보기 비활성
+  const canPreviewTransition = (slide.order_index ?? 0) > 0
+
+  return (
+    <div className="modal-overlay" onClick={onClose} style={{ zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '2rem' }}>
+      <div style={{ position: 'relative', maxWidth: '100%', maxHeight: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.75rem' }} onClick={e => e.stopPropagation()}>
+        <div style={{ width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+            <strong style={{ color: 'var(--text)' }}>▶ 슬라이드 미리보기 (렌더)</strong>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', fontSize: '0.85rem', color: 'var(--text-muted)', cursor: 'pointer' }}>
+              <input type="checkbox" checked={forceTts} onChange={toggleForceTts} disabled={status === 'loading'} />
+              정확히 듣기 (TTS 생성)
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', fontSize: '0.85rem', color: canPreviewTransition ? 'var(--text-muted)' : 'var(--text-muted)', cursor: canPreviewTransition ? 'pointer' : 'not-allowed', opacity: canPreviewTransition ? 1 : 0.5 }} title={canPreviewTransition ? '이전 슬라이드와의 트랜지션 포함' : '첫 슬라이드는 이전 슬라이드가 없습니다'}>
+              <input type="checkbox" checked={includeNeighbors} onChange={toggleNeighbors} disabled={status === 'loading' || !canPreviewTransition} />
+              트랜지션 포함
+            </label>
+          </div>
+          <button className="btn btn-ghost btn-icon" onClick={onClose} style={{ background: 'var(--bg-card)', color: 'var(--text)', borderRadius: '50%', width: '36px', height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: 'var(--shadow)' }}>✕</button>
+        </div>
+
+        <div style={{ position: 'relative', background: '#000', borderRadius: 'var(--radius-md)', overflow: 'hidden', boxShadow: '0 10px 25px rgba(0,0,0,0.5)', width: isVideo ? 'min(560px, 90vw)' : 'min(720px, 90vw)' }}>
+          {status === 'ready' && videoUrl ? (
+            <video
+              key={videoUrl}
+              src={videoUrl}
+              autoPlay loop controls
+              style={{ width: '100%', maxHeight: 'calc(100vh - 8rem)', display: 'block', background: '#000' }}
+            />
+          ) : status === 'error' ? (
+            <div style={{ padding: '3rem', color: 'var(--text-muted)', textAlign: 'center' }}>미리보기 생성에 실패했습니다.</div>
+          ) : isImage && hasImage ? (
+            // 서버 렌더 대기 중 — 클라이언트 Ken Burns 근사 애니메이션으로 즉각 체감 (6-21)
+            <div style={{ position: 'relative', width: '100%' }}>
+              <KenBurnsFallback projectId={projectId} slide={slide} />
+              <div style={{ position: 'absolute', top: '0.5rem', left: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.25rem 0.6rem', borderRadius: 'var(--radius-sm)', background: 'rgba(0,0,0,0.55)', color: '#fff', fontSize: '0.75rem' }}>
+                <span className="spinner" />
+                렌더링 중... {(slide.ken_burns ?? 0) > 0 ? '(Ken Burns 근사 표시)' : ''}
+              </div>
+            </div>
+          ) : (
+            <div style={{ padding: '3rem', color: 'var(--text-muted)', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.75rem' }}>
+              <span className="spinner" />
+              <span>미리보기 렌더링 중... {forceTts ? '(TTS 생성 포함)' : ''}</span>
+            </div>
+          )}
+        </div>
+        <p style={{ color: 'var(--text-muted)', fontSize: '0.78rem', textAlign: 'center', maxWidth: 600 }}>
+          트랜지션·Ken Burns·오버레이·자막 타이밍을 실제 렌더 결과로 확인합니다.
+          {!forceTts && ' 기본 모드는 캐시된 TTS만 사용(없으면 무음). "정확히 듣기"로 음성을 포함하세요.'}
+        </p>
+      </div>
+    </div>
   )
 }
 
@@ -1503,13 +1741,13 @@ function SubtitleTimeline({ subs, videoDuration, onChange, videoRef }: {
 }
 
 // ─── Slide Card ──────────────────────────────
-function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveUp, onMoveDown, onPreviewImage, isSelected, onToggleSelect }: {
+function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveUp, onMoveDown, onPreviewVideo, isSelected, onToggleSelect }: {
   slide: Slide; index: number; total: number; projectId: string
   onUpdate: (delta: Partial<Slide>) => void
   onDelete: () => void
   onMoveUp: () => void
   onMoveDown: () => void
-  onPreviewImage?: (url: string, overlays: Overlay[], rotation: number) => void
+  onPreviewVideo?: () => void
   isSelected?: boolean
   onToggleSelect?: () => void
 }) {
@@ -1581,8 +1819,9 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
           {slide.image_filename ? (
             <canvas
               ref={thumbCanvasRef}
-              style={{ width: '100%', height: '100%', objectFit: 'contain', cursor: onPreviewImage ? 'pointer' : 'default', transform: rotation ? `rotate(${rotation}deg)` : undefined, display: 'block' }}
-              onClick={() => onPreviewImage && onPreviewImage(api.assetUrl(projectId, slide.image_filename!), overlays, rotation)}
+              style={{ width: '100%', height: '100%', objectFit: 'contain', cursor: onPreviewVideo ? 'pointer' : 'default', transform: rotation ? `rotate(${rotation}deg)` : undefined, display: 'block' }}
+              onClick={() => onPreviewVideo && onPreviewVideo()}
+              title="클릭하여 렌더 미리보기"
             />
           ) : (
             <span style={{ color: 'var(--text-muted)', fontSize: '1.5rem' }}>🖼️</span>
@@ -1604,6 +1843,13 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
           <label className="label" style={{ margin: 0 }}>
             {isVideo ? '🎬' : '🖼️'} Slide {index + 1} — {slide.label || slide.video_filename || slide.image_filename}
           </label>
+          {onPreviewVideo && (
+            <button
+              onClick={onPreviewVideo}
+              style={{ marginLeft: 'auto', padding: '0.25rem 0.65rem', fontSize: '0.8rem', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', background: 'var(--bg-secondary)', color: 'var(--text)', cursor: 'pointer' }}
+              title="이 슬라이드를 실제 렌더 결과로 미리보기"
+            >▶ 렌더 미리보기</button>
+          )}
         </div>
 
         {/* Video Slide: preview + volume + subtitles */}
@@ -1970,7 +2216,7 @@ export default function Editor() {
   const [showSettings, setShowSettings] = useState(false)
   const [showBgmSearch, setShowBgmSearch] = useState(false)
   const [isDragging, setIsDragging] = useState(false)
-  const [previewImage, setPreviewImage] = useState<{ url: string; overlays: Overlay[]; rotation: number } | null>(null)
+  const [previewVideoSlide, setPreviewVideoSlide] = useState<Slide | null>(null)
   const [selectedSlideIds, setSelectedSlideIds] = useState<Set<string>>(new Set())
   const [collageLayout, setCollageLayout] = useState('auto')
   const [dragIdx, setDragIdx] = useState<number | null>(null)
@@ -2258,10 +2504,15 @@ export default function Editor() {
           }}
         />}
 
+        {/* 현재 상태 저장 (별도 버튼) */}
+        <button className="btn-action-primary save" onClick={handleSave} disabled={saving} style={{ marginTop: '0.25rem' }}>
+          {saving ? <><span className="spinner" /> 저장 중...</> : '💾 현재 상태 저장'}
+        </button>
+
         <hr className="divider" style={{ margin: '0.25rem 0' }} />
 
-        {/* ── Upload Section ── */}
-        <div className="sidebar-section-title">&#x1F4E4; 미디어 추가</div>
+        {/* ── 입력 Section ── */}
+        <div className="sidebar-section-title">&#x1F4E5; 입력</div>
         <div style={{ marginBottom: '0.15rem' }}>
           <select
             className="input"
@@ -2305,143 +2556,15 @@ export default function Editor() {
 
         <hr className="divider" style={{ margin: '0.25rem 0' }} />
 
-        {/* ── Settings Section ── */}
-        <div className="sidebar-section-title">&#x2699;&#xFE0F; 프로젝트 설정</div>
+        {/* ── 설정 · 편집 Section ── */}
+        <div className="sidebar-section-title">&#x2699;&#xFE0F; 설정 · 편집</div>
         <button className="action-card" onClick={() => setShowSettings(true)} style={{ padding: '0.45rem 0.65rem' }}>
           <div className="action-icon" style={{ background: 'rgba(139,92,246,0.12)', width: 28, height: 28, fontSize: '0.85rem' }}>&#x2699;</div>
           <div className="action-label">
-            <span>전역 설정 (Master)</span>
-            <span>전환, 자막, 워터마크 등</span>
+            <span>프로젝트 설정</span>
+            <span>비율 · 오디오 · TTS 일괄 · 장면 스타일</span>
           </div>
         </button>
-
-        {/* Aspect Ratio */}
-        <div>
-          <label className="label" style={{ fontSize: '0.72rem' }}>화면 비율</label>
-          <select
-            className="input"
-            value={project?.aspect_ratio || '16:9'}
-            onChange={async e => {
-              if (!projectId || !project) return
-              const val = e.target.value
-              try {
-                const updated = await api.updateSettings(projectId, { bgm_volume: project.bgm_volume ?? 0.3, aspect_ratio: val, tts_master_volume: project.tts_master_volume ?? 1.0 })
-                setProject(prev => prev ? { ...prev, aspect_ratio: updated.aspect_ratio } : prev)
-                toast(`화면 비율: ${val}`, 'success')
-              } catch { toast('설정 저장 실패', 'error') }
-            }}
-            style={{ width: '100%', padding: '0.35rem 0.5rem', fontSize: '0.78rem' }}
-          >
-            <option value="16:9">16:9 (가로)</option>
-            <option value="9:16">9:16 (세로)</option>
-            <option value="1:1">1:1 (정사각형)</option>
-          </select>
-        </div>
-
-        {/* BGM */}
-        <div>
-          <label className="label" style={{ fontSize: '0.72rem' }}>BGM 배경음악</label>
-          {project?.bgm_filename ? (
-            <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '0.5rem 0.6rem' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.78rem', color: 'var(--text-secondary)', marginBottom: '0.35rem' }}>
-                <span style={{ fontSize: '1rem' }}>&#x1F3B5;</span>
-                <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {project.bgm_filename.replace('bgm_', '')}
-                </span>
-                <button className="slide-ctrl-btn danger" style={{ width: 22, height: 22, fontSize: '0.7rem' }}
-                  onClick={async () => {
-                    if (!projectId) return
-                    try {
-                      const updated = await api.deleteBgm(projectId)
-                      setProject(prev => prev ? { ...prev, bgm_filename: updated.bgm_filename } : prev)
-                      toast('BGM 삭제됨', 'info')
-                    } catch { toast('BGM 삭제 실패', 'error') }
-                  }}>&#x2715;</button>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>볼륨</span>
-                <input type="range" min={0} max={1} step={0.05}
-                  value={project.bgm_volume ?? 0.3}
-                  style={{ flex: 1 }}
-                  onChange={e => {
-                    const v = parseFloat(e.target.value)
-                    setProject(prev => prev ? { ...prev, bgm_volume: v } : prev)
-                  }}
-                  onMouseUp={async () => {
-                    if (!projectId || !project) return
-                    try { await api.updateSettings(projectId, { bgm_volume: project.bgm_volume ?? 0.3, aspect_ratio: project.aspect_ratio || '16:9', tts_master_volume: project.tts_master_volume ?? 1.0 }) }
-                    catch { toast('설정 저장 실패', 'error') }
-                  }}
-                />
-                <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', width: 30 }}>{Math.round((project.bgm_volume ?? 0.3) * 100)}%</span>
-              </div>
-            </div>
-          ) : (
-            <>
-              <input
-                type="file" accept="audio/*" style={{ display: 'none' }} id="bgm-upload"
-                onChange={async e => {
-                  const file = e.target.files?.[0]
-                  if (!file || !projectId) return
-                  try {
-                    const updated = await api.uploadBgm(projectId, file)
-                    setProject(prev => prev ? { ...prev, bgm_filename: updated.bgm_filename, bgm_volume: updated.bgm_volume } : prev)
-                    toast('BGM 업로드 완료', 'success')
-                  } catch { toast('BGM 업로드 실패', 'error') }
-                  e.target.value = ''
-                }}
-              />
-              <label htmlFor="bgm-upload" className="action-card" style={{ cursor: 'pointer' }}>
-                <div className="action-icon" style={{ background: 'rgba(245,158,11,0.12)' }}>&#x1F3B5;</div>
-                <div className="action-label">
-                  <span>BGM 추가</span>
-                  <span>오디오 파일 업로드</span>
-                </div>
-              </label>
-              <button className="action-card" onClick={() => setShowBgmSearch(true)}>
-                <div className="action-icon" style={{ background: 'rgba(168,85,247,0.12)' }}>🔍</div>
-                <div className="action-label">
-                  <span>무료 음악 검색</span>
-                  <span>Pixabay · AI 추천 포함</span>
-                </div>
-              </button>
-            </>
-          )}
-        </div>
-
-        {/* Master TTS Volume */}
-        {project && (
-          <div>
-            <label className="label" style={{ fontSize: '0.72rem' }}>Master TTS 볼륨</label>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-              <input type="range" min={0} max={2} step={0.05}
-                value={project.tts_master_volume ?? 1.0}
-                style={{ flex: 1 }}
-                onChange={e => {
-                  const v = parseFloat(e.target.value)
-                  setProject(prev => prev ? { ...prev, tts_master_volume: v } : prev)
-                }}
-                onMouseUp={async () => {
-                  if (!projectId || !project) return
-                  try {
-                    await api.updateSettings(projectId, {
-                      bgm_volume: project.bgm_volume ?? 0.3,
-                      aspect_ratio: project.aspect_ratio || '16:9',
-                      tts_master_volume: project.tts_master_volume ?? 1.0,
-                    })
-                  } catch { toast('설정 저장 실패', 'error') }
-                }}
-              />
-              <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', width: 36 }}>{Math.round((project.tts_master_volume ?? 1.0) * 100)}%</span>
-            </div>
-            <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>개별 TTS 볼륨에 곱해집니다</span>
-          </div>
-        )}
-
-        <hr className="divider" style={{ margin: '0.25rem 0' }} />
-
-        {/* ── Tools Section ── */}
-        <div className="sidebar-section-title">&#x1F6E0;&#xFE0F; 도구</div>
         <button className="action-card" onClick={() => setShowJson(true)}>
           <div className="action-icon" style={{ background: 'rgba(59,130,246,0.12)' }}>&#x007B;&#x007D;</div>
           <div className="action-label">
@@ -2449,72 +2572,44 @@ export default function Editor() {
             <span>대사 텍스트 일괄 적용</span>
           </div>
         </button>
-        <button className="action-card" onClick={() => {
-          const trans = project?.default_transition || 'none'
-          const updated = slides.map((s, i) => i === 0 ? s : { ...s, transition: trans })
-          slidesRef.current = updated
-          setSlides(updated)
-          toast(`전체 전환 효과: ${trans === 'none' ? '없음' : trans}`, 'success')
-        }} style={{ padding: '0.45rem 0.65rem' }}>
-          <div className="action-icon" style={{ background: 'rgba(168,85,247,0.12)', width: 28, height: 28, fontSize: '0.85rem' }}>&#x21C4;</div>
-          <div className="action-label">
-            <span>전환 일괄 적용</span>
-            <span>전역 설정 값으로 통일</span>
-          </div>
-        </button>
-        <button className="action-card" onClick={() => {
-          const allOn = slides.every(s => s.use_tts === 1)
-          const updated = slides.map(s => s.slide_type === 'image' ? { ...s, use_tts: allOn ? 0 : 1 } : s)
-          slidesRef.current = updated
-          setSlides(updated)
-          toast(allOn ? 'TTS 전체 OFF' : 'TTS 전체 ON', 'info')
-        }} style={{ padding: '0.45rem 0.65rem' }}>
-          <div className="action-icon" style={{ background: 'rgba(14,165,233,0.12)', width: 28, height: 28, fontSize: '0.85rem' }}>&#x1F50A;</div>
-          <div className="action-label">
-            <span>TTS 일괄 On/Off</span>
-            <span>이미지 슬라이드 전체 토글</span>
-          </div>
-        </button>
 
         <hr className="divider" style={{ margin: '0.25rem 0' }} />
 
-        {/* ── Actions Section ── */}
-        <div className="sidebar-section-title">&#x25B6;&#xFE0F; 실행</div>
-        <button className="btn-action-primary save" onClick={handleSave} disabled={saving}>
-          {saving ? <><span className="spinner" /> 저장 중...</> : '저장'}
-        </button>
-        <button className="btn-action-primary render" onClick={handleRender} disabled={isActive || slides.length === 0}>
-          {isActive ? <><span className="spinner" /> 렌더링 중...</> : '렌더링 시작'}
-        </button>
+        {/* ── 렌더링 Section (하단 고정 강조) ── */}
+        <div style={{ marginTop: 'auto', paddingTop: '0.6rem', borderTop: '2px solid var(--border)', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+          <div className="sidebar-section-title" style={{ marginBottom: 0 }}>&#x1F3AC; 렌더링</div>
+          <button className="btn-action-primary render" onClick={handleRender} disabled={isActive || slides.length === 0}>
+            {isActive ? <><span className="spinner" /> 렌더링 중...</> : '렌더링 시작'}
+          </button>
 
-        {/* Render Progress */}
-        {isActive && (
-          <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '0.6rem' }}>
-            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '0.35rem' }}>
-              {progressMsg} ({progress}%)
+          {/* Render Progress */}
+          {isActive && (
+            <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '0.6rem' }}>
+              <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '0.35rem' }}>
+                {progressMsg} ({progress}%)
+              </div>
+              <div className="progress-bar-wrap">
+                <div className="progress-bar-fill animate-pulse" style={{ width: `${Math.max(5, progress)}%` }} />
+              </div>
             </div>
-            <div className="progress-bar-wrap">
-              <div className="progress-bar-fill animate-pulse" style={{ width: `${Math.max(5, progress)}%` }} />
+          )}
+
+          {/* Render Error */}
+          {!isActive && project?.status === 'ERROR' && (
+            <div style={{
+              background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.4)',
+              borderRadius: 'var(--radius-md)', padding: '0.65rem', fontSize: '0.75rem'
+            }}>
+              <div style={{ color: '#f87171', fontWeight: 700, marginBottom: '0.25rem' }}>렌더링 실패</div>
+              <div style={{ color: 'var(--text-muted)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{project.message}</div>
             </div>
-          </div>
-        )}
+          )}
 
-        {/* Render Error */}
-        {!isActive && project?.status === 'ERROR' && (
-          <div style={{
-            background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.4)',
-            borderRadius: 'var(--radius-md)', padding: '0.65rem', fontSize: '0.75rem'
-          }}>
-            <div style={{ color: '#f87171', fontWeight: 700, marginBottom: '0.25rem' }}>렌더링 실패</div>
-            <div style={{ color: 'var(--text-muted)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{project.message}</div>
-          </div>
-        )}
-
-        {/* ── Output Section ── */}
-        {hasVideo && (
-          <>
-            <hr className="divider" style={{ margin: '0.25rem 0' }} />
-            <div className="sidebar-section-title">&#x1F3AC; 결과물</div>
+          {/* ── Output (결과물) ── */}
+          {hasVideo && (
+            <>
+              <hr className="divider" style={{ margin: '0.25rem 0' }} />
+            <div className="sidebar-section-title">&#x1F4E6; 결과물</div>
             <div>
               <video
                 key={api.downloadUrl(projectId!, project?.updated_at)}
@@ -2536,6 +2631,7 @@ export default function Editor() {
             </div>
           </>
         )}
+        </div>
 
       </aside>
 
@@ -2677,7 +2773,15 @@ export default function Editor() {
                     }}
                     onMoveUp={() => moveSlide(i, -1)}
                     onMoveDown={() => moveSlide(i, 1)}
-                    onPreviewImage={(url, ovs, rot) => setPreviewImage({ url, overlays: ovs, rotation: rot })}
+                    onPreviewVideo={async () => {
+                      // 즉시 저장 후 미리보기 — debounce(2s) 대기 없이 최신 편집 상태 반영
+                      if (projectId) {
+                        try {
+                          await api.saveSlides(projectId, slidesRef.current.map((s, j) => ({ ...s, order_index: j })))
+                        } catch { /* silent */ }
+                      }
+                      setPreviewVideoSlide(slide)
+                    }}
                     isSelected={selectedSlideIds.has(slide.id)}
                     onToggleSelect={() => toggleSelectSlide(slide.id)}
                   />
@@ -2713,7 +2817,17 @@ export default function Editor() {
       {showSettings && project && (
         <GlobalSettingsModal
           project={project}
+          projectId={projectId!}
           onClose={() => setShowSettings(false)}
+          onProjectUpdate={patch => setProject(prev => prev ? { ...prev, ...patch } : prev)}
+          onOpenBgmSearch={() => setShowBgmSearch(true)}
+          onToggleAllTts={() => {
+            const allOn = slides.every(s => s.use_tts === 1)
+            const updated = slides.map(s => s.slide_type === 'image' ? { ...s, use_tts: allOn ? 0 : 1 } : s)
+            slidesRef.current = updated
+            setSlides(updated)
+            toast(allOn ? 'TTS 전체 OFF' : 'TTS 전체 ON', 'info')
+          }}
           onSave={async (settings, applyTransitionNow, defaultImageFit, applyImageFitNow, defaultKenBurns, applyKenBurnsNow) => {
             if (!projectId) return
             try {
@@ -2739,7 +2853,7 @@ export default function Editor() {
               setSlides(updatedSlides)
               // 변경된 값 즉시 저장
               await api.saveSlides(projectId, updatedSlides.map((s, j) => ({ ...s, order_index: j })))
-              toast('전역 설정 저장 완료', 'success')
+              toast('프로젝트 설정 저장 완료', 'success')
               setShowSettings(false)
             } catch { toast('설정 저장 실패', 'error') }
           }}
@@ -2755,16 +2869,13 @@ export default function Editor() {
         />
       )}
 
-      {/* Image Preview Modal */}
-      {previewImage && (
-        <div className="modal-overlay" onClick={() => setPreviewImage(null)} style={{ zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '2rem' }}>
-          <div style={{ position: 'relative', maxWidth: '100%', maxHeight: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center' }} onClick={e => e.stopPropagation()}>
-            <div style={{ width: '100%', display: 'flex', justifyContent: 'flex-end', marginBottom: '0.5rem' }}>
-              <button className="btn btn-ghost btn-icon" onClick={() => setPreviewImage(null)} style={{ background: 'var(--bg-card)', color: 'var(--text)', borderRadius: '50%', width: '36px', height: '36px', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: 'var(--shadow)' }}>✕</button>
-            </div>
-            <FullPreviewCanvas url={previewImage.url} overlays={previewImage.overlays} rotation={previewImage.rotation} />
-          </div>
-        </div>
+      {/* Slide Preview Player Modal (6-20) */}
+      {previewVideoSlide && projectId && (
+        <PreviewPlayerModal
+          projectId={projectId}
+          slide={previewVideoSlide}
+          onClose={() => setPreviewVideoSlide(null)}
+        />
       )}
 
     </div>
