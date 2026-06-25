@@ -368,56 +368,6 @@ function GooglePhotosModal({ projectId, onClose, onImported }: {
   )
 }
 
-// ─── JSON Batch Modal ────────────────────────
-function JsonModal({ slides, onApply, onClose }: {
-  slides: Slide[]; onApply: (updated: Slide[]) => void; onClose: () => void
-}) {
-  const { toast } = useToast()
-  const [json, setJson] = useState('')
-
-  const handleApply = () => {
-    try {
-      const clean = json.replace(/\[cite.*?\]/g, '')
-      const data: Record<string, string> = JSON.parse(clean)
-      const updated = slides.map((s, i) => {
-        if (data[String(i)] !== undefined) return { ...s, text: data[String(i)] }
-        return s
-      })
-      const count = Object.keys(data).filter(k => parseInt(k) < slides.length).length
-      onApply(updated)
-      toast(`${count}개 슬라이드 대사 적용 완료`, 'success')
-      onClose()
-    } catch (e) {
-      toast('JSON 형식 오류. 예: {"0": "텍스트", "1": "텍스트"}', 'error')
-    }
-  }
-
-  return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" style={{ maxWidth: 600 }} onClick={e => e.stopPropagation()}>
-        <div className="modal-header">
-          <span className="modal-title">🛠️ JSON 대사 일괄 입력</span>
-          <button className="btn btn-ghost btn-icon" onClick={onClose}>✕</button>
-        </div>
-        <p style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', marginBottom: '0.75rem' }}>
-          형식: {`{"0": "첫번째 슬라이드 대사", "1": "두번째 슬라이드 대사"}`}
-        </p>
-        <textarea
-          className="textarea"
-          value={json}
-          onChange={e => setJson(e.target.value)}
-          rows={8}
-          placeholder='{"0": "텍스트", "1": "텍스트"}'
-          style={{ fontFamily: 'monospace', fontSize: '0.85rem' }}
-        />
-        <div className="modal-footer">
-          <button className="btn btn-secondary" onClick={onClose}>취소</button>
-          <button className="btn btn-primary" onClick={handleApply}>✅ 적용</button>
-        </div>
-      </div>
-    </div>
-  )
-}
 
 // ─── Project Title Inline Editor ─────────────
 function ProjectTitleEditor({ name, onSave }: { name: string; onSave: (name: string) => Promise<void> }) {
@@ -631,14 +581,129 @@ function BgmSearchModal({ projectId, onClose, onApplied }: {
 }
 
 // ─── Global Settings Modal (6-10) ────────────
-function GlobalSettingsModal({ project, projectId, onClose, onSave, onProjectUpdate, onOpenBgmSearch, onToggleAllTts }: {
+// ─── Import Modal (입력) — 7-9 ──
+function ImportModal({ slides, insertAt, setInsertAt, uploading, onUpload, onGooglePhotos, onClose }: {
+  slides: Slide[]; insertAt: number; setInsertAt: (n: number) => void
+  uploading: boolean; onUpload: (files: File[]) => void; onGooglePhotos: () => void; onClose: () => void
+}) {
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" style={{ maxWidth: 460 }} onClick={e => e.stopPropagation()}>
+        <div className="modal-header">
+          <span className="modal-title">&#x1F4E5; 미디어 입력</span>
+          <button className="btn btn-ghost btn-icon" onClick={onClose}>&#x2715;</button>
+        </div>
+
+        <div style={{ marginBottom: '0.75rem' }}>
+          <label className="label">삽입 위치</label>
+          <select className="input" value={insertAt} onChange={e => setInsertAt(Number(e.target.value))} style={{ width: '100%' }}>
+            <option value={-1}>맨 끝에 추가</option>
+            {slides.map((_, i) => (<option key={i} value={i}>{i + 1}번 슬라이드 앞에</option>))}
+          </select>
+        </div>
+
+        <input id="import-file" type="file" multiple
+          accept="image/*,.pdf,video/mp4,video/webm,video/quicktime,video/x-msvideo,video/x-matroska"
+          style={{ display: 'none' }}
+          onChange={e => { onUpload(Array.from(e.target.files || [])); e.target.value = '' }} />
+        <label htmlFor="import-file" className="upload-zone">
+          {uploading ? (
+            <><span className="spinner" /><span className="upload-title">업로드 중...</span></>
+          ) : (
+            <>
+              <span className="upload-icon">&#x1F4C1;</span>
+              <span className="upload-title">파일 선택 / 드래그</span>
+              <span className="upload-hint">이미지, PDF, 영상 지원</span>
+            </>
+          )}
+        </label>
+
+        <button className="action-card" onClick={onGooglePhotos} style={{ marginTop: '0.5rem' }}>
+          <div className="action-icon" style={{ background: 'rgba(34,197,94,0.12)' }}>&#x1F4F7;</div>
+          <div className="action-label">
+            <span>Google Photos</span>
+            <span>사진 가져오기</span>
+          </div>
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ─── Render Modal (렌더링 + 결과물) — 7-9 ──
+function RenderModal({ isActive, progress, progressMsg, project, projectId, hasVideo, onRender, onOpenYoutube, onClose }: {
+  isActive: boolean; progress: number; progressMsg: string
+  project: ProjectDetail | null; projectId: string; hasVideo: boolean
+  onRender: () => void; onOpenYoutube: () => void; onClose: () => void
+}) {
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" style={{ maxWidth: 460 }} onClick={e => e.stopPropagation()}>
+        <div className="modal-header">
+          <span className="modal-title">&#x1F3AC; 렌더링</span>
+          <button className="btn btn-ghost btn-icon" onClick={onClose}>&#x2715;</button>
+        </div>
+
+        <button className="btn-action-primary render" onClick={onRender} disabled={isActive} style={{ width: '100%' }}>
+          {isActive ? <><span className="spinner" /> 렌더링 중...</> : '렌더링 시작'}
+        </button>
+
+        {isActive && (
+          <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '0.6rem', marginTop: '0.5rem' }}>
+            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '0.35rem' }}>
+              {progressMsg} ({progress}%)
+            </div>
+            <div className="progress-bar-wrap">
+              <div className="progress-bar-fill animate-pulse" style={{ width: `${Math.max(5, progress)}%` }} />
+            </div>
+          </div>
+        )}
+
+        {!isActive && project?.status === 'ERROR' && (
+          <div style={{
+            background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.4)',
+            borderRadius: 'var(--radius-md)', padding: '0.65rem', fontSize: '0.75rem', marginTop: '0.5rem'
+          }}>
+            <div style={{ color: '#f87171', fontWeight: 700, marginBottom: '0.25rem' }}>렌더링 실패</div>
+            <div style={{ color: 'var(--text-muted)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{project.message}</div>
+          </div>
+        )}
+
+        {hasVideo && (
+          <>
+            <hr className="divider" style={{ margin: '0.75rem 0' }} />
+            <div className="sidebar-section-title" style={{ marginBottom: '0.4rem' }}>&#x1F4E6; 결과물</div>
+            <video key={api.downloadUrl(projectId, project?.updated_at)} controls
+              style={{ width: '100%', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)', background: '#000' }}>
+              <source src={api.downloadUrl(projectId, project?.updated_at)} type="video/mp4" />
+            </video>
+            <div className="action-grid" style={{ marginTop: '0.5rem' }}>
+              <a className="action-grid-item" href={api.downloadUrl(projectId, project?.updated_at)} download>
+                <span className="grid-icon">&#x1F4E5;</span>
+                <span>MP4 다운로드</span>
+              </a>
+              <button className="action-grid-item" onClick={onOpenYoutube}>
+                <span className="grid-icon">&#x25B6;&#xFE0F;</span>
+                <span>YouTube 업로드</span>
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function GlobalSettingsModal({ project, projectId, slides, onClose, onSave, onProjectUpdate, onOpenBgmSearch, onToggleAllTts, onApplySlides }: {
   project: ProjectDetail
   projectId: string
+  slides: Slide[]
   onClose: () => void
   onSave: (settings: Record<string, unknown>, applyTransitionNow: boolean, defaultImageFit?: string, applyImageFitNow?: boolean, defaultKenBurns?: number, applyKenBurnsNow?: boolean) => Promise<void>
   onProjectUpdate: (patch: Partial<ProjectDetail>) => void
   onOpenBgmSearch: () => void
   onToggleAllTts: () => void
+  onApplySlides: (updated: Slide[]) => void
 }) {
   const { toast } = useToast()
   const [defaultTransition, setDefaultTransition] = useState(project.default_transition || 'none')
@@ -654,6 +719,7 @@ function GlobalSettingsModal({ project, projectId, onClose, onSave, onProjectUpd
   const [applyImageFit, setApplyImageFit] = useState(false)
   const [defaultKenBurns, setDefaultKenBurns] = useState<number>(0)
   const [applyKenBurns, setApplyKenBurns] = useState(false)
+  const [jsonText, setJsonText] = useState('')
 
   const FONT_COLORS = [
     { value: 'white', label: '흰색', color: '#fff' },
@@ -916,6 +982,28 @@ function GlobalSettingsModal({ project, projectId, onClose, onSave, onProjectUpd
               <span style={{ fontSize: '0.78rem', width: 36 }}>{Math.round(watermarkOpacity * 100)}%</span>
             </div>
           )}
+        </div>
+
+        {/* ── JSON 대사 일괄 입력 ── */}
+        <div style={{ marginBottom: '1rem' }}>
+          <label className="label">대사 텍스트 일괄 입력 (JSON)</label>
+          <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', margin: '0 0 0.4rem' }}>
+            형식: {`{"0": "첫 슬라이드 대사", "1": "두번째..."}`}
+          </p>
+          <textarea className="textarea" rows={4} value={jsonText} onChange={e => setJsonText(e.target.value)}
+            placeholder='{"0": "텍스트", "1": "텍스트"}'
+            style={{ width: '100%', fontFamily: 'monospace', fontSize: '0.8rem' }} />
+          <button className="btn btn-ghost" style={{ marginTop: '0.4rem', width: '100%', fontSize: '0.82rem' }} onClick={() => {
+            try {
+              const clean = jsonText.replace(/\[cite.*?\]/g, '')
+              const data: Record<string, string> = JSON.parse(clean)
+              const updated = slides.map((s, i) => data[String(i)] !== undefined ? { ...s, text: data[String(i)] } : s)
+              const count = Object.keys(data).filter(k => parseInt(k) < slides.length).length
+              onApplySlides(updated)
+              toast(`${count}개 슬라이드 대사 적용 완료`, 'success')
+              setJsonText('')
+            } catch { toast('JSON 형식 오류', 'error') }
+          }}>✅ 대사 일괄 적용</button>
         </div>
 
         {/* ── Actions ── */}
@@ -1765,6 +1853,7 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
   const [imageFit, setImageFit] = useState<'cover' | 'fit'>(slide.image_fit ?? 'cover')
   const [kenBurns, setKenBurns] = useState<number>(slide.ken_burns ?? 0)
   const [showOverlayModal, setShowOverlayModal] = useState(false)
+  const [tab, setTab] = useState<'content' | 'visual'>('content')
   const videoRef = useRef<HTMLVideoElement>(null)
   const thumbCanvasRef = useRef<HTMLCanvasElement>(null)
   const thumbSrc = slide.image_filename ? api.assetUrl(projectId, slide.image_filename) : ''
@@ -1811,12 +1900,33 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
 
   const isVideo = slide.slide_type === 'video'
 
+  const tabBtn = (active: boolean): React.CSSProperties => ({
+    flex: 1, padding: '0.4rem', fontSize: '0.82rem', fontWeight: 600, cursor: 'pointer',
+    background: active ? 'var(--bg-card)' : 'var(--bg-secondary)',
+    color: active ? 'var(--text)' : 'var(--text-muted)',
+    border: '1px solid var(--border)',
+    borderRadius: 'var(--radius-sm) var(--radius-sm) 0 0',
+    borderBottom: active ? '1px solid var(--bg-card)' : '1px solid var(--border)',
+    marginBottom: '-1px',
+  })
+
   return (
-    <div className="card" style={{ padding: '1rem', display: 'grid', gridTemplateColumns: isVideo ? '1fr 40px' : '400px 1fr 40px', gap: '1rem', alignItems: 'start' }}>
-      {/* Image Slide: Thumbnail */}
-      {!isVideo && (
-        <div style={{ borderRadius: 'var(--radius-sm)', overflow: 'hidden', background: 'var(--bg-secondary)', aspectRatio: '16/9', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          {slide.image_filename ? (
+    <div className="card" style={{ padding: '1rem', display: 'grid', gridTemplateColumns: '400px 1fr 40px', gap: '1rem', alignItems: 'start' }}>
+      {/* Left: Thumbnail(이미지) / Video Preview(비디오) — 좌측 고정 */}
+      <div style={{ borderRadius: 'var(--radius-sm)', overflow: 'hidden', background: 'var(--bg-secondary)', aspectRatio: '16/9', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        {isVideo ? (
+          slide.video_filename ? (
+            <video
+              ref={videoRef} controls
+              style={{ width: '100%', height: '100%', objectFit: 'contain', background: '#000', transform: rotation ? `rotate(${rotation}deg)` : undefined, display: 'block' }}
+              src={api.assetUrl(projectId, slide.video_filename)}
+              onLoadedMetadata={e => { const dur = (e.target as HTMLVideoElement).duration; if (dur && isFinite(dur)) setVideoDuration(dur) }}
+            />
+          ) : (
+            <span style={{ color: 'var(--text-muted)', fontSize: '1.5rem' }}>&#x1F3AC;</span>
+          )
+        ) : (
+          slide.image_filename ? (
             <canvas
               ref={thumbCanvasRef}
               style={{ width: '100%', height: '100%', objectFit: 'contain', cursor: onPreviewVideo ? 'pointer' : 'default', transform: rotation ? `rotate(${rotation}deg)` : undefined, display: 'block' }}
@@ -1824,356 +1934,202 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
               title="클릭하여 렌더 미리보기"
             />
           ) : (
-            <span style={{ color: 'var(--text-muted)', fontSize: '1.5rem' }}>🖼️</span>
-          )}
-        </div>
-      )}
-
-      {/* Center Content */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          {!isVideo && onToggleSelect && (
-            <input
-              type="checkbox"
-              checked={isSelected}
-              onChange={onToggleSelect}
-              style={{ cursor: 'pointer', transform: 'scale(1.2)' }}
-            />
-          )}
-          <label className="label" style={{ margin: 0 }}>
-            {isVideo ? '🎬' : '🖼️'} Slide {index + 1} — {slide.label || slide.video_filename || slide.image_filename}
-          </label>
-          {onPreviewVideo && (
-            <button
-              onClick={onPreviewVideo}
-              style={{ marginLeft: 'auto', padding: '0.25rem 0.65rem', fontSize: '0.8rem', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', background: 'var(--bg-secondary)', color: 'var(--text)', cursor: 'pointer' }}
-              title="이 슬라이드를 실제 렌더 결과로 미리보기"
-            >▶ 렌더 미리보기</button>
-          )}
-        </div>
-
-        {/* Video Slide: preview + volume + subtitles */}
-        {isVideo ? (
-          <>
-            {slide.video_filename && (
-              <video
-                ref={videoRef}
-                controls
-                style={{ width: '100%', maxHeight: 200, borderRadius: 'var(--radius-sm)', background: '#000', transform: rotation ? `rotate(${rotation}deg)` : undefined }}
-                src={api.assetUrl(projectId, slide.video_filename)}
-                onLoadedMetadata={e => {
-                  const dur = (e.target as HTMLVideoElement).duration
-                  if (dur && isFinite(dur)) setVideoDuration(dur)
-                }}
-              />
-            )}
-            {/* Volume */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>🔊 볼륨</span>
-              <input
-                type="range" min={0} max={1} step={0.05}
-                value={volume}
-                style={{ flex: 1 }}
-                onChange={e => handleVolumeChange(parseFloat(e.target.value))}
-              />
-              <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', width: 36 }}>{Math.round(volume * 100)}%</span>
-            </div>
-            {/* Trimming — Dual Range Slider */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
-              <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>✂️ 자르기</span>
-              {videoDuration > 0 && (
-                <div style={{ position: 'relative', height: 28, margin: '0 4px' }}>
-                  {/* Highlight bar */}
-                  <div style={{
-                    position: 'absolute', top: 10, height: 8, borderRadius: 4,
-                    background: 'var(--primary)',
-                    left: `${(trimStart / videoDuration) * 100}%`,
-                    right: `${100 - ((trimEnd || videoDuration) / videoDuration) * 100}%`,
-                    opacity: 0.4, pointerEvents: 'none'
-                  }} />
-                  <input type="range" min={0} max={videoDuration} step={0.1}
-                    value={trimStart}
-                    style={{ position: 'absolute', width: '100%', top: 0, pointerEvents: 'none', appearance: 'none', background: 'transparent', zIndex: 2 }}
-                    className="trim-range"
-                    onChange={e => {
-                      const v = Math.min(parseFloat(e.target.value), (trimEnd || videoDuration) - 0.1)
-                      setTrimStart(v)
-                    }}
-                    onMouseUp={() => onUpdate({ trim_start: trimStart })}
-                  />
-                  <input type="range" min={0} max={videoDuration} step={0.1}
-                    value={trimEnd || videoDuration}
-                    style={{ position: 'absolute', width: '100%', top: 0, pointerEvents: 'none', appearance: 'none', background: 'transparent', zIndex: 3 }}
-                    className="trim-range"
-                    onChange={e => {
-                      const v = Math.max(parseFloat(e.target.value), trimStart + 0.1)
-                      setTrimEnd(v >= videoDuration ? 0 : v)
-                    }}
-                    onMouseUp={() => onUpdate({ trim_end: trimEnd })}
-                  />
-                </div>
-              )}
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                <span>시작: {trimStart.toFixed(1)}s</span>
-                <span>종료: {trimEnd ? `${trimEnd.toFixed(1)}s` : '끝까지'}</span>
-                {videoDuration > 0 && <span>총: {videoDuration.toFixed(1)}s</span>}
-              </div>
-            </div>
-            {/* Subtitle Row Editor */}
-            <div>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.4rem' }}>
-                <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-secondary)' }}>📝 자막</span>
-                <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>🔇 자막만 &nbsp;|&nbsp; 🔊 자막+음성(TTS)</span>
-              </div>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8rem' }}>
-                <thead>
-                  <tr style={{ color: 'var(--text-muted)' }}>
-                    <th style={{ padding: '2px 6px', textAlign: 'left', width: 72 }}>시작(초)</th>
-                    <th style={{ padding: '2px 6px', textAlign: 'left', width: 72 }}>종료(초)</th>
-                    <th style={{ padding: '2px 6px', textAlign: 'left' }}>자막 텍스트</th>
-                    <th style={{ padding: '2px 6px', width: 44, textAlign: 'center' }}>🔊 TTS</th>
-                    <th style={{ width: 28 }}></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {subs.map((s, idx) => {
-                    const startSec = parseFloat(String(s.start)) || 0
-                    const endSec = parseFloat(String(s.end)) || 0
-                    return (
-                    <tr key={idx} style={{ borderTop: '1px solid var(--border)' }}>
-                      <td style={{ padding: '3px 4px' }}>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                          <input type="number" className="input" style={{ padding: '2px 4px', fontSize: '0.78rem', width: 62 }}
-                            value={startSec.toFixed(1)} step={0.1} min={0} max={videoDuration || 999}
-                            onChange={e => handleSubChange(idx, 'start', e.target.value)}
-                          />
-                          {videoDuration > 0 && (
-                            <input type="range" min={0} max={videoDuration} step={0.1} value={startSec}
-                              style={{ width: 62, height: 12 }}
-                              onChange={e => handleSubChange(idx, 'start', e.target.value)}
-                              onMouseDown={() => { if (videoRef.current) videoRef.current.currentTime = startSec }}
-                            />
-                          )}
-                        </div>
-                      </td>
-                      <td style={{ padding: '3px 4px' }}>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                          <input type="number" className="input" style={{ padding: '2px 4px', fontSize: '0.78rem', width: 62 }}
-                            value={endSec.toFixed(1)} step={0.1} min={0} max={videoDuration || 999}
-                            onChange={e => handleSubChange(idx, 'end', e.target.value)}
-                          />
-                          {videoDuration > 0 && (
-                            <input type="range" min={0} max={videoDuration} step={0.1} value={endSec}
-                              style={{ width: 62, height: 12 }}
-                              onChange={e => handleSubChange(idx, 'end', e.target.value)}
-                              onMouseDown={() => { if (videoRef.current) videoRef.current.currentTime = endSec }}
-                            />
-                          )}
-                        </div>
-                      </td>
-                      <td style={{ padding: '3px 4px' }}>
-                        <input className="input" style={{ padding: '2px 4px', fontSize: '0.78rem', width: '100%' }}
-                          value={s.text} placeholder="자막 내용..."
-                          onChange={e => handleSubChange(idx, 'text', e.target.value)}
-                        />
-                      </td>
-                      <td style={{ padding: '3px 4px', textAlign: 'center' }}>
-                        <input type="checkbox" checked={s.use_tts}
-                          onChange={e => handleSubChange(idx, 'use_tts', e.target.checked)}
-                          title="TTS 음성 생성"
-                        />
-                      </td>
-                      <td style={{ padding: '3px 4px', textAlign: 'center' }}>
-                        <button className="slide-ctrl-btn danger" style={{ width: 24, height: 24, fontSize: '0.7rem' }}
-                          onClick={() => handleDeleteSub(idx)}>&#x2715;</button>
-                      </td>
-                    </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-              <button className="btn btn-ghost" style={{ marginTop: '0.4rem', fontSize: '0.8rem', padding: '4px 10px' }}
-                onClick={handleAddSub}>+ 자막 추가</button>
-
-              {/* Subtitle Interactive Timeline (6-12) */}
-              {subs.length > 0 && videoDuration > 0 && (
-                <SubtitleTimeline
-                  subs={subs}
-                  videoDuration={videoDuration}
-                  onChange={(newSubs) => {
-                    setSubs(newSubs)
-                    onUpdate({ subtitles: serializeSubtitles(newSubs) })
-                  }}
-                  videoRef={videoRef}
-                />
-              )}
-            </div>
-            {/* TTS Volume (video slide) */}
-            {subs.some(s => s.use_tts) && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>🗣️ TTS 볼륨</span>
-                <input
-                  type="range" min={0} max={2} step={0.05}
-                  value={ttsVolume}
-                  style={{ flex: 1 }}
-                  onChange={e => {
-                    const v = parseFloat(e.target.value)
-                    setTtsVolume(v)
-                    onUpdate({ tts_volume: v })
-                  }}
-                />
-                <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', width: 36 }}>{Math.round(ttsVolume * 100)}%</span>
-              </div>
-            )}
-          </>
-        ) : (
-          /* Image Slide: text + TTS 토글 */
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-            <textarea
-              className="textarea"
-              value={text}
-              onChange={e => setText(e.target.value)}
-              onBlur={() => { if (text !== slide.text) onUpdate({ text }) }}
-              placeholder="TTS 대사 / 자막 텍스트를 입력하세요..."
-              rows={4}
-            />
-            <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.85rem', cursor: 'pointer', color: 'var(--text-secondary)' }}>
-              <input
-                type="checkbox"
-                checked={useTts}
-                onChange={e => {
-                  const v = e.target.checked
-                  setUseTts(v)
-                  onUpdate({ use_tts: v ? 1 : 0 })
-                }}
-              />
-              🔊 TTS 음성 생성 {useTts ? '(켜짐 — 음성 + 자막)' : '(꺼짐 — 자막만)'}
-            </label>
-            {useTts && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>🗣️ TTS 볼륨</span>
-                <input
-                  type="range" min={0} max={2} step={0.05}
-                  value={ttsVolume}
-                  style={{ flex: 1 }}
-                  onChange={e => {
-                    const v = parseFloat(e.target.value)
-                    setTtsVolume(v)
-                    onUpdate({ tts_volume: v })
-                  }}
-                />
-                <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', width: 36 }}>{Math.round(ttsVolume * 100)}%</span>
-              </div>
-            )}
-          </div>
+            <span style={{ color: 'var(--text-muted)', fontSize: '1.5rem' }}>&#x1F5BC;&#xFE0F;</span>
+          )
         )}
       </div>
 
-      {/* Controls */}
+      {/* Center Content */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6rem', minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          {!isVideo && onToggleSelect && (
+            <input type="checkbox" checked={isSelected} onChange={onToggleSelect} style={{ cursor: 'pointer', transform: 'scale(1.2)' }} />
+          )}
+          <label className="label" style={{ margin: 0 }}>
+            {isVideo ? '&#x1F3AC;' : '&#x1F5BC;&#xFE0F;'} Slide {index + 1} — {slide.label || slide.video_filename || slide.image_filename}
+          </label>
+          {onPreviewVideo && (
+            <button onClick={onPreviewVideo}
+              style={{ marginLeft: 'auto', padding: '0.25rem 0.65rem', fontSize: '0.8rem', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', background: 'var(--bg-secondary)', color: 'var(--text)', cursor: 'pointer' }}
+              title="이 슬라이드를 실제 렌더 결과로 미리보기"
+            >&#x25B6; 렌더 미리보기</button>
+          )}
+        </div>
+
+        {/* Tabs */}
+        <div style={{ display: 'flex', gap: '0.25rem' }}>
+          <button onClick={() => setTab('content')} style={tabBtn(tab === 'content')}>&#x1F4DD; {isVideo ? '영상·음성' : '대사·음성'}</button>
+          <button onClick={() => setTab('visual')} style={tabBtn(tab === 'visual')}>&#x1F5BC;&#xFE0F; 화면·효과</button>
+        </div>
+
+        {/* Tab Body */}
+        <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '0.7rem', display: 'flex', flexDirection: 'column', gap: '0.6rem' }}>
+          {tab === 'content' ? (
+            isVideo ? (
+              <>
+                {/* Volume */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>&#x1F50A; 볼륨</span>
+                  <input type="range" min={0} max={1} step={0.05} value={volume} style={{ flex: 1 }} onChange={e => handleVolumeChange(parseFloat(e.target.value))} />
+                  <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', width: 36 }}>{Math.round(volume * 100)}%</span>
+                </div>
+                {/* Trimming */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                  <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>&#x2702;&#xFE0F; 자르기</span>
+                  {videoDuration > 0 && (
+                    <div style={{ position: 'relative', height: 28, margin: '0 4px' }}>
+                      <div style={{ position: 'absolute', top: 10, height: 8, borderRadius: 4, background: 'var(--primary)', left: `${(trimStart / videoDuration) * 100}%`, right: `${100 - ((trimEnd || videoDuration) / videoDuration) * 100}%`, opacity: 0.4, pointerEvents: 'none' }} />
+                      <input type="range" min={0} max={videoDuration} step={0.1} value={trimStart} style={{ position: 'absolute', width: '100%', top: 0, pointerEvents: 'none', appearance: 'none', background: 'transparent', zIndex: 2 }} className="trim-range" onChange={e => { const v = Math.min(parseFloat(e.target.value), (trimEnd || videoDuration) - 0.1); setTrimStart(v) }} onMouseUp={() => onUpdate({ trim_start: trimStart })} />
+                      <input type="range" min={0} max={videoDuration} step={0.1} value={trimEnd || videoDuration} style={{ position: 'absolute', width: '100%', top: 0, pointerEvents: 'none', appearance: 'none', background: 'transparent', zIndex: 3 }} className="trim-range" onChange={e => { const v = Math.max(parseFloat(e.target.value), trimStart + 0.1); setTrimEnd(v >= videoDuration ? 0 : v) }} onMouseUp={() => onUpdate({ trim_end: trimEnd })} />
+                    </div>
+                  )}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                    <span>시작: {trimStart.toFixed(1)}s</span>
+                    <span>종료: {trimEnd ? `${trimEnd.toFixed(1)}s` : '끝까지'}</span>
+                    {videoDuration > 0 && <span>총: {videoDuration.toFixed(1)}s</span>}
+                  </div>
+                </div>
+                {/* Subtitles */}
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.4rem' }}>
+                    <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-secondary)' }}>&#x1F4DD; 자막</span>
+                    <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>&#x1F507; 자막만 &nbsp;|&nbsp; &#x1F50A; 자막+음성(TTS)</span>
+                  </div>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8rem' }}>
+                    <thead>
+                      <tr style={{ color: 'var(--text-muted)' }}>
+                        <th style={{ padding: '2px 6px', textAlign: 'left', width: 72 }}>시작(초)</th>
+                        <th style={{ padding: '2px 6px', textAlign: 'left', width: 72 }}>종료(초)</th>
+                        <th style={{ padding: '2px 6px', textAlign: 'left' }}>자막 텍스트</th>
+                        <th style={{ padding: '2px 6px', width: 44, textAlign: 'center' }}>&#x1F50A; TTS</th>
+                        <th style={{ width: 28 }}></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {subs.map((s, idx) => {
+                        const startSec = parseFloat(String(s.start)) || 0
+                        const endSec = parseFloat(String(s.end)) || 0
+                        return (
+                        <tr key={idx} style={{ borderTop: '1px solid var(--border)' }}>
+                          <td style={{ padding: '3px 4px' }}>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                              <input type="number" className="input" style={{ padding: '2px 4px', fontSize: '0.78rem', width: 62 }} value={startSec.toFixed(1)} step={0.1} min={0} max={videoDuration || 999} onChange={e => handleSubChange(idx, 'start', e.target.value)} />
+                              {videoDuration > 0 && (<input type="range" min={0} max={videoDuration} step={0.1} value={startSec} style={{ width: 62, height: 12 }} onChange={e => handleSubChange(idx, 'start', e.target.value)} onMouseDown={() => { if (videoRef.current) videoRef.current.currentTime = startSec }} />)}
+                            </div>
+                          </td>
+                          <td style={{ padding: '3px 4px' }}>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                              <input type="number" className="input" style={{ padding: '2px 4px', fontSize: '0.78rem', width: 62 }} value={endSec.toFixed(1)} step={0.1} min={0} max={videoDuration || 999} onChange={e => handleSubChange(idx, 'end', e.target.value)} />
+                              {videoDuration > 0 && (<input type="range" min={0} max={videoDuration} step={0.1} value={endSec} style={{ width: 62, height: 12 }} onChange={e => handleSubChange(idx, 'end', e.target.value)} onMouseDown={() => { if (videoRef.current) videoRef.current.currentTime = endSec }} />)}
+                            </div>
+                          </td>
+                          <td style={{ padding: '3px 4px' }}>
+                            <input className="input" style={{ padding: '2px 4px', fontSize: '0.78rem', width: '100%' }} value={s.text} placeholder="자막 내용..." onChange={e => handleSubChange(idx, 'text', e.target.value)} />
+                          </td>
+                          <td style={{ padding: '3px 4px', textAlign: 'center' }}>
+                            <input type="checkbox" checked={s.use_tts} onChange={e => handleSubChange(idx, 'use_tts', e.target.checked)} title="TTS 음성 생성" />
+                          </td>
+                          <td style={{ padding: '3px 4px', textAlign: 'center' }}>
+                            <button className="slide-ctrl-btn danger" style={{ width: 24, height: 24, fontSize: '0.7rem' }} onClick={() => handleDeleteSub(idx)}>&#x2715;</button>
+                          </td>
+                        </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                  <button className="btn btn-ghost" style={{ marginTop: '0.4rem', fontSize: '0.8rem', padding: '4px 10px' }} onClick={handleAddSub}>+ 자막 추가</button>
+                  {subs.length > 0 && videoDuration > 0 && (
+                    <SubtitleTimeline subs={subs} videoDuration={videoDuration} onChange={(newSubs) => { setSubs(newSubs); onUpdate({ subtitles: serializeSubtitles(newSubs) }) }} videoRef={videoRef} />
+                  )}
+                </div>
+                {/* TTS Volume (video) */}
+                {subs.some(s => s.use_tts) && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>&#x1F5E3;&#xFE0F; TTS 볼륨</span>
+                    <input type="range" min={0} max={2} step={0.05} value={ttsVolume} style={{ flex: 1 }} onChange={e => { const v = parseFloat(e.target.value); setTtsVolume(v); onUpdate({ tts_volume: v }) }} />
+                    <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', width: 36 }}>{Math.round(ttsVolume * 100)}%</span>
+                  </div>
+                )}
+              </>
+            ) : (
+              <>
+                <textarea className="textarea" value={text} onChange={e => setText(e.target.value)} onBlur={() => { if (text !== slide.text) onUpdate({ text }) }} placeholder="TTS 대사 / 자막 텍스트를 입력하세요..." rows={4} />
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.85rem', cursor: 'pointer', color: 'var(--text-secondary)' }}>
+                  <input type="checkbox" checked={useTts} onChange={e => { const v = e.target.checked; setUseTts(v); onUpdate({ use_tts: v ? 1 : 0 }) }} />
+                  &#x1F50A; TTS 음성 생성 {useTts ? '(켜짐 — 음성 + 자막)' : '(꺼짐 — 자막만)'}
+                </label>
+                {useTts && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>&#x1F5E3;&#xFE0F; TTS 볼륨</span>
+                    <input type="range" min={0} max={2} step={0.05} value={ttsVolume} style={{ flex: 1 }} onChange={e => { const v = parseFloat(e.target.value); setTtsVolume(v); onUpdate({ tts_volume: v }) }} />
+                    <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', width: 36 }}>{Math.round(ttsVolume * 100)}%</span>
+                  </div>
+                )}
+              </>
+            )
+          ) : (
+            /* ── 화면·효과 탭 ── */
+            <>
+              {/* 회전 (컨트롤 컬럼에서 이동) */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>&#x21BB; 회전</span>
+                <button onClick={() => { const next = (rotation + 90) % 360; setRotation(next); onUpdate({ rotation: next }) }}
+                  style={{ padding: '0.3rem 0.7rem', fontSize: '0.82rem', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', background: 'var(--bg-secondary)', color: 'var(--text-secondary)', cursor: 'pointer' }}>
+                  {rotation}° (클릭 시 +90°)
+                </button>
+              </div>
+              {/* 이미지 맞춤 (이미지만) */}
+              {!isVideo && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>&#x1F5BC;&#xFE0F; 이미지 표시:</span>
+                  <button onClick={() => { const next = imageFit === 'cover' ? 'fit' : 'cover'; setImageFit(next); onUpdate({ image_fit: next }) }}
+                    style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', background: imageFit === 'fit' ? 'rgba(99,102,241,0.12)' : 'var(--bg-secondary)', border: `1px solid ${imageFit === 'fit' ? 'rgba(99,102,241,0.5)' : 'var(--border)'}`, borderRadius: 'var(--radius-sm)', padding: '0.25rem 0.7rem', cursor: 'pointer', fontSize: '0.8rem', color: imageFit === 'fit' ? '#818cf8' : 'var(--text-secondary)' }}>
+                    {imageFit === 'cover' ? '전체화면' : '자막 영역 확보'}
+                  </button>
+                </div>
+              )}
+              {/* Ken Burns (이미지만) */}
+              {!isVideo && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>&#x1F39E;&#xFE0F; 줌 효과:</span>
+                  <input type="range" min={0} max={100} step={5} value={kenBurns} onChange={e => setKenBurns(parseInt(e.target.value))} onMouseUp={() => onUpdate({ ken_burns: kenBurns })} onTouchEnd={() => onUpdate({ ken_burns: kenBurns })} style={{ flex: 1, accentColor: kenBurns > 0 ? '#818cf8' : undefined }} />
+                  <span style={{ fontSize: '0.8rem', color: kenBurns > 0 ? '#818cf8' : 'var(--text-muted)', minWidth: 44, textAlign: 'right' }}>{kenBurns === 0 ? '꺼짐' : `${kenBurns}%`}</span>
+                </div>
+              )}
+              {/* 오버레이 */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <button onClick={() => setShowOverlayModal(true)}
+                  style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '0.5rem', background: overlays.length > 0 ? 'rgba(168,85,247,0.1)' : 'var(--bg-secondary)', border: `1px solid ${overlays.length > 0 ? 'rgba(168,85,247,0.4)' : 'var(--border)'}`, borderRadius: 'var(--radius-sm)', padding: '0.35rem 0.6rem', cursor: 'pointer', color: overlays.length > 0 ? '#a855f7' : 'var(--text-secondary)', fontSize: '0.8rem', fontWeight: 500 }}>
+                  <span>&#x1F3A8; 오버레이</span>
+                  {overlays.length > 0 && <span style={{ marginLeft: 'auto', fontSize: '0.7rem', background: 'rgba(168,85,247,0.2)', borderRadius: 10, padding: '1px 7px' }}>{overlays.length}개</span>}
+                </button>
+                {overlays.length > 0 && (
+                  <button onClick={() => { setOverlays([]); onUpdate({ overlays: '[]' }) }} style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '0.35rem 0.5rem', cursor: 'pointer', color: 'var(--text-muted)', fontSize: '0.75rem' }}>전체 삭제</button>
+                )}
+              </div>
+              {/* 전환 (첫 슬라이드 제외) */}
+              {index > 0 && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>&#x1F3AC; 전환:</span>
+                  <select className="input" value={transition} onChange={e => handleTransitionChange(e.target.value)} style={{ flex: 1, padding: '0.3rem 0.5rem', fontSize: '0.8rem' }}>
+                    <option value="none">없음 (Hard Cut)</option>
+                    <option value="crossfade">크로스페이드</option>
+                    <option value="fade_black">페이드 투 블랙</option>
+                    <option value="slide_left">슬라이드 왼쪽</option>
+                    <option value="slide_right">슬라이드 오른쪽</option>
+                  </select>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* Controls: 순서·삭제 (회전은 화면·효과 탭으로 이동) */}
       <div className="slide-controls">
         <button className="slide-ctrl-btn" title="위로" onClick={onMoveUp} disabled={index === 0}>&#x25B2;</button>
         <button className="slide-ctrl-btn" title="아래로" onClick={onMoveDown} disabled={index === total - 1}>&#x25BC;</button>
-        <button className="slide-ctrl-btn" title={`회전 (현재 ${rotation}°)`} onClick={() => {
-          const next = (rotation + 90) % 360
-          setRotation(next)
-          onUpdate({ rotation: next })
-        }}>&#x21BB;</button>
         <button className="slide-ctrl-btn danger" title="삭제" onClick={onDelete}>&#x2715;</button>
-      </div>
-
-      {/* Transition selector — 첫 슬라이드 제외 */}
-      {index > 0 && (
-        <div style={{
-          gridColumn: '1 / -1',
-          display: 'flex', alignItems: 'center', gap: '0.5rem',
-          padding: '0.5rem 0.25rem 0',
-          borderTop: '1px dashed var(--border)',
-          marginTop: '0.25rem'
-        }}>
-          <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>🎬 이전 → 이 장면 전환:</span>
-          <select
-            className="input"
-            value={transition}
-            onChange={e => handleTransitionChange(e.target.value)}
-            style={{ maxWidth: 200, padding: '0.25rem 0.5rem', fontSize: '0.8rem' }}
-          >
-            <option value="none">없음 (Hard Cut)</option>
-            <option value="crossfade">크로스페이드 (Crossfade)</option>
-            <option value="fade_black">페이드 투 블랙 (Fade to Black)</option>
-            <option value="slide_left">슬라이드 왼쪽 (Slide Left)</option>
-            <option value="slide_right">슬라이드 오른쪽 (Slide Right)</option>
-          </select>
-        </div>
-      )}
-
-      {/* ── Image Fit (이미지 슬라이드만) ── */}
-      {!isVideo && (
-        <div style={{ borderTop: '1px dashed var(--border)', marginTop: '0.25rem', paddingTop: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-          <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>🖼️ 이미지 표시:</span>
-          <button
-            onClick={() => { const next = imageFit === 'cover' ? 'fit' : 'cover'; setImageFit(next); onUpdate({ image_fit: next }) }}
-            style={{
-              display: 'flex', alignItems: 'center', gap: '0.4rem',
-              background: imageFit === 'fit' ? 'rgba(99,102,241,0.12)' : 'var(--bg-card)',
-              border: `1px solid ${imageFit === 'fit' ? 'rgba(99,102,241,0.5)' : 'var(--border)'}`,
-              borderRadius: 'var(--radius-sm)', padding: '0.25rem 0.7rem',
-              cursor: 'pointer', fontSize: '0.8rem',
-              color: imageFit === 'fit' ? '#818cf8' : 'var(--text-secondary)',
-            }}
-          >
-            {imageFit === 'cover' ? '전체화면' : '자막 영역 확보'}
-          </button>
-        </div>
-      )}
-
-      {/* ── Ken Burns 강도 + Overlay 버튼 (5:5 배치) ── */}
-      <div style={{
-        gridColumn: '1 / -1',
-        borderTop: '1px dashed var(--border)',
-        marginTop: '0.5rem', paddingTop: '0.5rem',
-        display: 'grid',
-        gridTemplateColumns: isVideo ? '1fr' : '1fr 1fr',
-        gap: '0.75rem',
-        alignItems: 'center',
-      }}>
-        {!isVideo && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', minWidth: 0 }}>
-            <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>🎞️ 줌 효과:</span>
-            <input
-              type="range" min={0} max={100} step={5} value={kenBurns}
-              onChange={e => setKenBurns(parseInt(e.target.value))}
-              onMouseUp={() => onUpdate({ ken_burns: kenBurns })}
-              onTouchEnd={() => onUpdate({ ken_burns: kenBurns })}
-              style={{ flex: 1, minWidth: 0, accentColor: kenBurns > 0 ? '#818cf8' : undefined }}
-            />
-            <span style={{ fontSize: '0.78rem', color: kenBurns > 0 ? '#818cf8' : 'var(--text-muted)', minWidth: 44, textAlign: 'right' }}>
-              {kenBurns === 0 ? '꺼짐' : `${kenBurns}%`}
-            </span>
-          </div>
-        )}
-
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', minWidth: 0 }}>
-          <button
-            onClick={() => setShowOverlayModal(true)}
-            style={{
-              flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: '0.5rem',
-              background: overlays.length > 0 ? 'rgba(168,85,247,0.1)' : 'var(--bg-card)',
-              border: `1px solid ${overlays.length > 0 ? 'rgba(168,85,247,0.4)' : 'var(--border)'}`,
-              borderRadius: 'var(--radius-sm)', padding: '0.35rem 0.6rem',
-              cursor: 'pointer', color: overlays.length > 0 ? '#a855f7' : 'var(--text-secondary)',
-              fontSize: '0.8rem', fontWeight: 500,
-            }}
-          >
-            <span>🎨 오버레이</span>
-            {overlays.length > 0 && <span style={{ marginLeft: 'auto', fontSize: '0.7rem', background: 'rgba(168,85,247,0.2)', borderRadius: 10, padding: '1px 7px' }}>{overlays.length}개</span>}
-          </button>
-          {overlays.length > 0 && (
-            <button onClick={() => { setOverlays([]); onUpdate({ overlays: '[]' }) }}
-              style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '0.35rem 0.5rem', cursor: 'pointer', color: 'var(--text-muted)', fontSize: '0.75rem' }}>
-              전체 삭제
-            </button>
-          )}
-        </div>
       </div>
 
       {/* Overlay Modal */}
@@ -2184,10 +2140,7 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
           overlays={overlays}
           rotation={rotation}
           onClose={() => setShowOverlayModal(false)}
-          onChange={newOvs => {
-            setOverlays(newOvs)
-            onUpdate({ overlays: serializeOverlays(newOvs) })
-          }}
+          onChange={newOvs => { setOverlays(newOvs); onUpdate({ overlays: serializeOverlays(newOvs) }) }}
         />
       )}
     </div>
@@ -2210,11 +2163,12 @@ export default function Editor() {
   const [progress, setProgress] = useState(0)
   const [progressMsg, setProgressMsg] = useState('')
   const [insertAt, setInsertAt] = useState(-1)
-  const [showJson, setShowJson] = useState(false)
   const [showYoutube, setShowYoutube] = useState(false)
   const [showPhotos, setShowPhotos] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [showBgmSearch, setShowBgmSearch] = useState(false)
+  const [showImport, setShowImport] = useState(false)
+  const [showRender, setShowRender] = useState(false)
   const [isDragging, setIsDragging] = useState(false)
   const [previewVideoSlide, setPreviewVideoSlide] = useState<Slide | null>(null)
   const [selectedSlideIds, setSelectedSlideIds] = useState<Set<string>>(new Set())
@@ -2305,10 +2259,6 @@ export default function Editor() {
       setUploading(false)
       if (fileInputRef.current) fileInputRef.current.value = ''
     }
-  }
-
-  const handleUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    processFiles(Array.from(e.target.files || []))
   }
 
   const handleCreateCollage = async () => {
@@ -2504,134 +2454,41 @@ export default function Editor() {
           }}
         />}
 
-        {/* 현재 상태 저장 (별도 버튼) */}
-        <button className="btn-action-primary save" onClick={handleSave} disabled={saving} style={{ marginTop: '0.25rem' }}>
+        {/* 현재 상태 저장 (별도 버튼, 컴팩트) */}
+        <button className="btn-action-primary save" onClick={handleSave} disabled={saving}
+          style={{ marginTop: '0.25rem', padding: '0.35rem 0.6rem', fontSize: '0.82rem', minHeight: 'auto' }}>
           {saving ? <><span className="spinner" /> 저장 중...</> : '💾 현재 상태 저장'}
         </button>
 
         <hr className="divider" style={{ margin: '0.25rem 0' }} />
 
-        {/* ── 입력 Section ── */}
-        <div className="sidebar-section-title">&#x1F4E5; 입력</div>
-        <div style={{ marginBottom: '0.15rem' }}>
-          <select
-            className="input"
-            value={insertAt}
-            onChange={e => setInsertAt(Number(e.target.value))}
-            style={{ width: '100%', padding: '0.35rem 0.5rem', fontSize: '0.78rem' }}
-          >
-            <option value={-1}>맨 끝에 추가</option>
-            {slides.map((_, i) => (
-              <option key={i} value={i}>{i + 1}번 슬라이드 앞에</option>
-            ))}
-          </select>
-        </div>
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="image/*,.pdf,video/mp4,video/webm,video/quicktime,video/x-msvideo,video/x-matroska"
-          multiple={true}
-          style={{ display: 'none' }}
-          onChange={handleUpload}
-          id="file-upload"
-        />
-        <label htmlFor="file-upload" className="upload-zone">
-          {uploading ? (
-            <><span className="spinner" /><span className="upload-title">업로드 중...</span></>
-          ) : (
-            <>
-              <span className="upload-icon">&#x1F4C1;</span>
-              <span className="upload-title">파일 선택 / 드래그</span>
-              <span className="upload-hint">이미지, PDF, 영상 지원</span>
-            </>
-          )}
-        </label>
-        <button className="action-card" onClick={() => setShowPhotos(true)}>
-          <div className="action-icon" style={{ background: 'rgba(34,197,94,0.12)' }}>&#x1F4F7;</div>
+        {/* 입력 → 모달 */}
+        <button className="action-card" onClick={() => setShowImport(true)}>
+          <div className="action-icon" style={{ background: 'rgba(59,130,246,0.12)' }}>&#x1F4E5;</div>
           <div className="action-label">
-            <span>Google Photos</span>
-            <span>사진 가져오기</span>
+            <span>입력</span>
+            <span>파일 · Google Photos</span>
           </div>
         </button>
 
-        <hr className="divider" style={{ margin: '0.25rem 0' }} />
-
-        {/* ── 설정 · 편집 Section ── */}
-        <div className="sidebar-section-title">&#x2699;&#xFE0F; 설정 · 편집</div>
-        <button className="action-card" onClick={() => setShowSettings(true)} style={{ padding: '0.45rem 0.65rem' }}>
-          <div className="action-icon" style={{ background: 'rgba(139,92,246,0.12)', width: 28, height: 28, fontSize: '0.85rem' }}>&#x2699;</div>
+        {/* 설정 · 편집 → 모달 (JSON 일괄입력 포함) */}
+        <button className="action-card" onClick={() => setShowSettings(true)}>
+          <div className="action-icon" style={{ background: 'rgba(139,92,246,0.12)' }}>&#x2699;&#xFE0F;</div>
           <div className="action-label">
-            <span>프로젝트 설정</span>
-            <span>비율 · 오디오 · TTS 일괄 · 장면 스타일</span>
-          </div>
-        </button>
-        <button className="action-card" onClick={() => setShowJson(true)}>
-          <div className="action-icon" style={{ background: 'rgba(59,130,246,0.12)' }}>&#x007B;&#x007D;</div>
-          <div className="action-label">
-            <span>JSON 일괄 입력</span>
-            <span>대사 텍스트 일괄 적용</span>
+            <span>설정 · 편집</span>
+            <span>비율 · 오디오 · 대사 · 효과</span>
           </div>
         </button>
 
-        <hr className="divider" style={{ margin: '0.25rem 0' }} />
-
-        {/* ── 렌더링 Section (하단 고정 강조) ── */}
-        <div style={{ marginTop: 'auto', paddingTop: '0.6rem', borderTop: '2px solid var(--border)', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-          <div className="sidebar-section-title" style={{ marginBottom: 0 }}>&#x1F3AC; 렌더링</div>
-          <button className="btn-action-primary render" onClick={handleRender} disabled={isActive || slides.length === 0}>
-            {isActive ? <><span className="spinner" /> 렌더링 중...</> : '렌더링 시작'}
-          </button>
-
-          {/* Render Progress */}
-          {isActive && (
-            <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '0.6rem' }}>
-              <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '0.35rem' }}>
-                {progressMsg} ({progress}%)
-              </div>
-              <div className="progress-bar-wrap">
-                <div className="progress-bar-fill animate-pulse" style={{ width: `${Math.max(5, progress)}%` }} />
-              </div>
-            </div>
-          )}
-
-          {/* Render Error */}
-          {!isActive && project?.status === 'ERROR' && (
-            <div style={{
-              background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.4)',
-              borderRadius: 'var(--radius-md)', padding: '0.65rem', fontSize: '0.75rem'
-            }}>
-              <div style={{ color: '#f87171', fontWeight: 700, marginBottom: '0.25rem' }}>렌더링 실패</div>
-              <div style={{ color: 'var(--text-muted)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{project.message}</div>
-            </div>
-          )}
-
-          {/* ── Output (결과물) ── */}
-          {hasVideo && (
-            <>
-              <hr className="divider" style={{ margin: '0.25rem 0' }} />
-            <div className="sidebar-section-title">&#x1F4E6; 결과물</div>
-            <div>
-              <video
-                key={api.downloadUrl(projectId!, project?.updated_at)}
-                controls
-                style={{ width: '100%', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)', background: '#000' }}
-              >
-                <source src={api.downloadUrl(projectId!, project?.updated_at)} type="video/mp4" />
-              </video>
-            </div>
-            <div className="action-grid">
-              <a className="action-grid-item" href={api.downloadUrl(projectId!, project?.updated_at)} download>
-                <span className="grid-icon">&#x1F4E5;</span>
-                <span>MP4 다운로드</span>
-              </a>
-              <button className="action-grid-item" onClick={() => setShowYoutube(true)}>
-                <span className="grid-icon">&#x25B6;&#xFE0F;</span>
-                <span>YouTube 업로드</span>
-              </button>
-            </div>
-          </>
-        )}
-        </div>
+        {/* 렌더링 → 모달 (진행 중일 때 % 표시) */}
+        <button className="action-card" onClick={() => setShowRender(true)}>
+          <div className="action-icon" style={{ background: 'rgba(239,68,68,0.12)' }}>&#x1F3AC;</div>
+          <div className="action-label">
+            <span>{isActive ? `렌더링 중 (${progress}%)` : '렌더링'}</span>
+            <span>{hasVideo ? '결과물 · 다운로드 · YouTube' : '영상 생성'}</span>
+          </div>
+          {isActive && <span className="spinner" style={{ marginLeft: 'auto' }} />}
+        </button>
 
       </aside>
 
@@ -2793,11 +2650,28 @@ export default function Editor() {
       </main>
 
       {/* Modals */}
-      {showJson && (
-        <JsonModal
+      {showImport && (
+        <ImportModal
           slides={slides}
-          onApply={s => setSlides(s)}
-          onClose={() => setShowJson(false)}
+          insertAt={insertAt}
+          setInsertAt={setInsertAt}
+          uploading={uploading}
+          onUpload={processFiles}
+          onGooglePhotos={() => setShowPhotos(true)}
+          onClose={() => setShowImport(false)}
+        />
+      )}
+      {showRender && (
+        <RenderModal
+          isActive={isActive}
+          progress={progress}
+          progressMsg={progressMsg}
+          project={project}
+          projectId={projectId!}
+          hasVideo={!!hasVideo}
+          onRender={handleRender}
+          onOpenYoutube={() => setShowYoutube(true)}
+          onClose={() => setShowRender(false)}
         />
       )}
       {showYoutube && project && (
@@ -2818,6 +2692,8 @@ export default function Editor() {
         <GlobalSettingsModal
           project={project}
           projectId={projectId!}
+          slides={slides}
+          onApplySlides={updated => { slidesRef.current = updated; setSlides(updated) }}
           onClose={() => setShowSettings(false)}
           onProjectUpdate={patch => setProject(prev => prev ? { ...prev, ...patch } : prev)}
           onOpenBgmSearch={() => setShowBgmSearch(true)}
