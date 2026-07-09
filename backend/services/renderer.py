@@ -95,6 +95,34 @@ import json as _json_mod
 import numpy as _np
 from PIL import ImageFilter, ImageDraw, ImageFont
 
+# RouteSlide 이동정보 표시용 프로필 한글화
+_ROUTE_PROFILE_KO = {'driving': '자동차', 'foot': '도보', 'walking': '도보',
+                     'bicycle': '자전거', 'bike': '자전거'}
+
+
+def _format_route_info(distance_m: float, duration_s: float, profile: str = '') -> str:
+    """거리·소요시간·이동수단 → 표시용 문자열 (예: '10.4km · 17분 · 자동차')."""
+    if distance_m >= 1000:
+        dist = f"{distance_m / 1000:.1f}km"
+    elif distance_m > 0:
+        dist = f"{int(distance_m)}m"
+    else:
+        dist = ""
+    if duration_s >= 3600:
+        h = int(duration_s // 3600)
+        m = int(round((duration_s % 3600) / 60))
+        dur = f"{h}시간 {m}분" if m else f"{h}시간"
+    elif duration_s >= 60:
+        dur = f"{int(round(duration_s / 60))}분"
+    elif duration_s > 0:
+        dur = f"{int(duration_s)}초"
+    else:
+        dur = ""
+    prof = _ROUTE_PROFILE_KO.get(profile, profile)
+    parts = [p for p in (dist, dur, prof) if p]
+    return "  ·  ".join(parts)
+
+
 def _apply_overlays_to_pil(img: Image.Image, overlays: list) -> Image.Image:
     """PIL Image에 오버레이 목록 적용 후 반환"""
     if not overlays:
@@ -546,6 +574,66 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
             sub_offset += s_dur
             if sent_idx < num_sent - 1:
                 sub_offset += SENTENCE_GAP
+
+    # ── Route Slide: 프레임 시퀀스로 애니메이션 클립 생성 ──
+    # place 슬라이드는 image_filename 이 있으므로 아래 일반 image 분기로 자연스럽게 처리.
+    if slide_type == 'route':
+        try:
+            _meta = _json_mod.loads(item.get('meta', '{}') or '{}')
+        except Exception:
+            _meta = {}
+        frame_names = _meta.get('frames', [])
+        frame_paths = [str(assets_dir / fn) for fn in frame_names if fn]
+        frame_paths = [p for p in frame_paths if Path(p).exists()]
+
+        if frame_paths:
+            from moviepy.editor import ImageSequenceClip
+            _route_fps = float(_meta.get('fps') or 6)
+            seq = ImageSequenceClip(frame_paths, fps=_route_fps)
+            if seq.duration < total_duration:
+                seq = seq.loop(duration=total_duration)
+            else:
+                seq = seq.set_duration(total_duration)
+            # 캔버스와 해상도가 다르면 cover 리사이즈
+            cw, ch = canvas_size
+            if seq.size != (cw, ch):
+                seq = seq.resize((cw, ch))
+            img_clip = seq
+        else:
+            img_clip = ColorClip(size=canvas_size, color=(0, 0, 0)).set_duration(total_duration)
+
+        bg_clip = ColorClip(size=canvas_size, color=BG_COLOR).set_duration(total_duration)
+
+        # 이동 정보 오버레이 (출발→도착 / 거리·시간·수단) — 영상 위에 표시
+        route_overlays = list(subtitle_clips)
+        try:
+            _o = (_meta.get('origin') or {}).get('name', '')
+            _d = (_meta.get('destination') or {}).get('name', '')
+            if _o and _d:
+                _title_txt = f"{_o}  →  {_d}"
+                _title_clip = TextClip(
+                    txt=_title_txt, font=FONT_PATH, fontsize=int(canvas_size[1] * 0.045),
+                    color='white', stroke_color='black', stroke_width=2, method='label',
+                ).set_duration(total_duration).set_position((24, 20))
+                route_overlays.append(_title_clip)
+
+                _info_txt = _format_route_info(
+                    float(_meta.get('distance_m', 0) or 0),
+                    float(_meta.get('duration_s', 0) or 0),
+                    _meta.get('profile', ''),
+                )
+                _info_clip = TextClip(
+                    txt=_info_txt, font=FONT_PATH, fontsize=int(canvas_size[1] * 0.035),
+                    color='white', stroke_color='black', stroke_width=2, method='label',
+                ).set_duration(total_duration).set_position((24, 20 + int(canvas_size[1] * 0.06)))
+                route_overlays.append(_info_clip)
+        except Exception as _e:
+            logger.warning(f"Route overlay 생성 실패(무시): {_e}")
+
+        final_clip = CompositeVideoClip([bg_clip, img_clip] + route_overlays)
+        if a_clip is not None:
+            final_clip = final_clip.set_audio(a_clip)
+        return final_clip
 
     # Image clip with Ken Burns effect
     img_filename = item.get('image_filename', '')

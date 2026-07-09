@@ -66,6 +66,7 @@ class Slide(Base):
     overlays       = Column(Text, default="[]")              # JSON array of overlay objects
     image_fit      = Column(String(20), default="cover")     # 'cover' | 'fit' (fit = image top-aligned, subtitle area at bottom)
     ken_burns      = Column(Integer, default=0)               # Ken Burns intensity 0~100 (0 = no zoom, 100 = max ±15%)
+    meta           = Column(Text, default="{}")              # 타입별 추가 데이터 JSON (route/place 슬라이드)
 
     project = relationship("Project", back_populates="slides")
 

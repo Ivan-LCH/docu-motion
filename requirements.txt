@@ -20,3 +20,6 @@ google-auth-oauthlib==1.2.0
 # HTTP client (TTS, Jamendo BGM, Google Photos)
 requests==2.31.0
 httpx==0.27.0
+
+# Map (route/place slides) — OSM static map rendering
+staticmap==0.5.7

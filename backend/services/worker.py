@@ -58,6 +58,7 @@ def run_render(project_id: str):
                 "overlays": s.overlays or "[]",
                 "image_fit": s.image_fit or "cover",
                 "ken_burns": s.ken_burns if s.ken_burns is not None else 0,
+                "meta": s.meta or "{}",
             }
             for s in slides
         ]

@@ -29,6 +29,14 @@ JAMENDO_CLIENT_ID = os.getenv("JAMENDO_CLIENT_ID", "")
 DEBUG            = os.getenv("DEBUG", "false").lower() == "true"
 
 # ─────────────────────────────────────────────
+# 지도 (Route/Place 슬라이드) — 무료 OSM 계열
+# ─────────────────────────────────────────────
+OSRM_BASE        = os.getenv("OSRM_BASE", "https://router.project-osrm.org")
+NOMINATIM_BASE   = os.getenv("NOMINATIM_BASE", "https://nominatim.openstreetmap.org")
+OVERPASS_BASE    = os.getenv("OVERPASS_BASE", "https://maps.mail.ru/osm/tools/overpass/api/interpreter")
+MAP_USER_AGENT   = os.getenv("MAP_USER_AGENT", "DocuMotionStudio/1.0")
+
+# ─────────────────────────────────────────────
 # 앱 정보
 # ─────────────────────────────────────────────
 APP_NAME = "DocuMotion Studio"

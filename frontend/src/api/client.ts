@@ -28,7 +28,7 @@ export interface Slide {
   label: string
   text: string
   // Video Slide
-  slide_type: 'image' | 'video'
+  slide_type: 'image' | 'video' | 'route' | 'place'
   video_filename: string
   volume: number
   subtitles: string  // JSON array string
@@ -41,6 +41,29 @@ export interface Slide {
   overlays?: string    // JSON array of overlay objects
   image_fit?: 'cover' | 'fit'  // cover: 전체화면, fit: 이미지 위쪽+하단 자막 영역
   ken_burns?: number   // Ken Burns 강도 0~100 (0=정적, 100=최대 줌)
+  meta?: string        // 타입별 추가 데이터 JSON (route/place)
+}
+
+// Route/Place 슬라이드 메타 파서
+export interface RouteMeta {
+  type: 'route'
+  origin: { name: string; display_name?: string }
+  destination: { name: string; display_name?: string }
+  profile: string
+  distance_m: number
+  duration_s: number
+  frames: string[]
+  duration: number
+}
+export interface PlaceMeta {
+  type: 'place'
+  name: string
+  address: string
+  category: string
+  opening_hours: string
+}
+export function parseSlideMeta(s: Slide): RouteMeta | PlaceMeta | null {
+  try { return s.meta ? JSON.parse(s.meta) : null } catch { return null }
 }
 
 export interface Project {
@@ -195,6 +218,18 @@ export const api = {
   createCollage: async (projectId: string, slideIds: string[], layout?: string): Promise<Slide> => {
     return request<Slide>('POST', `/projects/${projectId}/slides/collage`, { slide_ids: slideIds, layout: layout || 'auto' })
   },
+
+  // 경로 슬라이드 자동 생성 (OSM/OSRM)
+  createRouteSlide: (
+    projectId: string,
+    payload: { origin: string; destination: string; profile?: string; insert_at?: number; duration?: number; n_frames?: number },
+  ) => request<Slide>('POST', `/projects/${projectId}/slides/route`, payload),
+
+  // 장소 슬라이드 자동 생성 (Nominatim/Overpass)
+  createPlaceSlide: (
+    projectId: string,
+    payload: { query: string; insert_at?: number },
+  ) => request<Slide>('POST', `/projects/${projectId}/slides/place`, payload),
 
   // Google Photos Picker
   photosAuthStatus: () => request<{ authenticated: boolean; reason?: string }>('GET', '/photos/auth-status'),

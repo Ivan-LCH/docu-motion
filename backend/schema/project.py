@@ -36,6 +36,7 @@ class SlideBase(BaseModel):
     overlays: str = "[]"     # JSON array of overlay objects
     image_fit: str = "cover" # 'cover' | 'fit'
     ken_burns: int = 0       # Ken Burns 줌 강도 0~100
+    meta: str = "{}"         # 타입별 추가 데이터 JSON (route/place)
 
 
 # ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── #
@@ -70,6 +71,7 @@ class SlideUpdate(BaseModel):
     overlays: str = "[]"
     image_fit: str = "cover" # 'cover' | 'fit'
     ken_burns: int = 0       # Ken Burns 줌 강도 0~100
+    meta: str = "{}"         # 타입별 추가 데이터 JSON (route/place)
 
 
 # ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── #
@@ -93,6 +95,7 @@ class SlideRead(SlideBase):
     overlays: str = "[]"
     image_fit: str = "cover"
     ken_burns: int = 0
+    meta: str = "{}"
 
     model_config = {"from_attributes": True}
 

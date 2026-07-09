@@ -5,18 +5,21 @@ import os
 import re
 import struct
 import subprocess
+import json
 from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 
 from backend.db.session import get_db
 from backend.db.models import Project, Slide
 from backend.schema.project import SlideRead, SlideUpdate
 from backend.core.config import OUTPUTS_DIR
 from backend.core.logger import get_logger
+from backend.services import map_service
+from backend.services.renderer import ASPECT_RATIO_MAP
 
 router = APIRouter(prefix="/projects", tags=["slides"])
 logger = get_logger(__name__)
@@ -273,8 +276,196 @@ def delete_slide(project_id: str, slide_id: str, db: Session = Depends(get_db)):
         vid = assets_dir / slide.video_filename
         if vid.exists():
             os.unlink(vid)
+    # Route 슬라이드 프레임 파일들 일괄 삭제
+    if (slide.slide_type == "route") and slide.meta:
+        try:
+            meta = json.loads(slide.meta) if isinstance(slide.meta, str) else slide.meta
+            for fn in meta.get("frames", []):
+                fp = assets_dir / fn
+                if fp.exists():
+                    os.unlink(fp)
+        except Exception:
+            pass
     db.delete(slide)
     db.commit()
+
+
+# ─────────────────────────────────────────────
+# Route / Place 슬라이드 자동 생성 (OSM)
+# ─────────────────────────────────────────────
+from pydantic import BaseModel as _BM
+
+
+class RouteSlideRequest(_BM):
+    origin: str
+    destination: str
+    profile: str = "driving"      # 'driving' | 'foot' | 'bicycle'
+    insert_at: Optional[int] = None
+    duration: float = 5.0         # 애니메이션 지속 시간(초)
+    n_frames: int = 30            # 생성할 프레임 수
+
+
+class PlaceSlideRequest(_BM):
+    query: str
+    insert_at: Optional[int] = None
+
+
+def _canvas_for(project: Project) -> tuple:
+    return ASPECT_RATIO_MAP.get(getattr(project, "aspect_ratio", "16:9") or "16:9", (1280, 720))
+
+
+def _insert_order_index(db: Session, project_id: str, insert_at: Optional[int]) -> tuple:
+    """새 슬라이드 삽입 위치의 order_index 와 기존 슬라이드 재정렬을 준비.
+    반환: (insert_idx, existing_slides)  — 호출자가 new_slide.order_index = insert_idx 후
+    combined = existing[:insert_idx] + [new] + existing[insert_idx:] 로 재정렬."""
+    existing = db.query(Slide).filter(Slide.project_id == project_id)\
+        .order_by(Slide.order_index).all()
+    if insert_at is not None and insert_at >= 0:
+        insert_idx = min(insert_at, len(existing))
+    else:
+        insert_idx = len(existing)
+    return insert_idx, existing
+
+
+@router.post("/{project_id}/slides/route", response_model=SlideRead)
+def create_route_slide(
+    project_id: str,
+    request: RouteSlideRequest,
+    db: Session = Depends(get_db),
+):
+    """출발지→도착지 경로 애니메이션 슬라이드 생성 (OSRM + staticmap)."""
+    project = _get_project_or_404(project_id, db)
+    assets_dir = _assets_dir(project_id)
+
+    try:
+        origin = map_service.geocode(request.origin)
+        destination = map_service.geocode(request.destination)
+        route = map_service.get_route(origin, destination, profile=request.profile)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Route slide 생성 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=502, detail=f"경로 정보 조회 실패: {e}")
+
+    # 임시 slide_id 로 프레임 생성
+    import uuid as _uuid
+    slide_id = str(_uuid.uuid4())
+    n_frames = max(6, min(60, int(request.n_frames)))
+    try:
+        canvas = _canvas_for(project)
+        frames = map_service.render_route_frames(
+            route["geometry_lnglat"], n_frames, canvas, assets_dir, slide_id
+        )
+    except Exception as e:
+        logger.error(f"Route frame 렌더링 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"경로 지도 생성 실패: {e}")
+
+    fps = (n_frames - 1) / float(request.duration) if request.duration > 0 else 6.0
+    meta = {
+        "type": "route",
+        "origin": origin,
+        "destination": destination,
+        "profile": route["profile"],
+        "geometry_lnglat": route["geometry_lnglat"],
+        "distance_m": route["distance_m"],
+        "duration_s": route["duration_s"],
+        "frames": frames,
+        "n_frames": n_frames,
+        "duration": float(request.duration),
+        "fps": fps,
+        "canvas": [canvas[0], canvas[1]],
+    }
+
+    insert_idx, existing = _insert_order_index(db, project_id, request.insert_at)
+    slide = Slide(
+        id=slide_id,
+        project_id=project_id,
+        order_index=insert_idx,
+        image_filename=frames[0] if frames else "",
+        label=f"{origin['name']} → {destination['name']}",
+        text=f"{origin['name']}에서 {destination['name']}까지 이동했습니다.",
+        slide_type="route",
+        use_tts=1,
+        meta=json.dumps(meta, ensure_ascii=False),
+    )
+    db.add(slide)
+    combined = existing[:insert_idx] + [slide] + existing[insert_idx:]
+    for idx, s in enumerate(combined):
+        s.order_index = idx
+    project.stage = "uploaded"
+    project.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(slide)
+    logger.info(f"[{project_id}] Route slide created: {origin['name']} → {destination['name']} ({n_frames} frames)")
+    return slide
+
+
+@router.post("/{project_id}/slides/place", response_model=SlideRead)
+def create_place_slide(
+    project_id: str,
+    request: PlaceSlideRequest,
+    db: Session = Depends(get_db),
+):
+    """장소 정보 + 정적 지도 슬라이드 생성 (Nominatim + Overpass + staticmap)."""
+    project = _get_project_or_404(project_id, db)
+    assets_dir = _assets_dir(project_id)
+
+    try:
+        details = map_service.get_place_details(request.query)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Place slide 생성 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=502, detail=f"장소 정보 조회 실패: {e}")
+
+    import uuid as _uuid
+    slide_id = str(_uuid.uuid4())
+    canvas = _canvas_for(project)
+    map_filename = f"{slide_id}_place.png"
+    try:
+        map_service.render_place_map(details["lat"], details["lng"], canvas, assets_dir / map_filename)
+    except Exception as e:
+        logger.error(f"Place map 렌더링 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"장소 지도 생성 실패: {e}")
+
+    # 기본 내레이션 텍스트
+    parts = [details["name"]]
+    if details.get("category"):
+        parts.append(f"({details['category']})")
+    text = f"{details['name']}을(를) 방문했습니다."
+    meta = {
+        "type": "place",
+        "name": details["name"],
+        "address": details.get("address", ""),
+        "lat": details["lat"],
+        "lng": details["lng"],
+        "category": details.get("category", ""),
+        "opening_hours": details.get("opening_hours", ""),
+        "canvas": [canvas[0], canvas[1]],
+    }
+
+    insert_idx, existing = _insert_order_index(db, project_id, request.insert_at)
+    slide = Slide(
+        id=slide_id,
+        project_id=project_id,
+        order_index=insert_idx,
+        image_filename=map_filename,
+        label=details["name"],
+        text=text,
+        slide_type="place",
+        use_tts=1,
+        meta=json.dumps(meta, ensure_ascii=False),
+    )
+    db.add(slide)
+    combined = existing[:insert_idx] + [slide] + existing[insert_idx:]
+    for idx, s in enumerate(combined):
+        s.order_index = idx
+    project.stage = "uploaded"
+    project.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(slide)
+    logger.info(f"[{project_id}] Place slide created: {details['name']}")
+    return slide
 
 
 # ─────────────────────────────────────────────
@@ -282,6 +473,7 @@ def delete_slide(project_id: str, slide_id: str, db: Session = Depends(get_db)):
 # ─────────────────────────────────────────────
 from PIL import Image
 from pydantic import BaseModel
+
 
 class CollageRequest(BaseModel):
     slide_ids: List[str]

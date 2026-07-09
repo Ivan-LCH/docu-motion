@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { api, Slide, ProjectDetail, BgmHit, PhotosSortOrder } from '../api/client'
+import { api, Slide, ProjectDetail, BgmHit, PhotosSortOrder, parseSlideMeta } from '../api/client'
 import { useToast } from '../components/ToastContext'
 import GoogleAuthSection, { extractCodeFromUrl } from '../components/GoogleAuthSection'
 
@@ -582,9 +582,10 @@ function BgmSearchModal({ projectId, onClose, onApplied }: {
 
 // ─── Global Settings Modal (6-10) ────────────
 // ─── Import Modal (입력) — 7-9 ──
-function ImportModal({ slides, insertAt, setInsertAt, uploading, onUpload, onGooglePhotos, onClose }: {
+function ImportModal({ slides, insertAt, setInsertAt, uploading, onUpload, onGooglePhotos, onRoute, onPlace, onClose }: {
   slides: Slide[]; insertAt: number; setInsertAt: (n: number) => void
-  uploading: boolean; onUpload: (files: File[]) => void; onGooglePhotos: () => void; onClose: () => void
+  uploading: boolean; onUpload: (files: File[]) => void; onGooglePhotos: () => void
+  onRoute: () => void; onPlace: () => void; onClose: () => void
 }) {
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -625,6 +626,117 @@ function ImportModal({ slides, insertAt, setInsertAt, uploading, onUpload, onGoo
             <span>사진 가져오기</span>
           </div>
         </button>
+
+        <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
+          <button className="action-card" style={{ flex: 1 }} onClick={onRoute}>
+            <div className="action-icon" style={{ background: 'rgba(59,130,246,0.12)' }}>&#x1F5FA;&#xFE0F;</div>
+            <div className="action-label">
+              <span>경로 슬라이드</span>
+              <span>길찾기 애니메이션</span>
+            </div>
+          </button>
+          <button className="action-card" style={{ flex: 1 }} onClick={onPlace}>
+            <div className="action-icon" style={{ background: 'rgba(244,63,94,0.12)' }}>&#x1F4CD;</div>
+            <div className="action-label">
+              <span>장소 슬라이드</span>
+              <span>장소 정보 지도</span>
+            </div>
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Route Slide Modal (OSM 길찾기 애니메이션) ──
+function RouteSlideModal({ slides, insertAt, setInsertAt, loading, onCreate, onClose }: {
+  slides: Slide[]; insertAt: number; setInsertAt: (n: number) => void
+  loading: boolean; onCreate: (origin: string, destination: string, profile: string) => void; onClose: () => void
+}) {
+  const [origin, setOrigin] = useState('')
+  const [destination, setDestination] = useState('')
+  const [profile, setProfile] = useState('driving')
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" style={{ maxWidth: 460 }} onClick={e => e.stopPropagation()}>
+        <div className="modal-header">
+          <span className="modal-title">&#x1F5FA;&#xFE0F; 경로 슬라이드</span>
+          <button className="btn btn-ghost btn-icon" onClick={onClose}>&#x2715;</button>
+        </div>
+
+        <div style={{ marginBottom: '0.75rem' }}>
+          <label className="label">출발지</label>
+          <input className="input" value={origin} onChange={e => setOrigin(e.target.value)}
+            placeholder="예: 서울역" style={{ width: '100%' }} />
+        </div>
+        <div style={{ marginBottom: '0.75rem' }}>
+          <label className="label">도착지</label>
+          <input className="input" value={destination} onChange={e => setDestination(e.target.value)}
+            placeholder="예: 강남역" style={{ width: '100%' }} />
+        </div>
+        <div style={{ marginBottom: '0.75rem' }}>
+          <label className="label">이동수단</label>
+          <select className="input" value={profile} onChange={e => setProfile(e.target.value)} style={{ width: '100%' }}>
+            <option value="driving">자동차</option>
+            <option value="foot">도보</option>
+            <option value="bicycle">자전거</option>
+          </select>
+        </div>
+        <div style={{ marginBottom: '0.75rem' }}>
+          <label className="label">삽입 위치</label>
+          <select className="input" value={insertAt} onChange={e => setInsertAt(Number(e.target.value))} style={{ width: '100%' }}>
+            <option value={-1}>맨 끝에 추가</option>
+            {slides.map((_, i) => (<option key={i} value={i}>{i + 1}번 슬라이드 앞에</option>))}
+          </select>
+        </div>
+
+        <div className="modal-footer">
+          <button className="btn btn-secondary" onClick={onClose}>취소</button>
+          <button className="btn btn-primary" disabled={loading || !origin.trim() || !destination.trim()}
+            onClick={() => onCreate(origin.trim(), destination.trim(), profile)}>
+            {loading ? <span className="spinner" /> : '생성'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Place Slide Modal (장소 정보) ──
+function PlaceSlideModal({ slides, insertAt, setInsertAt, loading, onCreate, onClose }: {
+  slides: Slide[]; insertAt: number; setInsertAt: (n: number) => void
+  loading: boolean; onCreate: (query: string) => void; onClose: () => void
+}) {
+  const [query, setQuery] = useState('')
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" style={{ maxWidth: 460 }} onClick={e => e.stopPropagation()}>
+        <div className="modal-header">
+          <span className="modal-title">&#x1F4CD; 장소 슬라이드</span>
+          <button className="btn btn-ghost btn-icon" onClick={onClose}>&#x2715;</button>
+        </div>
+
+        <div style={{ marginBottom: '0.75rem' }}>
+          <label className="label">장소 검색</label>
+          <input className="input" value={query} onChange={e => setQuery(e.target.value)}
+            placeholder="예: 강남역, 카페 이름, 음식점" style={{ width: '100%' }}
+            onKeyDown={e => { if (e.key === 'Enter' && query.trim() && !loading) onCreate(query.trim()) }} />
+        </div>
+        <div style={{ marginBottom: '0.75rem' }}>
+          <label className="label">삽입 위치</label>
+          <select className="input" value={insertAt} onChange={e => setInsertAt(Number(e.target.value))} style={{ width: '100%' }}>
+            <option value={-1}>맨 끝에 추가</option>
+            {slides.map((_, i) => (<option key={i} value={i}>{i + 1}번 슬라이드 앞에</option>))}
+          </select>
+        </div>
+
+        <div className="modal-footer">
+          <button className="btn btn-secondary" onClick={onClose}>취소</button>
+          <button className="btn btn-primary" disabled={loading || !query.trim()}
+            onClick={() => onCreate(query.trim())}>
+            {loading ? <span className="spinner" /> : '생성'}
+          </button>
+        </div>
       </div>
     </div>
   )
@@ -1899,6 +2011,10 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
   }
 
   const isVideo = slide.slide_type === 'video'
+  const isRoute = slide.slide_type === 'route'
+  const isPlace = slide.slide_type === 'place'
+  const mapMeta = (isRoute || isPlace) ? parseSlideMeta(slide) : null
+  const slideIcon = isVideo ? '\u{1F3AC}' : isRoute ? '\u{1F5FA}\u{FE0F}' : isPlace ? '\u{1F4CD}' : '\u{1F5BC}\u{FE0F}'
 
   const tabBtn = (active: boolean): React.CSSProperties => ({
     flex: 1, padding: '0.4rem', fontSize: '0.82rem', fontWeight: 600, cursor: 'pointer',
@@ -1946,8 +2062,18 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
             <input type="checkbox" checked={isSelected} onChange={onToggleSelect} style={{ cursor: 'pointer', transform: 'scale(1.2)' }} />
           )}
           <label className="label" style={{ margin: 0 }}>
-            {isVideo ? '&#x1F3AC;' : '&#x1F5BC;&#xFE0F;'} Slide {index + 1} — {slide.label || slide.video_filename || slide.image_filename}
+            {slideIcon} Slide {index + 1} — {slide.label || slide.video_filename || slide.image_filename}
           </label>
+          {mapMeta && mapMeta.type === 'route' && (
+            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', background: 'var(--bg-secondary)', padding: '0.1rem 0.45rem', borderRadius: 'var(--radius-sm)' }}>
+              {(mapMeta.distance_m / 1000).toFixed(1)}km · {Math.round(mapMeta.duration_s / 60)}분 · {mapMeta.profile}
+            </span>
+          )}
+          {mapMeta && mapMeta.type === 'place' && mapMeta.category && (
+            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', background: 'var(--bg-secondary)', padding: '0.1rem 0.45rem', borderRadius: 'var(--radius-sm)' }}>
+              {mapMeta.category}
+            </span>
+          )}
           {onPreviewVideo && (
             <button onClick={onPreviewVideo}
               style={{ marginLeft: 'auto', padding: '0.25rem 0.65rem', fontSize: '0.8rem', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', background: 'var(--bg-secondary)', color: 'var(--text)', cursor: 'pointer' }}
@@ -2168,6 +2294,9 @@ export default function Editor() {
   const [showSettings, setShowSettings] = useState(false)
   const [showBgmSearch, setShowBgmSearch] = useState(false)
   const [showImport, setShowImport] = useState(false)
+  const [showRoute, setShowRoute] = useState(false)
+  const [showPlace, setShowPlace] = useState(false)
+  const [mapLoading, setMapLoading] = useState(false)
   const [showRender, setShowRender] = useState(false)
   const [isDragging, setIsDragging] = useState(false)
   const [previewVideoSlide, setPreviewVideoSlide] = useState<Slide | null>(null)
@@ -2258,6 +2387,47 @@ export default function Editor() {
     } finally {
       setUploading(false)
       if (fileInputRef.current) fileInputRef.current.value = ''
+    }
+  }
+
+  const mergeNewSlide = (newSlide: Slide) => {
+    setSlides(prev => {
+      const insertIdx = insertAt === -1 ? prev.length : Math.min(insertAt, prev.length)
+      const updated = [...prev.slice(0, insertIdx), newSlide, ...prev.slice(insertIdx)]
+      const result = updated.map((s, idx) => ({ ...s, order_index: idx }))
+      slidesRef.current = result
+      return result
+    })
+    setInsertAt(-1)
+  }
+
+  const handleCreateRoute = async (origin: string, destination: string, profile: string) => {
+    if (!projectId) return
+    setMapLoading(true)
+    try {
+      const newSlide = await api.createRouteSlide(projectId, { origin, destination, profile, insert_at: insertAt === -1 ? undefined : insertAt })
+      mergeNewSlide(newSlide)
+      toast('경로 슬라이드 생성 완료!', 'success')
+      setShowRoute(false)
+    } catch (e: unknown) {
+      toast(e instanceof Error ? e.message : '경로 슬라이드 생성 실패', 'error')
+    } finally {
+      setMapLoading(false)
+    }
+  }
+
+  const handleCreatePlace = async (query: string) => {
+    if (!projectId) return
+    setMapLoading(true)
+    try {
+      const newSlide = await api.createPlaceSlide(projectId, { query, insert_at: insertAt === -1 ? undefined : insertAt })
+      mergeNewSlide(newSlide)
+      toast('장소 슬라이드 생성 완료!', 'success')
+      setShowPlace(false)
+    } catch (e: unknown) {
+      toast(e instanceof Error ? e.message : '장소 슬라이드 생성 실패', 'error')
+    } finally {
+      setMapLoading(false)
     }
   }
 
@@ -2658,7 +2828,29 @@ export default function Editor() {
           uploading={uploading}
           onUpload={processFiles}
           onGooglePhotos={() => setShowPhotos(true)}
+          onRoute={() => { setShowImport(false); setShowRoute(true) }}
+          onPlace={() => { setShowImport(false); setShowPlace(true) }}
           onClose={() => setShowImport(false)}
+        />
+      )}
+      {showRoute && (
+        <RouteSlideModal
+          slides={slides}
+          insertAt={insertAt}
+          setInsertAt={setInsertAt}
+          loading={mapLoading}
+          onCreate={handleCreateRoute}
+          onClose={() => setShowRoute(false)}
+        />
+      )}
+      {showPlace && (
+        <PlaceSlideModal
+          slides={slides}
+          insertAt={insertAt}
+          setInsertAt={setInsertAt}
+          loading={mapLoading}
+          onCreate={handleCreatePlace}
+          onClose={() => setShowPlace(false)}
         />
       )}
       {showRender && (

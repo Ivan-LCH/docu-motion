@@ -49,6 +49,7 @@ def _migrate_columns():
             ("slides", "image_fit", "TEXT DEFAULT 'cover'"),
             ("slides", "ken_burns", "INTEGER DEFAULT 0"),
             ("projects", "title_text", "TEXT DEFAULT ''"),
+            ("slides", "meta", "TEXT DEFAULT '{}'"),
         ]
         for table, column, col_type in migrations:
             try:
