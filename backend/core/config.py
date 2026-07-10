@@ -29,8 +29,12 @@ JAMENDO_CLIENT_ID = os.getenv("JAMENDO_CLIENT_ID", "")
 DEBUG            = os.getenv("DEBUG", "false").lower() == "true"
 
 # ─────────────────────────────────────────────
-# 지도 (Route/Place 슬라이드) — 무료 OSM 계열
+# 지도 (Route/Place 슬라이드)
+# - Geocoding 1순위: 카카오 Local API (한국 POI 강점, 무료)
+# - Geocoding 폴백 / 라우팅 / 타일: 무료 OSM 계열
 # ─────────────────────────────────────────────
+KAKAO_REST_API_KEY = os.getenv("KAKAO_REST_API_KEY", "")
+KAKAO_LOCAL_BASE   = os.getenv("KAKAO_LOCAL_BASE", "https://dapi.kakao.com/v2/local")
 OSRM_BASE        = os.getenv("OSRM_BASE", "https://router.project-osrm.org")
 NOMINATIM_BASE   = os.getenv("NOMINATIM_BASE", "https://nominatim.openstreetmap.org")
 OVERPASS_BASE    = os.getenv("OVERPASS_BASE", "https://maps.mail.ru/osm/tools/overpass/api/interpreter")

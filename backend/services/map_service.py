@@ -1,15 +1,17 @@
 """
-DocuMotion - OSM 지도 서비스 (Route/Place 슬라이드용)
+DocuMotion - 지도 서비스 (Route/Place 슬라이드용)
 
-무료 OSM 계열 API 로 경로·장소 데이터를 가져오고,
+장소 검색은 카카오 Local API 를 1순위로, OSM 계열 API 를 폴백으로 사용하고,
 staticmap 라이브러리로 OSM 타일 위에 경로/마커를 그려 PNG 로 출력한다.
 
-- Geocoding  : Nominatim (https://nominatim.openstreetmap.org)
+- Geocoding 1순위: 카카오 Local API (https://dapi.kakao.com/v2/local) — 한국 POI 강점
+- Geocoding 폴백 : Nominatim (https://nominatim.openstreetmap.org) — 해외/키 미입력 시
 - Routing    : OSRM      (https://router.project-osrm.org)
-- POI 상세   : Overpass API (https://overpass-api.de/api/interpreter)
+- POI 상세   : 카카오 키워드 결과 우선, 폴백 시 Overpass API
 - 지도 타일  : OpenStreetMap standard tiles (https://tile.openstreetmap.org)
 
 참고:
+  - 카카오: REST API 키 필요(KAKAO_REST_API_KEY). 키 없으면 자동으로 Nominatim 폴백.
   - Nominatim 정책상 User-Agent 필수, 1 req/s 권장.
   - OSRM 퍼블릭 서버는 rate-limit 이 빡빡함 → OSRM_BASE 환경변수로 self-hosted 전환 가능.
 """
@@ -24,6 +26,7 @@ import httpx
 from staticmap import StaticMap, Line, CircleMarker
 
 from backend.core.config import (
+    KAKAO_REST_API_KEY, KAKAO_LOCAL_BASE,
     NOMINATIM_BASE, OSRM_BASE, OVERPASS_BASE, MAP_USER_AGENT,
 )
 from backend.core.logger import get_logger
@@ -55,6 +58,80 @@ def _nominatim_sleep():
     if dt < _NOMINATIM_MIN_INTERVAL:
         time.sleep(_NOMINATIM_MIN_INTERVAL - dt)
     _last_nominatim_ts = time.monotonic()
+
+
+def _kakao_search(query: str) -> dict | None:
+    """
+    카카오 Local 키워드 검색 → 첫 결과를 표준 형태로 반환.
+    키 미설정/네트워크 오류/결과 없음 → None (호출자가 폴백).
+    반환: {lat, lng, name, display_name, address, category, phone, place_url}
+    """
+    if not KAKAO_REST_API_KEY:
+        return None
+
+    headers = {"Authorization": f"KakaoAK {KAKAO_REST_API_KEY}"}
+    try:
+        r = httpx.get(
+            f"{KAKAO_LOCAL_BASE}/search/keyword.json",
+            params={"query": query, "size": 1},
+            headers=headers, timeout=15.0,
+        )
+        # 401/403 등 인증 오류는 폴백으로(경고 로그)
+        if r.status_code in (401, 403):
+            logger.warning(f"카카오 API 인증 오류({r.status_code}) — Nominatim 폴백. KAKAO_REST_API_KEY 확인 필요.")
+            return None
+        r.raise_for_status()
+        docs = r.json().get("documents", [])
+    except Exception as e:
+        logger.warning(f"카카오 키워드 검색 실패(폴백으로 진행): {e}")
+        return None
+
+    if not docs:
+        return None
+
+    d = docs[0]
+    place = d.get("place_name") or query
+    addr = d.get("road_address_name") or d.get("address_name") or ""
+    cat = d.get("category_group_name") or d.get("category_name") or ""
+    return {
+        "lat": float(d["y"]),       # 카카오: y=위도
+        "lng": float(d["x"]),       # 카카오: x=경도
+        "name": place.strip(),
+        "display_name": f"{place}, {addr}" if addr else place,
+        "address": addr,
+        "category": cat,
+        "phone": d.get("phone", ""),
+        "place_url": d.get("place_url", ""),
+    }
+
+
+def _nominatim_geocode(query: str) -> dict | None:
+    """
+    Nominatim 지오코딩 → 표준 형태. 실패/결과 없음 → None.
+    반환: {lat, lng, name, display_name}
+    """
+    _nominatim_sleep()
+    url = f"{NOMINATIM_BASE}/search"
+    params = {"q": query, "format": "jsonv2", "limit": 1, "addressdetails": 1}
+    headers = {"User-Agent": MAP_USER_AGENT, "Accept-Language": "ko,en"}
+
+    try:
+        r = httpx.get(url, params=params, headers=headers, timeout=15.0)
+        r.raise_for_status()
+        data = r.json()
+    except Exception as e:
+        logger.error(f"Nominatim 지오코딩 네트워크 오류 ({query!r}): {e}")
+        return None
+
+    if not data:
+        return None
+    hit = data[0]
+    return {
+        "lat": float(hit["lat"]),
+        "lng": float(hit["lon"]),
+        "name": (hit.get("name") or hit.get("display_name") or query).strip(),
+        "display_name": hit.get("display_name", query),
+    }
 
 
 def _haversine_m(a: Tuple[float, float], b: Tuple[float, float]) -> float:
@@ -113,33 +190,34 @@ def _interp_along(coords_latlng: List[Tuple[float, float]], frac: float):
 # Public API
 # ────────────────────────────────────────────────────────────────────────── #
 def geocode(query: str) -> dict:
-    """자유 텍스트 → {lat, lng, name, display_name}. 실패 시 ValueError."""
+    """
+    자유 텍스트 → {lat, lng, name, display_name}. 실패 시 ValueError.
+
+    카카오 Local(키워드) → (실패 시) Nominatim 순서. 카카오 결과엔 address/category 등
+    부가 필드가 포함될 수 있지만, 본 함수의 공개 계약은 lat/lng/name/display_name.
+    """
     query = (query or "").strip()
     if not query:
         raise ValueError("빈 검색어")
 
-    _nominatim_sleep()
-    url = f"{NOMINATIM_BASE}/search"
-    params = {"q": query, "format": "jsonv2", "limit": 1, "addressdetails": 1}
-    headers = {"User-Agent": MAP_USER_AGENT, "Accept-Language": "ko,en"}
+    # 1순위: 카카오
+    hit = _kakao_search(query)
+    provider = "kakao"
 
-    try:
-        r = httpx.get(url, params=params, headers=headers, timeout=15.0)
-        r.raise_for_status()
-        data = r.json()
-    except Exception as e:
-        logger.error(f"Geocode 네트워크 오류 ({query!r}): {e}")
-        raise ValueError(f"지오코딩 실패: {e}")
+    # 폴백: Nominatim (해외/키 미입력/카카오 결과 없음)
+    if hit is None:
+        hit = _nominatim_geocode(query)
+        provider = "nominatim"
 
-    if not data:
+    if hit is None:
         raise ValueError(f"장소를 찾을 수 없습니다: {query}")
 
-    hit = data[0]
+    logger.info(f"Geocode ({provider}): {query!r} -> ({hit['lat']:.5f}, {hit['lng']:.5f}) {hit['name']!r}")
     return {
-        "lat": float(hit["lat"]),
-        "lng": float(hit["lon"]),
-        "name": (hit.get("name") or hit.get("display_name") or query).strip(),
-        "display_name": hit.get("display_name", query),
+        "lat": hit["lat"],
+        "lng": hit["lng"],
+        "name": hit["name"],
+        "display_name": hit["display_name"],
     }
 
 
@@ -183,11 +261,35 @@ def get_route(origin: dict, destination: dict, profile: str = "driving") -> dict
 
 def get_place_details(query: str) -> dict:
     """
-    Nominatim 으로 좌표/주소 확보 후, Overpass 로 주변 POI 상세 조회.
+    장소 좌표 + POI 상세 조회.
     반환: {name, address, lat, lng, category, opening_hours}
-    Overpass 실패 시 Nominatim 결과만 반환(gra d eful degrade).
+
+    카카오 키워드 검색이 성공하면 POI 상세(주소/카테고리/전화)를 한 번에 얻어 반환.
+    카카오 실패 시 Nominatim(좌표/주소) + Overpass(POI 상세) 폴백.
     """
-    geo = geocode(query)
+    query = (query or "").strip()
+    if not query:
+        raise ValueError("빈 검색어")
+
+    # 1순위: 카카오 (POI 상세 포함)
+    k = _kakao_search(query)
+    if k is not None:
+        logger.info(f"Place details (kakao): {query!r} -> {k['name']!r} [{k['category']}]")
+        return {
+            "name": k["name"],
+            "address": k["address"] or k["display_name"],
+            "lat": k["lat"],
+            "lng": k["lng"],
+            "category": k["category"],
+            "opening_hours": "",   # 카카오는 영업시간 미제공
+            "phone": k.get("phone", ""),
+        }
+
+    # 폴백: Nominatim + Overpass
+    geo = _nominatim_geocode(query)
+    if geo is None:
+        raise ValueError(f"장소를 찾을 수 없습니다: {query}")
+
     result = {
         "name": geo["name"],
         "address": geo["display_name"],
@@ -226,6 +328,7 @@ def get_place_details(query: str) -> dict:
     except Exception as e:
         logger.warning(f"Overpass 조회 실패(기본 정보로 진행): {e}")
 
+    logger.info(f"Place details (nominatim+overpass): {query!r} -> {result['name']!r}")
     return result
 
 
