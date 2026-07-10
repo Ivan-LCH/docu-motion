@@ -118,6 +118,7 @@ def get_project(project_id: str, db: Session = Depends(get_db)):
             "overlays"      : getattr(s, "overlays", "[]"),
             "image_fit"     : getattr(s, "image_fit", "cover"),
             "ken_burns"     : getattr(s, "ken_burns", 0),
+            "meta"          : getattr(s, "meta", "{}"),
         }
         for s in project.slides
     ]
