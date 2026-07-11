@@ -29,6 +29,15 @@ export interface SavedLocation {
   lng: number
 }
 
+export interface GeocodeResult {
+  provider: string
+  name: string
+  display_name: string
+  lat: number
+  lng: number
+  overseas: boolean
+}
+
 export interface Slide {
   id: string
   order_index: number
@@ -243,6 +252,7 @@ export const api = {
 
   // 자주 쓰는 장소 (전역: 집/회사)
   listLocations: () => request<SavedLocation[]>('GET', '/locations'),
+  geocode: (q: string) => request<GeocodeResult>('GET', `/geocode?q=${encodeURIComponent(q)}`),
   createLocation: (payload: { name: string; query: string }) =>
     request<SavedLocation>('POST', '/locations', payload),
   updateLocation: (id: string, payload: { name?: string; query?: string }) =>

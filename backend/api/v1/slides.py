@@ -369,7 +369,8 @@ def create_route_slide(
     try:
         canvas = _canvas_for(project)
         frames = map_service.render_route_frames(
-            route["geometry_lnglat"], n_frames, canvas, assets_dir, slide_id
+            route["geometry_lnglat"], n_frames, canvas, assets_dir, slide_id,
+            distance_m=route["distance_m"], duration_s=route["duration_s"], profile=route["profile"],
         )
     except Exception as e:
         logger.error(f"Route frame 렌더링 실패: {e}", exc_info=True)
@@ -453,7 +454,8 @@ def regenerate_route_slide(
         route = map_service.get_route(origin, destination, profile=profile)
         canvas = _canvas_for(project)
         frames = map_service.render_route_frames(
-            route["geometry_lnglat"], n_frames, canvas, assets_dir, slide.id
+            route["geometry_lnglat"], n_frames, canvas, assets_dir, slide.id,
+            distance_m=route["distance_m"], duration_s=route["duration_s"], profile=route["profile"],
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

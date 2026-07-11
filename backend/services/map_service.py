@@ -19,16 +19,18 @@ from __future__ import annotations
 
 import math
 import re
+import tempfile
 import time
 from pathlib import Path
 from typing import List, Tuple
 
 import httpx
-from staticmap import StaticMap, Line, CircleMarker
+from PIL import Image, ImageDraw, ImageFont
+from staticmap import StaticMap, Line, CircleMarker, IconMarker
 
 from backend.core.config import (
     KAKAO_REST_API_KEY, KAKAO_LOCAL_BASE,
-    NOMINATIM_BASE, OSRM_BASE, OVERPASS_BASE, MAP_USER_AGENT,
+    NOMINATIM_BASE, OSRM_BASE, OVERPASS_BASE, MAP_USER_AGENT, FONT_PATH,
 )
 from backend.core.logger import get_logger
 
@@ -52,6 +54,10 @@ _ORIGIN_COLOR     = "#22b14c"   # 출발(초록)
 _CURRENT_COLOR    = "#e8473c"   # 현재 위치(빨강)
 _DEST_COLOR       = "#1f49b8"   # 도착(파랑)
 
+# 핀 아이콘 PNG 캐시 디렉토리 — (color, glyph) 조합별 1회 생성 후 재사용
+_PIN_CACHE_DIR = Path(tempfile.gettempdir()) / "documotion_pins"
+_FONT_CACHE: dict[int, ImageFont.FreeTypeFont] = {}
+
 
 # ────────────────────────────────────────────────────────────────────────── #
 # Internal helpers
@@ -63,6 +69,93 @@ def _nominatim_sleep():
     if dt < _NOMINATIM_MIN_INTERVAL:
         time.sleep(_NOMINATIM_MIN_INTERVAL - dt)
     _last_nominatim_ts = time.monotonic()
+
+
+def _get_font(size: int) -> ImageFont.FreeTypeFont:
+    """font.ttf 를 캐싱하여 반환. 렌더링(라벨/핀 글자)용."""
+    if size not in _FONT_CACHE:
+        try:
+            _FONT_CACHE[size] = ImageFont.truetype(FONT_PATH, size)
+        except Exception:
+            _FONT_CACHE[size] = ImageFont.load_default()
+    return _FONT_CACHE[size]
+
+
+def _pin_icon(color: str, glyph: str = "", size: int = 56) -> str:
+    """
+    tear-drop 핀 아이콘 PNG 생성(또는 캐시 조회). 파일 경로 반환.
+    끝점(tip)이 bottom-center에 있어 IconMarker offset=(size//2, 0) 으로 좌표에 anchor.
+    color: hex (#RRGGBB). glyph: 중앙에 그릴 짧은 문자/기호(옵션).
+    """
+    _PIN_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    safe = re.sub(r"[^a-z0-9]+", "_", color.lower())
+    fp = _PIN_CACHE_DIR / f"pin_{safe}_{hash(glyph)}_{size}.png"
+    if fp.exists():
+        return str(fp)
+
+    # 캔버스: 정사각 + 여백(안티앨리어싱/그림자용)
+    pad = size // 6
+    W = size + pad * 2
+    img = Image.new("RGBA", (W, W), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    cx = W // 2
+    r = size // 2
+    cy = r + pad  # 원 중심
+
+    # 그림자
+    shadow = (0, 0, 0, 70)
+    d.ellipse([cx - r + 3, cy - r + 5, cx + r + 3, cy + r + 5], fill=shadow)
+    d.polygon([(cx - r // 2 + 3, cy + r // 4 + 5), (cx + r // 2 + 3, cy + r // 4 + 5), (cx + 3, W - pad + 5)], fill=shadow)
+
+    # 꼬리(삼각) + 원 → tear-drop
+    d.polygon([(cx - r // 2, cy + r // 4), (cx + r // 2, cy + r // 4), (cx, W - pad)], fill=color)
+    d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=color)
+
+    # 흰 내부원
+    ir = int(r * 0.62)
+    d.ellipse([cx - ir, cy - ir, cx + ir, cy + ir], fill=(255, 255, 255, 255))
+
+    # 중앙 글자/기호
+    if glyph:
+        fs = max(12, int(r * 0.95))
+        f = _get_font(fs)
+        try:
+            bbox = d.textbbox((0, 0), glyph, font=f)
+            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        except Exception:
+            tw = th = fs
+        d.text((cx - tw / 2 - bbox[0], cy - th / 2 - bbox[1]), glyph, font=f, fill=color)
+
+    img.save(str(fp))
+    return str(fp)
+
+
+def _draw_info_pill(img: Image.Image, profile: str, distance_m: float, duration_s: float) -> None:
+    """
+    이미지 상단 중앙에 소요시간/거리 알약 라벨을 그린다(픽셀 공간, 투영 불필요).
+    예: "🚗 약 25분 · 10.4km"
+    """
+    icon = {"driving": "🚗", "foot": "🚶", "walking": "🚶", "bicycle": "🚲", "bike": "🚲"}.get(profile, "🧭")
+    mins = max(1, round(duration_s / 60.0)) if duration_s > 0 else 0
+    dist_km = distance_m / 1000.0
+    text = f"{icon} 약 {mins}분 · {dist_km:.1f}km" if mins else f"{icon} {dist_km:.1f}km"
+
+    fs = max(18, img.width // 30)
+    f = _get_font(fs)
+    d = ImageDraw.Draw(img, "RGBA")
+    try:
+        bbox = d.textbbox((0, 0), text, font=f)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    except Exception:
+        tw, th = fs * len(text) // 2, fs
+    pad_x, pad_y = fs // 2, fs // 3
+    box_w, box_h = tw + pad_x * 2, th + pad_y * 2
+    x = (img.width - box_w) // 2
+    y = fs // 2
+
+    # 알약 배경 (반투명 검정 + 둥근 모서리)
+    d.rounded_rectangle([x, y, x + box_w, y + box_h], radius=box_h // 2, fill=(0, 0, 0, 160))
+    d.text((x + pad_x - bbox[0], y + pad_y - bbox[1] - th // 6), text, font=f, fill=(255, 255, 255, 255))
 
 
 def _kakao_search(query: str) -> dict | None:
@@ -267,6 +360,27 @@ def geocode(query: str) -> dict:
     }
 
 
+def geocode_verbose(query: str) -> dict:
+    """
+    사전 확인용 geocode — provider/overseas 포함해 상세 반환.
+    반환: {provider, lat, lng, name, display_name, overseas}. 실패 시 ValueError.
+    """
+    query = (query or "").strip()
+    if not query:
+        raise ValueError("빈 검색어")
+    provider, hit = _resolve_location(query)
+    if hit is None:
+        raise ValueError(f"장소를 찾을 수 없습니다: {query}")
+    return {
+        "provider": provider,
+        "lat": hit["lat"],
+        "lng": hit["lng"],
+        "name": hit["name"],
+        "display_name": hit["display_name"],
+        "overseas": _is_overseas(hit["lat"], hit["lng"]),
+    }
+
+
 def get_route(origin: dict, destination: dict, profile: str = "driving") -> dict:
     """
     OSRM 경로 요청.
@@ -389,12 +503,14 @@ def get_place_details(query: str) -> dict:
 def render_place_map(lat: float, lng: float, canvas: Tuple[int, int],
                      out_path: Path) -> str:
     """
-    단일 정적 지도(줌 16) + 중앙 마커를 PNG 로 저장. out_path 의 파일명 반환.
+    단일 정적 지도(줌 16) + 중앙 핀 마커를 PNG 로 저장. out_path 의 파일명 반환.
     """
     out_path.parent.mkdir(parents=True, exist_ok=True)
     m = StaticMap(canvas[0], canvas[1], url_template=_TILE_URL,
                   tile_request_timeout=20, headers={"User-Agent": MAP_USER_AGENT})
-    m.add_marker(CircleMarker((lng, lat), _CURRENT_COLOR, 14))
+    pin_size = max(40, min(canvas[0], canvas[1]) // 12)
+    icon = _pin_icon(_CURRENT_COLOR, "★", pin_size)
+    m.add_marker(IconMarker((lng, lat), icon, pin_size // 2, 0))
     img = m.render(zoom=16)
     img.save(str(out_path))
     return out_path.name
@@ -402,14 +518,17 @@ def render_place_map(lat: float, lng: float, canvas: Tuple[int, int],
 
 def render_route_frames(geometry_lnglat: List[Tuple[float, float]],
                         n_frames: int, canvas: Tuple[int, int],
-                        out_dir: Path, slide_id: str) -> List[str]:
+                        out_dir: Path, slide_id: str,
+                        distance_m: float = 0.0, duration_s: float = 0.0,
+                        profile: str = "driving") -> List[str]:
     """
     경로 애니메이션의 N 개 프레임을 PNG 로 저장.
 
     각 프레임:
       - 전체 경로(옅은 파랑 폴리라인) — bounds 를 모든 프레임에서 동일하게 유지
       - 진행도까지의 이동 구간(진한 빨강)
-      - 출발/현재/도착 마커
+      - 출발(초록 핀) / 현재(빨강 점) / 도착(파랑 핀) 마커
+      - 상단에 소요시간/거리 알약 라벨
 
     geometry_lnglat: [[lng, lat], ...] (OSRM geojson 형식)
     반환: 저장된 파일명 리스트(assets_dir 기준 상대명).
@@ -422,6 +541,11 @@ def render_route_frames(geometry_lnglat: List[Tuple[float, float]],
     full_line = [tuple(map(float, c)) for c in geometry_lnglat]
     # 위도/경도 순으로 변환 (내부 거리 계산용)
     latlng = [(c[1], c[0]) for c in full_line]
+
+    # 핀 아이콘 (캐시됨)
+    pin_size = max(40, min(canvas[0], canvas[1]) // 14)
+    origin_icon = _pin_icon(_ORIGIN_COLOR, "출", pin_size)
+    dest_icon = _pin_icon(_DEST_COLOR, "도", pin_size)
 
     # 진행도별 현재 위치 + 이동한 부분 경로
     fracs = [i / max(1, n_frames - 1) for i in range(n_frames)]
@@ -438,17 +562,18 @@ def render_route_frames(geometry_lnglat: List[Tuple[float, float]],
         if len(travelled_latlng) >= 2:
             travelled_lnglat = [(lng, lat) for (lat, lng) in travelled_latlng]
             m.add_line(Line(travelled_lnglat, _ROUTE_FG_COLOR, 7))
-        # 마커: 출발 / 현재 / 도착
+        # 마커: 출발(핀) / 도착(핀) — IconMarker, 끝점 anchor=(size//2, 0)
         o_lng, o_lat = full_line[0]
         d_lng, d_lat = full_line[-1]
-        m.add_marker(CircleMarker((o_lng, o_lat), _ORIGIN_COLOR, 12))
-        m.add_marker(CircleMarker((cur_lng, cur_lat), _CURRENT_COLOR, 12))
-        if idx != len(frames_meta) - 1:  # 마지막 프레임에선 도착 마커가 현재 마커 겹침 방지
-            m.add_marker(CircleMarker((d_lng, d_lat), _DEST_COLOR, 12))
-        else:
-            m.add_marker(CircleMarker((d_lng, d_lat), _DEST_COLOR, 12))
+        m.add_marker(IconMarker((o_lng, o_lat), origin_icon, pin_size // 2, 0))
+        m.add_marker(IconMarker((d_lng, d_lat), dest_icon, pin_size // 2, 0))
+        # 현재 위치 — 작은 강조 점(마지막 프레임에선 도착과 겹치므로 생략)
+        if idx != len(frames_meta) - 1:
+            m.add_marker(CircleMarker((cur_lng, cur_lat), _CURRENT_COLOR, 9))
 
         img = m.render()
+        # 상단 소요시간/거리 라벨
+        _draw_info_pill(img, profile, distance_m, duration_s)
         fname = f"{slide_id}_frame_{idx:03d}.png"
         img.save(str(out_dir / fname))
         filenames.append(fname)

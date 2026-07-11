@@ -60,6 +60,30 @@ def list_locations(db: Session = Depends(get_db)):
     return db.query(SavedLocation).order_by(SavedLocation.name).all()
 
 
+class GeocodeResult(BaseModel):
+    provider: str
+    name: str
+    display_name: str
+    lat: float
+    lng: float
+    overseas: bool
+
+
+@router.get("/geocode", response_model=GeocodeResult)
+def geocode_query(q: str):
+    """자유 텍스트 → 좌표/이름/provider/해외여부. 경로·장소 입력 사전 확인용."""
+    q = (q or "").strip()
+    if not q:
+        raise HTTPException(status_code=400, detail="빈 검색어")
+    try:
+        return map_service.geocode_verbose(q)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Geocode 실패 ({q!r}): {e}", exc_info=True)
+        raise HTTPException(status_code=502, detail=f"장소 확인 실패: {e}")
+
+
 @router.post("/locations", response_model=LocationRead, status_code=201)
 def create_location(payload: LocationCreate, db: Session = Depends(get_db)):
     """새 장소 저장. query 를 geocode 로 검증하고 좌표 캐싱."""

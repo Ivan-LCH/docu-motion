@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { api, Slide, ProjectDetail, BgmHit, PhotosSortOrder, parseSlideMeta, RouteMeta, SavedLocation } from '../api/client'
+import { api, Slide, ProjectDetail, BgmHit, PhotosSortOrder, parseSlideMeta, RouteMeta, SavedLocation, GeocodeResult } from '../api/client'
 import { useToast } from '../components/ToastContext'
 import GoogleAuthSection, { extractCodeFromUrl } from '../components/GoogleAuthSection'
 
@@ -659,6 +659,34 @@ function RouteSlideModal({ slides, insertAt, setInsertAt, loading, onCreate, onC
   const [profile, setProfile] = useState('driving')
   const [nFrames, setNFrames] = useState(30)
   const [duration, setDuration] = useState(5)
+  // 사전 확인 (geocode)
+  const [originCheck, setOriginCheck] = useState<GeocodeResult | null>(null)
+  const [originErr, setOriginErr] = useState('')
+  const [destCheck, setDestCheck] = useState<GeocodeResult | null>(null)
+  const [destErr, setDestErr] = useState('')
+  const [checking, setChecking] = useState('')
+  const checkPlace = async (which: 'origin' | 'dest', q: string) => {
+    if (!q.trim()) return
+    setChecking(which)
+    try {
+      const r = await api.geocode(q.trim())
+      if (which === 'origin') { setOriginCheck(r); setOriginErr('') } else { setDestCheck(r); setDestErr('') }
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : '확인 실패'
+      if (which === 'origin') { setOriginCheck(null); setOriginErr(msg) } else { setDestCheck(null); setDestErr(msg) }
+    } finally { setChecking('') }
+  }
+  const CheckBadge = ({ ok, err, overseen }: { ok: GeocodeResult | null; err: string; overseen?: boolean }) => {
+    if (err) return <div style={{ fontSize: '0.75rem', color: 'var(--danger, #e55)', marginTop: '0.3rem' }}>&#x274C; {err}</div>
+    if (!ok) return null
+    return (
+      <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.3rem', display: 'flex', alignItems: 'center', gap: '0.35rem', flexWrap: 'wrap' }}>
+        <span style={{ color: 'var(--success, #2a8)' }}>&#x2705; {ok.name}</span>
+        <span style={{ color: 'var(--text-muted)' }}>({ok.lat.toFixed(4)}, {ok.lng.toFixed(4)}) · {ok.provider}</span>
+        {overseen && <span style={{ background: 'var(--bg-secondary)', padding: '0.05rem 0.35rem', borderRadius: 'var(--radius-sm)', fontSize: '0.68rem' }}>&#x1F310; 해외</span>}
+      </div>
+    )
+  }
   const quickChips = (setter: (v: string) => void) => locations && locations.length > 0 && (
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.3rem', marginTop: '0.35rem' }}>
       {locations.map(loc => (
@@ -678,15 +706,33 @@ function RouteSlideModal({ slides, insertAt, setInsertAt, loading, onCreate, onC
 
         <div style={{ marginBottom: '0.75rem' }}>
           <label className="label">출발지</label>
-          <input className="input" value={origin} onChange={e => setOrigin(e.target.value)}
-            placeholder="예: 서울역" style={{ width: '100%' }} />
-          {quickChips(setOrigin)}
+          <div style={{ display: 'flex', gap: '0.4rem' }}>
+            <input className="input" value={origin} onChange={e => { setOrigin(e.target.value); setOriginCheck(null); setOriginErr('') }}
+              placeholder="예: 서울역" style={{ flex: 1 }}
+              onKeyDown={e => { if (e.key === 'Enter') checkPlace('origin', origin) }} />
+            <button className="btn btn-secondary" type="button" style={{ flex: '0 0 auto' }}
+              disabled={!origin.trim() || checking === 'origin'}
+              onClick={() => checkPlace('origin', origin)}>
+              {checking === 'origin' ? <span className="spinner" /> : '&#x1F50D; 확인'}
+            </button>
+          </div>
+          {quickChips(v => { setOrigin(v); setOriginCheck(null); setOriginErr('') })}
+          <CheckBadge ok={originCheck} err={originErr} overseen={originCheck?.overseas} />
         </div>
         <div style={{ marginBottom: '0.75rem' }}>
           <label className="label">도착지</label>
-          <input className="input" value={destination} onChange={e => setDestination(e.target.value)}
-            placeholder="예: 강남역" style={{ width: '100%' }} />
-          {quickChips(setDestination)}
+          <div style={{ display: 'flex', gap: '0.4rem' }}>
+            <input className="input" value={destination} onChange={e => { setDestination(e.target.value); setDestCheck(null); setDestErr('') }}
+              placeholder="예: 강남역" style={{ flex: 1 }}
+              onKeyDown={e => { if (e.key === 'Enter') checkPlace('dest', destination) }} />
+            <button className="btn btn-secondary" type="button" style={{ flex: '0 0 auto' }}
+              disabled={!destination.trim() || checking === 'dest'}
+              onClick={() => checkPlace('dest', destination)}>
+              {checking === 'dest' ? <span className="spinner" /> : '&#x1F50D; 확인'}
+            </button>
+          </div>
+          {quickChips(v => { setDestination(v); setDestCheck(null); setDestErr('') })}
+          <CheckBadge ok={destCheck} err={destErr} overseen={destCheck?.overseas} />
         </div>
         <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.75rem' }}>
           <div style={{ flex: 1 }}>
