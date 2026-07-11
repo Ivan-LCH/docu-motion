@@ -277,15 +277,8 @@ def delete_slide(project_id: str, slide_id: str, db: Session = Depends(get_db)):
         if vid.exists():
             os.unlink(vid)
     # Route 슬라이드 프레임 파일들 일괄 삭제
-    if (slide.slide_type == "route") and slide.meta:
-        try:
-            meta = json.loads(slide.meta) if isinstance(slide.meta, str) else slide.meta
-            for fn in meta.get("frames", []):
-                fp = assets_dir / fn
-                if fp.exists():
-                    os.unlink(fp)
-        except Exception:
-            pass
+    if slide.slide_type == "route":
+        _delete_route_frames(assets_dir, slide.meta)
     db.delete(slide)
     db.commit()
 
@@ -310,8 +303,30 @@ class PlaceSlideRequest(_BM):
     insert_at: Optional[int] = None
 
 
+class RouteRegenerateRequest(_BM):
+    """기존 route 슬라이드 재생성 — origin/destination(좌표)은 유지하고
+    profile/n_frames/duration 만 갱신. None 필드는 기존 meta값 유지."""
+    profile: Optional[str] = None
+    n_frames: Optional[int] = None
+    duration: Optional[float] = None
+
+
 def _canvas_for(project: Project) -> tuple:
     return ASPECT_RATIO_MAP.get(getattr(project, "aspect_ratio", "16:9") or "16:9", (1280, 720))
+
+
+def _delete_route_frames(assets_dir: Path, meta) -> None:
+    """route 슬라이드 meta 내 frames 파일들을 일괄 삭제. meta 가 손상된 경우 무시."""
+    if not meta:
+        return
+    try:
+        m = json.loads(meta) if isinstance(meta, str) else meta
+        for fn in m.get("frames", []):
+            fp = assets_dir / fn
+            if fp.exists():
+                os.unlink(fp)
+    except Exception:
+        pass
 
 
 def _insert_order_index(db: Session, project_id: str, insert_at: Optional[int]) -> tuple:
@@ -397,6 +412,76 @@ def create_route_slide(
     db.commit()
     db.refresh(slide)
     logger.info(f"[{project_id}] Route slide created: {origin['name']} → {destination['name']} ({n_frames} frames)")
+    return slide
+
+
+@router.post("/{project_id}/slides/{slide_id}/route/regenerate", response_model=SlideRead)
+def regenerate_route_slide(
+    project_id: str,
+    slide_id: str,
+    request: RouteRegenerateRequest,
+    db: Session = Depends(get_db),
+):
+    """기존 route 슬라이드를 저장된 출발/도착 좌표로 재생성.
+    profile·n_frames·duration 만 갱신(미지정 시 기존값 유지). 현재 aspect_ratio 로 캔버스 재계산."""
+    project = _get_project_or_404(project_id, db)
+    slide = db.query(Slide).filter(Slide.id == slide_id, Slide.project_id == project_id).first()
+    if not slide:
+        raise HTTPException(status_code=404, detail="Slide not found")
+    if slide.slide_type != "route":
+        raise HTTPException(status_code=400, detail="route 슬라이드만 재생성할 수 있습니다")
+
+    try:
+        old = json.loads(slide.meta) if slide.meta else {}
+    except Exception:
+        old = {}
+    origin = old.get("origin")
+    destination = old.get("destination")
+    if not (origin and destination and "lat" in origin and "lat" in destination):
+        raise HTTPException(status_code=400, detail="경로 좌표 메타가 손상되어 재생성할 수 없습니다")
+
+    profile = request.profile if request.profile in ("driving", "foot", "walking", "bike", "bicycle") \
+        else old.get("profile", "driving")
+    n_frames = max(6, min(60, int(request.n_frames if request.n_frames is not None else old.get("n_frames", 30))))
+    duration = float(request.duration if request.duration is not None else old.get("duration", 5.0))
+
+    assets_dir = _assets_dir(project_id)
+    # 기존 프레임 삭제 (slide_id prefix 유지→같은 이름으로 덮어쓰기, 삭제로 누락 방지)
+    _delete_route_frames(assets_dir, slide.meta)
+
+    try:
+        route = map_service.get_route(origin, destination, profile=profile)
+        canvas = _canvas_for(project)
+        frames = map_service.render_route_frames(
+            route["geometry_lnglat"], n_frames, canvas, assets_dir, slide.id
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Route slide 재생성 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=502, detail=f"경로 재생성 실패: {e}")
+
+    fps = (n_frames - 1) / duration if duration > 0 else 6.0
+    meta = {
+        "type": "route",
+        "origin": origin,
+        "destination": destination,
+        "profile": route["profile"],
+        "geometry_lnglat": route["geometry_lnglat"],
+        "distance_m": route["distance_m"],
+        "duration_s": route["duration_s"],
+        "frames": frames,
+        "n_frames": n_frames,
+        "duration": duration,
+        "fps": fps,
+        "canvas": [canvas[0], canvas[1]],
+    }
+    slide.meta = json.dumps(meta, ensure_ascii=False)
+    slide.image_filename = frames[0] if frames else ""
+    project.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(slide)
+    logger.info(f"[{project_id}] Route slide regenerated: {slide_id} ({profile}, {n_frames} frames)")
     return slide
 
 

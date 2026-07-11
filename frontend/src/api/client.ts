@@ -54,6 +54,7 @@ export interface RouteMeta {
   duration_s: number
   frames: string[]
   duration: number
+  n_frames?: number
 }
 export interface PlaceMeta {
   type: 'place'
@@ -224,6 +225,13 @@ export const api = {
     projectId: string,
     payload: { origin: string; destination: string; profile?: string; insert_at?: number; duration?: number; n_frames?: number },
   ) => request<Slide>('POST', `/projects/${projectId}/slides/route`, payload),
+
+  // 경로 슬라이드 재생성 (좌표 유지, profile/n_frames/duration 갱신)
+  regenerateRouteSlide: (
+    projectId: string,
+    slideId: string,
+    payload: { profile?: string; n_frames?: number; duration?: number },
+  ) => request<Slide>('POST', `/projects/${projectId}/slides/${slideId}/route/regenerate`, payload),
 
   // 장소 슬라이드 자동 생성 (Nominatim/Overpass)
   createPlaceSlide: (

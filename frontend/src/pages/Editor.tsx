@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { api, Slide, ProjectDetail, BgmHit, PhotosSortOrder, parseSlideMeta } from '../api/client'
+import { api, Slide, ProjectDetail, BgmHit, PhotosSortOrder, parseSlideMeta, RouteMeta } from '../api/client'
 import { useToast } from '../components/ToastContext'
 import GoogleAuthSection, { extractCodeFromUrl } from '../components/GoogleAuthSection'
 
@@ -651,11 +651,13 @@ function ImportModal({ slides, insertAt, setInsertAt, uploading, onUpload, onGoo
 // ─── Route Slide Modal (OSM 길찾기 애니메이션) ──
 function RouteSlideModal({ slides, insertAt, setInsertAt, loading, onCreate, onClose }: {
   slides: Slide[]; insertAt: number; setInsertAt: (n: number) => void
-  loading: boolean; onCreate: (origin: string, destination: string, profile: string) => void; onClose: () => void
+  loading: boolean; onCreate: (origin: string, destination: string, profile: string, nFrames: number, duration: number) => void; onClose: () => void
 }) {
   const [origin, setOrigin] = useState('')
   const [destination, setDestination] = useState('')
   const [profile, setProfile] = useState('driving')
+  const [nFrames, setNFrames] = useState(30)
+  const [duration, setDuration] = useState(5)
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal" style={{ maxWidth: 460 }} onClick={e => e.stopPropagation()}>
@@ -674,12 +676,31 @@ function RouteSlideModal({ slides, insertAt, setInsertAt, loading, onCreate, onC
           <input className="input" value={destination} onChange={e => setDestination(e.target.value)}
             placeholder="예: 강남역" style={{ width: '100%' }} />
         </div>
+        <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.75rem' }}>
+          <div style={{ flex: 1 }}>
+            <label className="label">이동수단</label>
+            <select className="input" value={profile} onChange={e => setProfile(e.target.value)} style={{ width: '100%' }}>
+              <option value="driving">자동차</option>
+              <option value="foot">도보</option>
+              <option value="bicycle">자전거</option>
+            </select>
+          </div>
+          <div style={{ flex: 1 }}>
+            <label className="label">프레임 수 (부드러움)</label>
+            <select className="input" value={nFrames} onChange={e => setNFrames(Number(e.target.value))} style={{ width: '100%' }}>
+              <option value={15}>15 (빠름)</option>
+              <option value={30}>30 (보통)</option>
+              <option value={45}>45 (부드러움)</option>
+              <option value={60}>60 (매우 부드러움)</option>
+            </select>
+          </div>
+        </div>
         <div style={{ marginBottom: '0.75rem' }}>
-          <label className="label">이동수단</label>
-          <select className="input" value={profile} onChange={e => setProfile(e.target.value)} style={{ width: '100%' }}>
-            <option value="driving">자동차</option>
-            <option value="foot">도보</option>
-            <option value="bicycle">자전거</option>
+          <label className="label">재생 시간</label>
+          <select className="input" value={duration} onChange={e => setDuration(Number(e.target.value))} style={{ width: '100%' }}>
+            <option value={3}>3초</option>
+            <option value={5}>5초</option>
+            <option value={8}>8초</option>
           </select>
         </div>
         <div style={{ marginBottom: '0.75rem' }}>
@@ -693,8 +714,65 @@ function RouteSlideModal({ slides, insertAt, setInsertAt, loading, onCreate, onC
         <div className="modal-footer">
           <button className="btn btn-secondary" onClick={onClose}>취소</button>
           <button className="btn btn-primary" disabled={loading || !origin.trim() || !destination.trim()}
-            onClick={() => onCreate(origin.trim(), destination.trim(), profile)}>
+            onClick={() => onCreate(origin.trim(), destination.trim(), profile, nFrames, duration)}>
             {loading ? <span className="spinner" /> : '생성'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Route Regenerate Modal (기존 경로 재생성) ──
+function RouteRegenerateModal({ initialProfile, initialNFrames, initialDuration, loading, onRegenerate, onClose }: {
+  initialProfile: string; initialNFrames: number; initialDuration: number
+  loading: boolean; onRegenerate: (profile: string, nFrames: number, duration: number) => void; onClose: () => void
+}) {
+  const [profile, setProfile] = useState(initialProfile)
+  const [nFrames, setNFrames] = useState(initialNFrames)
+  const [duration, setDuration] = useState(initialDuration)
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" style={{ maxWidth: 400 }} onClick={e => e.stopPropagation()}>
+        <div className="modal-header">
+          <span className="modal-title">&#x1F504; 경로 재생성</span>
+          <button className="btn btn-ghost btn-icon" onClick={onClose}>&#x2715;</button>
+        </div>
+        <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: '0.75rem' }}>
+          출발/도착지는 그대로 두고 이동수단·부드러움·재생시간만 바꿉니다.
+        </div>
+        <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.75rem' }}>
+          <div style={{ flex: 1 }}>
+            <label className="label">이동수단</label>
+            <select className="input" value={profile} onChange={e => setProfile(e.target.value)} style={{ width: '100%' }}>
+              <option value="driving">자동차</option>
+              <option value="foot">도보</option>
+              <option value="bicycle">자전거</option>
+            </select>
+          </div>
+          <div style={{ flex: 1 }}>
+            <label className="label">프레임 수</label>
+            <select className="input" value={nFrames} onChange={e => setNFrames(Number(e.target.value))} style={{ width: '100%' }}>
+              <option value={15}>15</option>
+              <option value={30}>30</option>
+              <option value={45}>45</option>
+              <option value={60}>60</option>
+            </select>
+          </div>
+        </div>
+        <div style={{ marginBottom: '0.75rem' }}>
+          <label className="label">재생 시간</label>
+          <select className="input" value={duration} onChange={e => setDuration(Number(e.target.value))} style={{ width: '100%' }}>
+            <option value={3}>3초</option>
+            <option value={5}>5초</option>
+            <option value={8}>8초</option>
+          </select>
+        </div>
+        <div className="modal-footer">
+          <button className="btn btn-secondary" onClick={onClose}>취소</button>
+          <button className="btn btn-primary" disabled={loading}
+            onClick={() => onRegenerate(profile, nFrames, duration)}>
+            {loading ? <span className="spinner" /> : '재생성'}
           </button>
         </div>
       </div>
@@ -1941,7 +2019,7 @@ function SubtitleTimeline({ subs, videoDuration, onChange, videoRef }: {
 }
 
 // ─── Slide Card ──────────────────────────────
-function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveUp, onMoveDown, onPreviewVideo, isSelected, onToggleSelect }: {
+function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveUp, onMoveDown, onPreviewVideo, isSelected, onToggleSelect, onRegenerateRoute }: {
   slide: Slide; index: number; total: number; projectId: string
   onUpdate: (delta: Partial<Slide>) => void
   onDelete: () => void
@@ -1950,6 +2028,7 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
   onPreviewVideo?: () => void
   isSelected?: boolean
   onToggleSelect?: () => void
+  onRegenerateRoute?: () => void
 }) {
   const [text, setText] = useState(slide.text)
   const [volume, setVolume] = useState(slide.volume ?? 1.0)
@@ -2065,9 +2144,16 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
             {slideIcon} Slide {index + 1} — {slide.label || slide.video_filename || slide.image_filename}
           </label>
           {mapMeta && mapMeta.type === 'route' && (
-            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', background: 'var(--bg-secondary)', padding: '0.1rem 0.45rem', borderRadius: 'var(--radius-sm)' }}>
-              {(mapMeta.distance_m / 1000).toFixed(1)}km · {Math.round(mapMeta.duration_s / 60)}분 · {mapMeta.profile}
-            </span>
+            <>
+              <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', background: 'var(--bg-secondary)', padding: '0.1rem 0.45rem', borderRadius: 'var(--radius-sm)' }}>
+                {(mapMeta.distance_m / 1000).toFixed(1)}km · {Math.round(mapMeta.duration_s / 60)}분 · {mapMeta.profile}
+              </span>
+              {onRegenerateRoute && (
+                <button onClick={onRegenerateRoute}
+                  style={{ padding: '0.15rem 0.5rem', fontSize: '0.72rem', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', background: 'var(--bg-secondary)', color: 'var(--text)', cursor: 'pointer' }}
+                  title="이동수단·프레임 수·재생시간을 바꿔 경로 다시 생성">&#x1F504; 재생성</button>
+              )}
+            </>
           )}
           {mapMeta && mapMeta.type === 'place' && mapMeta.category && (
             <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', background: 'var(--bg-secondary)', padding: '0.1rem 0.45rem', borderRadius: 'var(--radius-sm)' }}>
@@ -2297,6 +2383,7 @@ export default function Editor() {
   const [showRoute, setShowRoute] = useState(false)
   const [showPlace, setShowPlace] = useState(false)
   const [mapLoading, setMapLoading] = useState(false)
+  const [regenTarget, setRegenTarget] = useState<number | null>(null)  // route 재생성 대상 slide index
   const [showRender, setShowRender] = useState(false)
   const [isDragging, setIsDragging] = useState(false)
   const [previewVideoSlide, setPreviewVideoSlide] = useState<Slide | null>(null)
@@ -2401,16 +2488,33 @@ export default function Editor() {
     setInsertAt(-1)
   }
 
-  const handleCreateRoute = async (origin: string, destination: string, profile: string) => {
+  const handleCreateRoute = async (origin: string, destination: string, profile: string, nFrames: number, duration: number) => {
     if (!projectId) return
     setMapLoading(true)
     try {
-      const newSlide = await api.createRouteSlide(projectId, { origin, destination, profile, insert_at: insertAt === -1 ? undefined : insertAt })
+      const newSlide = await api.createRouteSlide(projectId, { origin, destination, profile, n_frames: nFrames, duration, insert_at: insertAt === -1 ? undefined : insertAt })
       mergeNewSlide(newSlide)
       toast('경로 슬라이드 생성 완료!', 'success')
       setShowRoute(false)
     } catch (e: unknown) {
       toast(e instanceof Error ? e.message : '경로 슬라이드 생성 실패', 'error')
+    } finally {
+      setMapLoading(false)
+    }
+  }
+
+  const handleRegenerateRoute = async (profile: string, nFrames: number, duration: number) => {
+    if (!projectId || regenTarget === null) return
+    const target = slidesRef.current[regenTarget]
+    if (!target) return
+    setMapLoading(true)
+    try {
+      const updated = await api.regenerateRouteSlide(projectId, target.id, { profile, n_frames: nFrames, duration })
+      setSlides(prev => { const next = prev.map(s => s.id === updated.id ? { ...s, ...updated } : s); slidesRef.current = next; return next })
+      toast('경로 재생성 완료!', 'success')
+      setRegenTarget(null)
+    } catch (e: unknown) {
+      toast(e instanceof Error ? e.message : '경로 재생성 실패', 'error')
     } finally {
       setMapLoading(false)
     }
@@ -2811,6 +2915,7 @@ export default function Editor() {
                     }}
                     isSelected={selectedSlideIds.has(slide.id)}
                     onToggleSelect={() => toggleSelectSlide(slide.id)}
+                    onRegenerateRoute={slide.slide_type === 'route' ? () => setRegenTarget(i) : undefined}
                   />
                 </div>
               ))}
@@ -2853,6 +2958,22 @@ export default function Editor() {
           onClose={() => setShowPlace(false)}
         />
       )}
+      {regenTarget !== null && (() => {
+        const target = slides[regenTarget]
+        if (!target) return null
+        const m = parseSlideMeta(target) as RouteMeta | null
+        if (!m || m.type !== 'route') return null
+        return (
+          <RouteRegenerateModal
+            initialProfile={m.profile ?? 'driving'}
+            initialNFrames={m.n_frames ?? 30}
+            initialDuration={m.duration ?? 5}
+            loading={mapLoading}
+            onRegenerate={handleRegenerateRoute}
+            onClose={() => setRegenTarget(null)}
+          />
+        )
+      })()}
       {showRender && (
         <RenderModal
           isActive={isActive}
