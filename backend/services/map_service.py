@@ -18,6 +18,7 @@ staticmap 라이브러리로 OSM 타일 위에 경로/마커를 그려 PNG 로 �
 from __future__ import annotations
 
 import math
+import re
 import time
 from pathlib import Path
 from typing import List, Tuple
@@ -39,6 +40,10 @@ _TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
 # Nominatim 호출 간 최소 간격(초) — 사용량 정책 준수
 _NOMINATIM_MIN_INTERVAL = 1.0
 _last_nominatim_ts = 0.0
+
+# 한국 영역 bbox (여유 있게) — 카카오 결과 vs Nominatim 결과 위치 불일치로
+# 해외 의도를 감지할 때 사용. 제주/울릉도 포함.
+_KOREA_BBOX = (33.0, 39.5, 124.0, 132.0)   # (lat_min, lat_max, lng_min, lng_max)
 
 # 경로 프레임 색상
 _ROUTE_BG_COLOR   = "#7aa6d6"   # 전체 경로(옅은 파랑)
@@ -134,6 +139,55 @@ def _nominatim_geocode(query: str) -> dict | None:
     }
 
 
+def _norm(s: str) -> str:
+    """비교용 정규화: 공백 제거 + 소문자. 한국어 exact 매칭 판정에 사용."""
+    return re.sub(r"\s+", "", (s or "")).lower()
+
+
+def _is_overseas(lat: float, lng: float) -> bool:
+    """한국 bbox 바깥이면 True (해외)."""
+    lat_min, lat_max, lng_min, lng_max = _KOREA_BBOX
+    return not (lat_min <= lat <= lat_max and lng_min <= lng <= lng_max)
+
+
+def _resolve_location(query: str) -> Tuple[str, dict | None]:
+    """
+    카카오 우선 지오코딩 + 해외 동명이인 감지.
+
+    카카오는 한국 데이터만 가지므로, 해외 장소("도쿄" 등)를 넣으면 한국 내 동명의
+    장소("도쿄쿠러미" 등)를 잘못 반환할 수 있다. 이를 보정:
+      1. 카카오 검색. 결과가 없으면 Nominatim 폴백.
+      2. 카카오 결과가 쿼리와 정확히 일치(이름)하면 신뢰 → 카카오.
+      3. 일치하지 않으면(동명이인 의심) Nominatim 교차 검증.
+         Nominatim이 한국 영역 밖(해외) 좌표를 주면 해외 의도로 판정 → Nominatim 채택.
+         아니면 한국 장소이므로 카카오(POI 정보 풍부) 유지.
+
+    반환: (provider, hit) — provider ∈ {'kakao','nominatim'}, hit=None 시 미발견.
+    hit 은 lat/lng/name/display_name 을 포함(카카오 hit 은 address/category/phone/place_url 도 포함).
+    """
+    kakao = _kakao_search(query)
+
+    if kakao is not None:
+        # 정확히 일치 → 카카오 신뢰 (Nominatim 호출 생략: 속도 + 공용 서버 부하 절감)
+        if _norm(kakao["name"]) == _norm(query):
+            return "kakao", kakao
+        # 동명이인 의심 → Nominatim 교차 검증
+        nom = _nominatim_geocode(query)
+        if nom is not None and _is_overseas(nom["lat"], nom["lng"]):
+            logger.info(
+                f"해외 장소 감지: {query!r} → Nominatim({nom['name']!r}, "
+                f"{nom['lat']:.4f},{nom['lng']:.4f}) 가 카카오({kakao['name']!r}) 보다 우선"
+            )
+            return "nominatim", nom
+        return "kakao", kakao
+
+    # 카카오 미발견(키 없음/해외) → Nominatim
+    nom = _nominatim_geocode(query)
+    if nom is not None:
+        return "nominatim", nom
+    return None, None
+
+
 def _haversine_m(a: Tuple[float, float], b: Tuple[float, float]) -> float:
     """두 (lat,lng) 지점 간 거리(m)."""
     R = 6371000.0
@@ -193,22 +247,14 @@ def geocode(query: str) -> dict:
     """
     자유 텍스트 → {lat, lng, name, display_name}. 실패 시 ValueError.
 
-    카카오 Local(키워드) → (실패 시) Nominatim 순서. 카카오 결과엔 address/category 등
-    부가 필드가 포함될 수 있지만, 본 함수의 공개 계약은 lat/lng/name/display_name.
+    _resolve_location() 으로 카카오 우선 + 해외 동명이인 보정 후 Nominatim 폴백.
+    공개 계약은 lat/lng/name/display_name.
     """
     query = (query or "").strip()
     if not query:
         raise ValueError("빈 검색어")
 
-    # 1순위: 카카오
-    hit = _kakao_search(query)
-    provider = "kakao"
-
-    # 폴백: Nominatim (해외/키 미입력/카카오 결과 없음)
-    if hit is None:
-        hit = _nominatim_geocode(query)
-        provider = "nominatim"
-
+    provider, hit = _resolve_location(query)
     if hit is None:
         raise ValueError(f"장소를 찾을 수 없습니다: {query}")
 
@@ -259,51 +305,15 @@ def get_route(origin: dict, destination: dict, profile: str = "driving") -> dict
     }
 
 
-def get_place_details(query: str) -> dict:
+def _overpass_enrich(lat: float, lng: float, result: dict) -> dict:
     """
-    장소 좌표 + POI 상세 조회.
-    반환: {name, address, lat, lng, category, opening_hours}
-
-    카카오 키워드 검색이 성공하면 POI 상세(주소/카테고리/전화)를 한 번에 얻어 반환.
-    카카오 실패 시 Nominatim(좌표/주소) + Overpass(POI 상세) 폴백.
+    Overpass 로 (lat,lng) 반경 30m POI 태그를 보강 → result 의 category/opening_hours/name 갱신.
+    실패 시 result 를 그대로 반환(graceful degrade).
     """
-    query = (query or "").strip()
-    if not query:
-        raise ValueError("빈 검색어")
-
-    # 1순위: 카카오 (POI 상세 포함)
-    k = _kakao_search(query)
-    if k is not None:
-        logger.info(f"Place details (kakao): {query!r} -> {k['name']!r} [{k['category']}]")
-        return {
-            "name": k["name"],
-            "address": k["address"] or k["display_name"],
-            "lat": k["lat"],
-            "lng": k["lng"],
-            "category": k["category"],
-            "opening_hours": "",   # 카카오는 영업시간 미제공
-            "phone": k.get("phone", ""),
-        }
-
-    # 폴백: Nominatim + Overpass
-    geo = _nominatim_geocode(query)
-    if geo is None:
-        raise ValueError(f"장소를 찾을 수 없습니다: {query}")
-
-    result = {
-        "name": geo["name"],
-        "address": geo["display_name"],
-        "lat": geo["lat"],
-        "lng": geo["lng"],
-        "category": "",
-        "opening_hours": "",
-    }
-
-    # Overpass 로 반경 30m POI 보강
     q = (
         "[out:json][timeout:15];"
-        f"node(around:30,{geo['lat']},{geo['lng']})[\"name\"];"
-        f"way(around:30,{geo['lat']},{geo['lng']})[\"name\"];"
+        f"node(around:30,{lat},{lng})[\"name\"];"
+        f"way(around:30,{lat},{lng})[\"name\"];"
         "out tags 5;"
     )
     try:
@@ -327,7 +337,48 @@ def get_place_details(query: str) -> dict:
                 result["opening_hours"] = tags["opening_hours"]
     except Exception as e:
         logger.warning(f"Overpass 조회 실패(기본 정보로 진행): {e}")
+    return result
 
+
+def get_place_details(query: str) -> dict:
+    """
+    장소 좌표 + POI 상세 조회.
+    반환: {name, address, lat, lng, category, opening_hours}
+
+    _resolve_location() 결과에 따라:
+      - 카카오: POI 상세(주소/카테고리/전화)를 한 번에 반환.
+      - Nominatim(해외/키 미입력/동명이인 보정): 좌표/주소 + Overpass POI 보강.
+    """
+    query = (query or "").strip()
+    if not query:
+        raise ValueError("빈 검색어")
+
+    provider, hit = _resolve_location(query)
+    if hit is None:
+        raise ValueError(f"장소를 찾을 수 없습니다: {query}")
+
+    if provider == "kakao":
+        logger.info(f"Place details (kakao): {query!r} -> {hit['name']!r} [{hit.get('category')}]")
+        return {
+            "name": hit["name"],
+            "address": hit.get("address") or hit["display_name"],
+            "lat": hit["lat"],
+            "lng": hit["lng"],
+            "category": hit.get("category", ""),
+            "opening_hours": "",   # 카카오는 영업시간 미제공
+            "phone": hit.get("phone", ""),
+        }
+
+    # Nominatim (주로 해외) → Overpass POI 보강
+    result = {
+        "name": hit["name"],
+        "address": hit["display_name"],
+        "lat": hit["lat"],
+        "lng": hit["lng"],
+        "category": "",
+        "opening_hours": "",
+    }
+    result = _overpass_enrich(hit["lat"], hit["lng"], result)
     logger.info(f"Place details (nominatim+overpass): {query!r} -> {result['name']!r}")
     return result
 
