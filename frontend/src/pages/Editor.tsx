@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { api, Slide, ProjectDetail, BgmHit, PhotosSortOrder, parseSlideMeta, RouteMeta } from '../api/client'
+import { api, Slide, ProjectDetail, BgmHit, PhotosSortOrder, parseSlideMeta, RouteMeta, SavedLocation } from '../api/client'
 import { useToast } from '../components/ToastContext'
 import GoogleAuthSection, { extractCodeFromUrl } from '../components/GoogleAuthSection'
 
@@ -649,15 +649,25 @@ function ImportModal({ slides, insertAt, setInsertAt, uploading, onUpload, onGoo
 }
 
 // ─── Route Slide Modal (OSM 길찾기 애니메이션) ──
-function RouteSlideModal({ slides, insertAt, setInsertAt, loading, onCreate, onClose }: {
+function RouteSlideModal({ slides, insertAt, setInsertAt, loading, onCreate, onClose, locations }: {
   slides: Slide[]; insertAt: number; setInsertAt: (n: number) => void
   loading: boolean; onCreate: (origin: string, destination: string, profile: string, nFrames: number, duration: number) => void; onClose: () => void
+  locations?: SavedLocation[]
 }) {
   const [origin, setOrigin] = useState('')
   const [destination, setDestination] = useState('')
   const [profile, setProfile] = useState('driving')
   const [nFrames, setNFrames] = useState(30)
   const [duration, setDuration] = useState(5)
+  const quickChips = (setter: (v: string) => void) => locations && locations.length > 0 && (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.3rem', marginTop: '0.35rem' }}>
+      {locations.map(loc => (
+        <button key={loc.id} type="button" onClick={() => setter(loc.query)}
+          style={{ padding: '0.15rem 0.55rem', fontSize: '0.78rem', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', background: 'var(--bg-secondary)', color: 'var(--text)', cursor: 'pointer' }}
+          title={loc.query}>&#x1F4CD; {loc.name}</button>
+      ))}
+    </div>
+  )
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal" style={{ maxWidth: 460 }} onClick={e => e.stopPropagation()}>
@@ -670,11 +680,13 @@ function RouteSlideModal({ slides, insertAt, setInsertAt, loading, onCreate, onC
           <label className="label">출발지</label>
           <input className="input" value={origin} onChange={e => setOrigin(e.target.value)}
             placeholder="예: 서울역" style={{ width: '100%' }} />
+          {quickChips(setOrigin)}
         </div>
         <div style={{ marginBottom: '0.75rem' }}>
           <label className="label">도착지</label>
           <input className="input" value={destination} onChange={e => setDestination(e.target.value)}
             placeholder="예: 강남역" style={{ width: '100%' }} />
+          {quickChips(setDestination)}
         </div>
         <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.75rem' }}>
           <div style={{ flex: 1 }}>
@@ -781,9 +793,10 @@ function RouteRegenerateModal({ initialProfile, initialNFrames, initialDuration,
 }
 
 // ─── Place Slide Modal (장소 정보) ──
-function PlaceSlideModal({ slides, insertAt, setInsertAt, loading, onCreate, onClose }: {
+function PlaceSlideModal({ slides, insertAt, setInsertAt, loading, onCreate, onClose, locations }: {
   slides: Slide[]; insertAt: number; setInsertAt: (n: number) => void
   loading: boolean; onCreate: (query: string) => void; onClose: () => void
+  locations?: SavedLocation[]
 }) {
   const [query, setQuery] = useState('')
   return (
@@ -799,6 +812,15 @@ function PlaceSlideModal({ slides, insertAt, setInsertAt, loading, onCreate, onC
           <input className="input" value={query} onChange={e => setQuery(e.target.value)}
             placeholder="예: 강남역, 카페 이름, 음식점" style={{ width: '100%' }}
             onKeyDown={e => { if (e.key === 'Enter' && query.trim() && !loading) onCreate(query.trim()) }} />
+          {locations && locations.length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.3rem', marginTop: '0.35rem' }}>
+              {locations.map(loc => (
+                <button key={loc.id} type="button" onClick={() => setQuery(loc.query)}
+                  style={{ padding: '0.15rem 0.55rem', fontSize: '0.78rem', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', background: 'var(--bg-secondary)', color: 'var(--text)', cursor: 'pointer' }}
+                  title={loc.query}>&#x1F4CD; {loc.name}</button>
+              ))}
+            </div>
+          )}
         </div>
         <div style={{ marginBottom: '0.75rem' }}>
           <label className="label">삽입 위치</label>
@@ -909,6 +931,29 @@ function GlobalSettingsModal({ project, projectId, slides, onClose, onSave, onPr
   const [applyImageFit, setApplyImageFit] = useState(false)
   const [defaultKenBurns, setDefaultKenBurns] = useState<number>(0)
   const [applyKenBurns, setApplyKenBurns] = useState(false)
+  // 자주 쓰는 장소 (전역)
+  const [locList, setLocList] = useState<SavedLocation[]>([])
+  const [locName, setLocName] = useState('')
+  const [locQuery, setLocQuery] = useState('')
+  const [locSaving, setLocSaving] = useState(false)
+  const reloadLoc = () => { api.listLocations().then(setLocList).catch(() => {}) }
+  useEffect(() => { reloadLoc() }, [])
+  const persistLoc = async (loc: SavedLocation) => {
+    try { await api.updateLocation(loc.id, { name: loc.name, query: loc.query }) }
+    catch (e: unknown) { toast(e instanceof Error ? e.message : '장소 저장 실패', 'error'); reloadLoc() }
+  }
+  const addLoc = async () => {
+    if (!locName.trim() || !locQuery.trim()) return
+    setLocSaving(true)
+    try {
+      const created = await api.createLocation({ name: locName.trim(), query: locQuery.trim() })
+      setLocList(prev => [...prev, created].sort((a, b) => a.name.localeCompare(b.name)))
+      setLocName(''); setLocQuery('')
+      toast('장소 추가 완료', 'success')
+    } catch (e: unknown) {
+      toast(e instanceof Error ? e.message : '장소 추가 실패 (주소 확인)', 'error')
+    } finally { setLocSaving(false) }
+  }
   const [jsonText, setJsonText] = useState('')
 
   const FONT_COLORS = [
@@ -1194,6 +1239,36 @@ function GlobalSettingsModal({ project, projectId, slides, onClose, onSave, onPr
               setJsonText('')
             } catch { toast('JSON 형식 오류', 'error') }
           }}>✅ 대사 일괄 적용</button>
+        </div>
+
+        {/* ── 자주 쓰는 장소 (전역) ── */}
+        <div style={{ marginBottom: '1rem' }}>
+          <label className="label">&#x1F4CD; 자주 쓰는 장소 (경로/장소에서 빠른 선택)</label>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', marginBottom: '0.5rem' }}>
+            {locList.map(loc => (
+              <div key={loc.id} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '0.35rem 0.5rem' }}>
+                <input className="input" value={loc.name} style={{ flex: '0 0 5rem' }}
+                  onChange={e => setLocList(prev => prev.map(l => l.id === loc.id ? { ...l, name: e.target.value } : l))}
+                  onBlur={() => persistLoc(loc)} />
+                <input className="input" value={loc.query} style={{ flex: 1 }}
+                  onChange={e => setLocList(prev => prev.map(l => l.id === loc.id ? { ...l, query: e.target.value } : l))}
+                  onBlur={() => persistLoc(loc)} />
+                <button className="btn btn-ghost btn-icon" title="삭제" onClick={async () => {
+                  try { await api.deleteLocation(loc.id); setLocList(prev => prev.filter(l => l.id !== loc.id)); toast('삭제됨', 'success') }
+                  catch (e: unknown) { toast(e instanceof Error ? e.message : '삭제 실패', 'error') }
+                }}>&#x2715;</button>
+              </div>
+            ))}
+            {locList.length === 0 && <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>저장된 장소가 없습니다.</div>}
+          </div>
+          <div style={{ display: 'flex', gap: '0.4rem' }}>
+            <input className="input" value={locName} onChange={e => setLocName(e.target.value)} placeholder="이름 (예: 집)" style={{ flex: '0 0 6rem' }} />
+            <input className="input" value={locQuery} onChange={e => setLocQuery(e.target.value)} placeholder="주소 또는 장소명 (예: 서울역)" style={{ flex: 1 }}
+              onKeyDown={e => { if (e.key === 'Enter') addLoc() }} />
+            <button className="btn btn-secondary" disabled={locSaving || !locName.trim() || !locQuery.trim()} onClick={addLoc}>
+              {locSaving ? <span className="spinner" /> : '추가'}
+            </button>
+          </div>
         </div>
 
         {/* ── Actions ── */}
@@ -2384,6 +2459,9 @@ export default function Editor() {
   const [showPlace, setShowPlace] = useState(false)
   const [mapLoading, setMapLoading] = useState(false)
   const [regenTarget, setRegenTarget] = useState<number | null>(null)  // route 재생성 대상 slide index
+  const [savedLocations, setSavedLocations] = useState<SavedLocation[]>([])
+  const reloadLocations = useCallback(() => { api.listLocations().then(setSavedLocations).catch(() => {}) }, [])
+  useEffect(() => { reloadLocations() }, [reloadLocations])
   const [showRender, setShowRender] = useState(false)
   const [isDragging, setIsDragging] = useState(false)
   const [previewVideoSlide, setPreviewVideoSlide] = useState<Slide | null>(null)
@@ -2946,6 +3024,7 @@ export default function Editor() {
           loading={mapLoading}
           onCreate={handleCreateRoute}
           onClose={() => setShowRoute(false)}
+          locations={savedLocations}
         />
       )}
       {showPlace && (
@@ -2956,6 +3035,7 @@ export default function Editor() {
           loading={mapLoading}
           onCreate={handleCreatePlace}
           onClose={() => setShowPlace(false)}
+          locations={savedLocations}
         />
       )}
       {regenTarget !== null && (() => {
@@ -3007,7 +3087,7 @@ export default function Editor() {
           projectId={projectId!}
           slides={slides}
           onApplySlides={updated => { slidesRef.current = updated; setSlides(updated) }}
-          onClose={() => setShowSettings(false)}
+          onClose={() => { setShowSettings(false); reloadLocations() }}
           onProjectUpdate={patch => setProject(prev => prev ? { ...prev, ...patch } : prev)}
           onOpenBgmSearch={() => setShowBgmSearch(true)}
           onToggleAllTts={() => {

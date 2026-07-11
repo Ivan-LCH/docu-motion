@@ -32,7 +32,7 @@ def get_db():
 
 def init_db():
     """앱 시작 시 테이블 생성 (순환 import 방지를 위해 함수 내에서 import)"""
-    from backend.db.models import Project, Slide  # noqa: F401
+    from backend.db.models import Project, Slide, SavedLocation  # noqa: F401
     Base.metadata.create_all(bind=engine)
     _migrate_columns()
 

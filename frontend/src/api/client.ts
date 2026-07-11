@@ -21,6 +21,14 @@ async function request<T>(method: string, path: string, body?: unknown, isForm =
 }
 
 // ─── Types ──────────────────────────────────
+export interface SavedLocation {
+  id: string
+  name: string      // 표시명: 집/회사/...
+  query: string     // 주소 또는 장소명
+  lat: number
+  lng: number
+}
+
 export interface Slide {
   id: string
   order_index: number
@@ -232,6 +240,14 @@ export const api = {
     slideId: string,
     payload: { profile?: string; n_frames?: number; duration?: number },
   ) => request<Slide>('POST', `/projects/${projectId}/slides/${slideId}/route/regenerate`, payload),
+
+  // 자주 쓰는 장소 (전역: 집/회사)
+  listLocations: () => request<SavedLocation[]>('GET', '/locations'),
+  createLocation: (payload: { name: string; query: string }) =>
+    request<SavedLocation>('POST', '/locations', payload),
+  updateLocation: (id: string, payload: { name?: string; query?: string }) =>
+    request<SavedLocation>('PUT', `/locations/${id}`, payload),
+  deleteLocation: (id: string) => request<void>('DELETE', `/locations/${id}`),
 
   // 장소 슬라이드 자동 생성 (Nominatim/Overpass)
   createPlaceSlide: (

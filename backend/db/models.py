@@ -70,3 +70,16 @@ class Slide(Base):
 
     project = relationship("Project", back_populates="slides")
 
+
+class SavedLocation(Base):
+    """자주 쓰는 장소(집/회사 등) — 전역, 프로젝트 무관.
+    경로/장소 슬라이드 생성 시 빠른 선택용. query 저장 시 geocode 로 lat/lng 캐싱."""
+    __tablename__ = "saved_locations"
+
+    id         = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    name       = Column(String(100), nullable=False)   # 표시명: 집/회사/...
+    query      = Column(String(300), nullable=False)   # 주소 또는 장소명
+    lat        = Column(Float, default=0.0)            # geocode 캐시(표시/향후 최적화용)
+    lng        = Column(Float, default=0.0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
