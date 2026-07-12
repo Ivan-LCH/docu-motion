@@ -557,11 +557,12 @@ def render_route_frames(geometry_lnglat: List[Tuple[float, float]],
         m = StaticMap(canvas[0], canvas[1], url_template=_TILE_URL,
                       tile_request_timeout=20, headers={"User-Agent": MAP_USER_AGENT})
         # 전체 경로(옅은) — bounds 고정용
-        m.add_line(Line(full_line, _ROUTE_BG_COLOR, 5))
-        # 이동한 구간(진한) — (lng, lat) 로 변환
+        m.add_line(Line(full_line, _ROUTE_BG_COLOR, 8))
+        # 이동한 구간(진한) — 흰 테두리(casing) 아래에 굵게
         if len(travelled_latlng) >= 2:
             travelled_lnglat = [(lng, lat) for (lat, lng) in travelled_latlng]
-            m.add_line(Line(travelled_lnglat, _ROUTE_FG_COLOR, 7))
+            m.add_line(Line(travelled_lnglat, "#ffffff", 15))   # casing
+            m.add_line(Line(travelled_lnglat, _ROUTE_FG_COLOR, 11))
         # 마커: 출발(핀) / 도착(핀) — IconMarker, 끝점 anchor=(size//2, 0)
         o_lng, o_lat = full_line[0]
         d_lng, d_lat = full_line[-1]
