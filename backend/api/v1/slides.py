@@ -19,6 +19,7 @@ from backend.schema.project import SlideRead, SlideUpdate
 from backend.core.config import OUTPUTS_DIR
 from backend.core.logger import get_logger
 from backend.services import map_service
+from backend.services import place_info
 from backend.services.renderer import ASPECT_RATIO_MAP
 
 router = APIRouter(prefix="/projects", tags=["slides"])
@@ -493,7 +494,7 @@ def create_place_slide(
     request: PlaceSlideRequest,
     db: Session = Depends(get_db),
 ):
-    """장소 정보 + 정적 지도 슬라이드 생성 (Nominatim + Overpass + staticmap)."""
+    """장소 카드 슬라이드 생성 (네이버 실데이터 + Gemini 설명 + 지도/패널 합성)."""
     project = _get_project_or_404(project_id, db)
     assets_dir = _assets_dir(project_id)
 
@@ -505,30 +506,41 @@ def create_place_slide(
         logger.error(f"Place slide 생성 실패: {e}", exc_info=True)
         raise HTTPException(status_code=502, detail=f"장소 정보 조회 실패: {e}")
 
+    # 네이버 실데이터 + Gemini 설명 (둘 다 키 없으면 graceful degrade)
+    geo = {"name": details["name"], "lat": details["lat"], "lng": details["lng"],
+           "display_name": details.get("address", "")}
+    naver = place_info.fetch_naver_local(request.query)
+    desc = place_info.generate_description(request.query, naver, geo)
+
     import uuid as _uuid
     slide_id = str(_uuid.uuid4())
     canvas = _canvas_for(project)
     map_filename = f"{slide_id}_place.png"
     try:
-        map_service.render_place_map(details["lat"], details["lng"], canvas, assets_dir / map_filename)
+        map_service.render_place_card(details, naver, desc, canvas, assets_dir / map_filename)
     except Exception as e:
-        logger.error(f"Place map 렌더링 실패: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"장소 지도 생성 실패: {e}")
+        logger.error(f"Place card 렌더링 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"장소 카드 생성 실패: {e}")
 
-    # 기본 내레이션 텍스트
-    parts = [details["name"]]
-    if details.get("category"):
-        parts.append(f"({details['category']})")
-    text = f"{details['name']}을(를) 방문했습니다."
+    # 내레이션: Gemini 개요 첫 문장 + 장소명 (없으면 기본 문장)
+    display_name = (naver or {}).get("title") or details["name"]
+    overview = (desc.get("overview") or "").strip()
+    first_sent = re.split(r"[.!?]\s*", overview)[0].strip() if overview else ""
+    text = f"{display_name}입니다. {first_sent}" if first_sent else f"{display_name}을(를) 방문했습니다."
+    text = text[:300]
+
     meta = {
         "type": "place",
         "name": details["name"],
-        "address": details.get("address", ""),
+        "display_name": display_name,
+        "address": (naver or {}).get("road_address") or (naver or {}).get("address") or details.get("address", ""),
         "lat": details["lat"],
         "lng": details["lng"],
-        "category": details.get("category", ""),
+        "category": (naver or {}).get("category") or details.get("category", ""),
         "opening_hours": details.get("opening_hours", ""),
         "canvas": [canvas[0], canvas[1]],
+        "naver": naver,
+        "description": desc,
     }
 
     insert_idx, existing = _insert_order_index(db, project_id, request.insert_at)
@@ -537,7 +549,7 @@ def create_place_slide(
         project_id=project_id,
         order_index=insert_idx,
         image_filename=map_filename,
-        label=details["name"],
+        label=display_name,
         text=text,
         slide_type="place",
         use_tts=1,

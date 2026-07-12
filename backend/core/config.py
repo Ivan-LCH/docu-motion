@@ -29,6 +29,14 @@ JAMENDO_CLIENT_ID = os.getenv("JAMENDO_CLIENT_ID", "")
 DEBUG            = os.getenv("DEBUG", "false").lower() == "true"
 
 # ─────────────────────────────────────────────
+# 네이버 지역검색 (장소 실데이터) + Gemini (장소 설명 생성)
+# ─────────────────────────────────────────────
+NAVER_CLIENT_ID     = os.getenv("NAVER_CLIENT_ID", "")
+NAVER_CLIENT_SECRET = os.getenv("NAVER_CLIENT_SECRET", "")
+NAVER_LOCAL_BASE    = os.getenv("NAVER_LOCAL_BASE", "https://openapi.naver.com/v1/search/local.json")
+GEMINI_MODEL        = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+
+# ─────────────────────────────────────────────
 # 지도 (Route/Place 슬라이드)
 # - Geocoding 1순위: 카카오 Local API (한국 POI 강점, 무료)
 # - Geocoding 폴백 / 라우팅 / 타일: 무료 OSM 계열

@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from backend.db.session import get_db
 from backend.db.models import Project, Slide
 from backend.schema.project import ProjectCreate, ProjectRead, ProjectDetail
-from backend.core.config import OUTPUTS_DIR, GOOGLE_API_KEY, JAMENDO_CLIENT_ID
+from backend.core.config import OUTPUTS_DIR, GOOGLE_API_KEY, JAMENDO_CLIENT_ID, GEMINI_MODEL
 from backend.core.logger import get_logger
 
 
@@ -306,7 +306,7 @@ async def suggest_bgm(project_id: str, db: Session = Depends(get_db)):
         try:
             async with httpx.AsyncClient(timeout=20) as client:
                 gemini_resp = await client.post(
-                    f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GOOGLE_API_KEY}",
+                    f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GOOGLE_API_KEY}",
                     json={"contents": [{"parts": [{"text": gemini_prompt}]}]},
                 )
             if gemini_resp.status_code == 200:

@@ -22,7 +22,7 @@ import re
 import tempfile
 import time
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import httpx
 from PIL import Image, ImageDraw, ImageFont
@@ -57,6 +57,14 @@ _DEST_COLOR       = "#1f49b8"   # 도착(파랑)
 # 핀 아이콘 PNG 캐시 디렉토리 — (color, glyph) 조합별 1회 생성 후 재사용
 _PIN_CACHE_DIR = Path(tempfile.gettempdir()) / "documotion_pins"
 _FONT_CACHE: dict[int, ImageFont.FreeTypeFont] = {}
+
+# 장소 카드(정보 패널) 색상
+_PANEL_BG      = (31, 41, 55, 255)      # 진한 슬레이트
+_PANEL_TEXT    = (229, 231, 235, 255)   # 본문(연회색)
+_PANEL_MUTED   = (148, 163, 184, 255)   # 보조 텍스트
+_PANEL_ACCENT  = (251, 191, 36, 255)    # 섹션 헤더(앰버)
+_PANEL_BADGE   = (251, 191, 36, 255)    # 카테고리 배지
+_PANEL_TITLE   = (255, 255, 255, 255)
 
 
 # ────────────────────────────────────────────────────────────────────────── #
@@ -513,6 +521,158 @@ def render_place_map(lat: float, lng: float, canvas: Tuple[int, int],
     m.add_marker(IconMarker((lng, lat), icon, pin_size // 2, 0))
     img = m.render(zoom=16)
     img.save(str(out_path))
+    return out_path.name
+
+
+def _wrap_text(text: str, font: ImageFont.FreeTypeFont, max_width: int) -> List[str]:
+    """한국어(공백 없음)도 처리하는 텍스트 줄바꿈. 글자 단위로 너비 측정."""
+    if not text:
+        return []
+    lines: List[str] = []
+    cur = ""
+    for ch in text:
+        if ch == "\n":
+            lines.append(cur)
+            cur = ""
+            continue
+        trial = cur + ch
+        try:
+            w = font.getlength(trial)
+        except Exception:
+            w = len(trial) * 10
+        if w > max_width and cur:
+            lines.append(cur)
+            cur = ch
+        else:
+            cur = trial
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+def _draw_section(d: ImageDraw.ImageDraw, x: int, y: int, max_w: int,
+                  title: str, body_lines: List[str], font_h: ImageFont.FreeTypeFont,
+                  font_b: ImageFont.FreeTypeFont, gap: int = 6) -> int:
+    """패널 섹션(헤더 + 본문 줄들) 그리고 다음 y 반환."""
+    if not body_lines:
+        return y
+    d.text((x, y), title, font=font_h, fill=_PANEL_ACCENT)
+    y += font_h.size + 4
+    for ln in body_lines:
+        d.text((x, y), ln, font=font_b, fill=_PANEL_TEXT)
+        y += font_b.size + 3
+    return y + gap
+
+
+def render_place_card(details: dict, naver: Optional[dict], desc: dict,
+                      canvas: Tuple[int, int], out_path: Path) -> str:
+    """
+    장소 카드: 정보 패널(좌/상) + 지도(우/하) 합성 PNG 저장.
+
+    details: {name, address, lat, lng, category}
+    naver: {title, category, description, road_address, ...} 또는 None
+    desc: {overview, features[], highlights[], tip} (Gemini 생성)
+    가로 → 패널 좌·지도 우. 세로 → 지도 상·패널 하.
+    """
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    W, H = canvas
+    landscape = W >= H
+
+    if landscape:
+        panel_rect = (0, 0, int(W * 0.46), H)
+        map_rect = (panel_rect[2], 0, W, H)
+    else:
+        map_rect = (0, 0, W, int(H * 0.46))
+        panel_rect = (0, map_rect[3], W, H)
+
+    base = Image.new("RGBA", (W, H), _PANEL_BG)
+
+    # ── 패널 ──
+    pw = panel_rect[2] - panel_rect[0]
+    px0 = panel_rect[0] + int(pw * 0.06)
+    pw_inner = panel_rect[2] - px0 - int(pw * 0.05)
+    y = panel_rect[1] + int(H * 0.05)
+
+    d = ImageDraw.Draw(base, "RGBA")
+    f_title = _get_font(max(26, H // 20))
+    f_badge = _get_font(max(14, H // 42))
+    f_addr = _get_font(max(15, H // 40))
+    f_head = _get_font(max(18, H // 34))
+    f_body = _get_font(max(16, H // 38))
+    f_small = _get_font(max(12, H // 52))
+
+    name = (naver or {}).get("title") or details.get("name") or "장소"
+    cat = (naver or {}).get("category") or details.get("category") or ""
+    addr = (naver or {}).get("road_address") or (naver or {}).get("address") or details.get("address") or ""
+
+    # 제목
+    for ln in _wrap_text(name, f_title, pw_inner):
+        d.text((px0, y), ln, font=f_title, fill=_PANEL_TITLE)
+        y += f_title.size + 4
+    y += 4
+
+    # 카테고리 배지
+    if cat:
+        badge_lines = _wrap_text(cat, f_badge, pw_inner - 20)
+        badge_text = badge_lines[0] if badge_lines else cat
+        try:
+            tw = f_badge.getlength(badge_text)
+        except Exception:
+            tw = len(badge_text) * 10
+        d.rounded_rectangle([px0, y, px0 + tw + 16, y + f_badge.size + 10], radius=8,
+                            fill=(251, 191, 36, 60), outline=_PANEL_BADGE, width=1)
+        d.text((px0 + 8, y + 4), badge_text, font=f_badge, fill=_PANEL_BADGE)
+        y += f_badge.size + 18
+
+    # 주소
+    if addr:
+        for ln in _wrap_text(f"📍 {addr}", f_addr, pw_inner):
+            d.text((px0, y), ln, font=f_addr, fill=_PANEL_MUTED)
+            y += f_addr.size + 2
+        y += 6
+
+    # 본문 섹션들
+    ov_lines = _wrap_text(desc.get("overview", ""), f_body, pw_inner)
+    y = _draw_section(d, px0, y, pw_inner, "개요", ov_lines, f_head, f_body)
+    feat_lines = ["· " + s for s in desc.get("features", [])]
+    y = _draw_section(d, px0, y, pw_inner, "장소 특징", feat_lines, f_head, f_body)
+    hi_lines = ["· " + s for s in desc.get("highlights", [])]
+    y = _draw_section(d, px0, y, pw_inner, "추천 포인트", hi_lines, f_head, f_body)
+    tip_lines = _wrap_text(desc.get("tip", ""), f_body, pw_inner) if desc.get("tip") else []
+    _draw_section(d, px0, y, pw_inner, "방문 팁", tip_lines, f_head, f_body)
+
+    # 네이버 한 줄 소개 (실데이터) — 패널 하단 좌측
+    nv_desc = (naver or {}).get("description") or ""
+    if nv_desc:
+        nv_lines = _wrap_text(f'"네이버 소개: {nv_desc}"', f_small, pw_inner)
+        for i, ln in enumerate(nv_lines):
+            yy = panel_rect[3] - int(H * 0.05) - (len(nv_lines) - 1 - i) * (f_small.size + 2)
+            d.text((px0, yy), ln, font=f_small, fill=_PANEL_MUTED)
+
+    # AI 생성 표기 — 패널 하단 우측
+    try:
+        aiw = f_small.getlength("✦ AI 생성 요약")
+    except Exception:
+        aiw = 90
+    d.text((panel_rect[2] - int(pw * 0.05) - aiw, panel_rect[3] - int(H * 0.04)),
+           "✦ AI 생성 요약", font=f_small, fill=_PANEL_MUTED)
+
+    # ── 지도 ──
+    mw = map_rect[2] - map_rect[0]
+    mh = map_rect[3] - map_rect[1]
+    m = StaticMap(mw, mh, url_template=_TILE_URL, tile_request_timeout=20,
+                  headers={"User-Agent": MAP_USER_AGENT})
+    pin_size = max(40, min(mw, mh) // 10)
+    icon = _pin_icon(_CURRENT_COLOR, "★", pin_size)
+    m.add_marker(IconMarker((details["lng"], details["lat"]), icon, pin_size // 2, 0))
+    try:
+        map_img = m.render(zoom=16).convert("RGBA")
+    except Exception as e:
+        logger.warning(f"장소 카드 지도 렌더 실패(패널만 저장): {e}")
+        map_img = Image.new("RGBA", (mw, mh), (220, 220, 220, 255))
+    base.paste(map_img, (map_rect[0], map_rect[1]))
+
+    base.save(str(out_path))
     return out_path.name
 
 

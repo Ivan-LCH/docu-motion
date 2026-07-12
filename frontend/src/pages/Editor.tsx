@@ -845,6 +845,16 @@ function PlaceSlideModal({ slides, insertAt, setInsertAt, loading, onCreate, onC
   locations?: SavedLocation[]
 }) {
   const [query, setQuery] = useState('')
+  const [check, setCheck] = useState<GeocodeResult | null>(null)
+  const [checkErr, setCheckErr] = useState('')
+  const [checking, setChecking] = useState(false)
+  const doCheck = async () => {
+    if (!query.trim()) return
+    setChecking(true)
+    try { const r = await api.geocode(query.trim()); setCheck(r); setCheckErr('') }
+    catch (e: unknown) { setCheck(null); setCheckErr(e instanceof Error ? e.message : '확인 실패') }
+    finally { setChecking(false) }
+  }
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal" style={{ maxWidth: 460 }} onClick={e => e.stopPropagation()}>
@@ -852,16 +862,33 @@ function PlaceSlideModal({ slides, insertAt, setInsertAt, loading, onCreate, onC
           <span className="modal-title">&#x1F4CD; 장소 슬라이드</span>
           <button className="btn btn-ghost btn-icon" onClick={onClose}>&#x2715;</button>
         </div>
+        <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: '0.75rem' }}>
+          장소를 확인하면 지도 + 정보 패널(개요·특징·추천포인트) 카드가 생성됩니다.
+        </div>
 
         <div style={{ marginBottom: '0.75rem' }}>
           <label className="label">장소 검색</label>
-          <input className="input" value={query} onChange={e => setQuery(e.target.value)}
-            placeholder="예: 강남역, 카페 이름, 음식점" style={{ width: '100%' }}
-            onKeyDown={e => { if (e.key === 'Enter' && query.trim() && !loading) onCreate(query.trim()) }} />
+          <div style={{ display: 'flex', gap: '0.4rem' }}>
+            <input className="input" value={query} onChange={e => { setQuery(e.target.value); setCheck(null); setCheckErr('') }}
+              placeholder="예: 강남역, 카페 이름, 음식점" style={{ flex: 1 }}
+              onKeyDown={e => { if (e.key === 'Enter' && !loading) { if (query.trim()) doCheck() } }} />
+            <button className="btn btn-secondary" type="button" style={{ flex: '0 0 auto' }}
+              disabled={!query.trim() || checking} onClick={doCheck}>
+              {checking ? <span className="spinner" /> : '🔍 확인'}
+            </button>
+          </div>
+          {checkErr && <div style={{ fontSize: '0.75rem', color: 'var(--danger, #e55)', marginTop: '0.3rem' }}>❌ {checkErr}</div>}
+          {check && (
+            <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.3rem', display: 'flex', alignItems: 'center', gap: '0.35rem', flexWrap: 'wrap' }}>
+              <span style={{ color: 'var(--success, #2a8)' }}>✅ {check.name}</span>
+              <span style={{ color: 'var(--text-muted)' }}>({check.lat.toFixed(4)}, {check.lng.toFixed(4)}) · {check.provider}</span>
+              {check.overseas && <span style={{ background: 'var(--bg-secondary)', padding: '0.05rem 0.35rem', borderRadius: 'var(--radius-sm)', fontSize: '0.68rem' }}>🌐 해외</span>}
+            </div>
+          )}
           {locations && locations.length > 0 && (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.3rem', marginTop: '0.35rem' }}>
               {locations.map(loc => (
-                <button key={loc.id} type="button" onClick={() => setQuery(loc.query)}
+                <button key={loc.id} type="button" onClick={() => { setQuery(loc.query); setCheck(null); setCheckErr('') }}
                   style={{ padding: '0.15rem 0.55rem', fontSize: '0.78rem', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', background: 'var(--bg-secondary)', color: 'var(--text)', cursor: 'pointer' }}
                   title={loc.query}>&#x1F4CD; {loc.name}</button>
               ))}
