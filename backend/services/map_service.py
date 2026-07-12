@@ -141,12 +141,13 @@ def _pin_icon(color: str, glyph: str = "", size: int = 56) -> str:
 def _draw_info_pill(img: Image.Image, profile: str, distance_m: float, duration_s: float) -> None:
     """
     이미지 상단 중앙에 소요시간/거리 알약 라벨을 그린다(픽셀 공간, 투영 불필요).
-    예: "🚗 약 25분 · 10.4km"
+    예: "자동차 약 25분 · 10.4km"  (이모지는 font.ttf가 흑백으로만 표시되어 텍스트 사용)
     """
-    icon = {"driving": "🚗", "foot": "🚶", "walking": "🚶", "bicycle": "🚲", "bike": "🚲"}.get(profile, "🧭")
+    mode = {"driving": "자동차", "foot": "도보", "walking": "도보",
+            "bicycle": "자전거", "bike": "자전거"}.get(profile, "경로")
     mins = max(1, round(duration_s / 60.0)) if duration_s > 0 else 0
     dist_km = distance_m / 1000.0
-    text = f"{icon} 약 {mins}분 · {dist_km:.1f}km" if mins else f"{icon} {dist_km:.1f}km"
+    text = f"{mode} 약 {mins}분 · {dist_km:.1f}km" if mins else f"{mode} {dist_km:.1f}km"
 
     fs = max(18, img.width // 30)
     f = _get_font(fs)
