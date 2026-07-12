@@ -506,21 +506,32 @@ def create_place_slide(
         logger.error(f"Place slide 생성 실패: {e}", exc_info=True)
         raise HTTPException(status_code=502, detail=f"장소 정보 조회 실패: {e}")
 
-    # 네이버 실데이터 + Gemini 설명 (둘 다 키 없으면 graceful degrade)
+    # 네이버 실데이터 + Gemini 설명 + 장소 사진 (모두 키 없으면 graceful degrade)
     geo = {"name": details["name"], "lat": details["lat"], "lng": details["lng"],
            "display_name": details.get("address", "")}
     naver = place_info.fetch_naver_local(request.query)
     desc = place_info.generate_description(request.query, naver, geo)
+    photo_path = place_info.fetch_place_photo(request.query, details["name"])
 
     import uuid as _uuid
     slide_id = str(_uuid.uuid4())
     canvas = _canvas_for(project)
     map_filename = f"{slide_id}_place.png"
     try:
-        map_service.render_place_card(details, naver, desc, canvas, assets_dir / map_filename)
+        map_service.render_place_card(details, naver, desc, canvas, assets_dir / map_filename,
+                                      photo_path=photo_path)
     except Exception as e:
         logger.error(f"Place card 렌더링 실패: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"장소 카드 생성 실패: {e}")
+    finally:
+        # 임시 사진 파일 정리
+        if photo_path:
+            try:
+                import os as _os
+                if _os.path.exists(photo_path):
+                    _os.unlink(photo_path)
+            except Exception:
+                pass
 
     # 내레이션: Gemini 개요 첫 문장 + 장소명 (없으면 기본 문장)
     display_name = (naver or {}).get("title") or details["name"]

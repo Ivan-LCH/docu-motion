@@ -13,9 +13,12 @@ Gemini 로 **개요/특징/추천 포인트/팁** 을 생성한다.
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from typing import Optional
 
 import httpx
+from PIL import Image
 
 from backend.core.config import (
     NAVER_CLIENT_ID, NAVER_CLIENT_SECRET, NAVER_LOCAL_BASE,
@@ -133,3 +136,136 @@ def _fallback_desc(naver: Optional[dict]) -> dict:
     """Gemini 없을 때 최소 설명 (네이버 한 줄 소개 활용)."""
     overview = (naver or {}).get("description") or "이 장소에 대한 정보를 표시합니다."
     return {"overview": overview, "features": [], "highlights": [], "tip": ""}
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# 장소 대표 사진
+# ──────────────────────────────────────────────────────────────────────────
+_MAX_PHOTO_BYTES = 15 * 1024 * 1024  # 15MB
+
+
+def _download_image(url: str, referer: Optional[str] = None) -> Optional[str]:
+    """URL 이미지를 임시 파일로 저장(유효성 검증). 실패 시 None."""
+    headers = {"User-Agent": "Mozilla/5.0 DocuMotionStudio/1.0"}
+    if referer:
+        headers["Referer"] = referer
+    try:
+        r = httpx.get(url, headers=headers, timeout=20.0, follow_redirects=True)
+        if r.status_code != 200 or len(r.content) < 1024:
+            return None
+        if len(r.content) > _MAX_PHOTO_BYTES:
+            return None
+        ct = r.headers.get("content-type", "").lower()
+        if "png" in ct:
+            ext = ".png"
+        elif "webp" in ct:
+            ext = ".webp"
+        elif "gif" in ct:
+            ext = ".gif"
+        elif "jpeg" in ct or "jpg" in ct:
+            ext = ".jpg"
+        else:
+            ext = ".bin"
+        tf = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
+        tf.write(r.content)
+        tf.close()
+        # 유효한 이미지인지 검증
+        try:
+            with Image.open(tf.name) as im:
+                im.verify()
+        except Exception:
+            os.unlink(tf.name)
+            return None
+        # webp/gif → jpg 로 통일(Pillow save 용이)
+        if ext in (".webp", ".gif", ".bin"):
+            try:
+                with Image.open(tf.name) as im:
+                    im.convert("RGB").save(tf.name + ".jpg", "JPEG")
+                os.unlink(tf.name)
+                return tf.name + ".jpg"
+            except Exception:
+                pass
+        return tf.name
+    except Exception as e:
+        logger.debug(f"이미지 다운로드 실패({url[:60]}): {e}")
+        return None
+
+
+def _naver_image(query: str) -> Optional[str]:
+    """네이버 이미지 검색 → 첫 결과 다운로드. 키 없으면 None."""
+    if not (NAVER_CLIENT_ID and NAVER_CLIENT_SECRET):
+        return None
+    try:
+        r = httpx.get(
+            "https://openapi.naver.com/v1/search/image.json",
+            params={"query": query, "display": 1, "sort": "sim"},
+            headers={"X-Naver-Client-Id": NAVER_CLIENT_ID, "X-Naver-Client-Secret": NAVER_CLIENT_SECRET},
+            timeout=15.0,
+        )
+        if r.status_code != 200:
+            return None
+        items = r.json().get("items", [])
+        if not items:
+            return None
+        url = items[0].get("link") or items[0].get("thumbnail")
+        if not url:
+            return None
+        return _download_image(url)
+    except Exception as e:
+        logger.debug(f"네이버 이미지 검색 실패: {e}")
+        return None
+
+
+def _wikimedia_image(query: str) -> Optional[str]:
+    """Wikimedia Commons 검색 → 첫 결과 다운로드. 키 불필요."""
+    try:
+        r = httpx.get(
+            "https://commons.wikimedia.org/w/api.php",
+            params={
+                "action": "query", "format": "json", "generator": "search",
+                "gsrsearch": query, "gsrnamespace": 6, "gsrlimit": 3,
+                "prop": "imageinfo", "iiprop": "url|mimetype", "iiurlwidth": 1280,
+            },
+            headers={"User-Agent": "DocuMotionStudio/1.0 (map place photo)"},
+            timeout=15.0,
+        )
+        if r.status_code != 200:
+            return None
+        pages = (r.json().get("query") or {}).get("pages") or {}
+        for p in pages.values():
+            ii = (p.get("imageinfo") or [{}])[0]
+            url = ii.get("thumburl") or ii.get("url")
+            mime = ii.get("mime", "")
+            if url and ("image" in mime or url.lower().endswith((".jpg", ".jpeg", ".png"))):
+                path = _download_image(url, referer="https://commons.wikimedia.org/")
+                if path:
+                    return path
+    except Exception as e:
+        logger.debug(f"Wikimedia 이미지 검색 실패: {e}")
+    return None
+
+
+def fetch_place_photo(query: str, name: str = "") -> Optional[str]:
+    """
+    장소 대표 사진을 로컬 파일로 저장, 경로 반환.
+    1순위: 네이버 이미지 검색 (상가/음식점 강점)
+    2순위: Wikimedia Commons (랜드마크/명소, 키 불필요)
+    실패 시 None (호출자가 지도 폴백).
+    """
+    q = (query or name or "").strip()
+    if not q:
+        return None
+    # 이름이 더 구체적이면 이름 우선 (예: "경복궁")
+    candidates = list(dict.fromkeys([q, name, name or q]))
+    for cand in candidates:
+        if not cand:
+            continue
+        path = _naver_image(cand)
+        if path:
+            logger.info(f"장소 사진(네이버): {cand!r}")
+            return path
+        path = _wikimedia_image(cand)
+        if path:
+            logger.info(f"장소 사진(wikimedia): {cand!r}")
+            return path
+    return None

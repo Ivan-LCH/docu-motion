@@ -565,14 +565,16 @@ def _draw_section(d: ImageDraw.ImageDraw, x: int, y: int, max_w: int,
 
 
 def render_place_card(details: dict, naver: Optional[dict], desc: dict,
-                      canvas: Tuple[int, int], out_path: Path) -> str:
+                      canvas: Tuple[int, int], out_path: Path,
+                      photo_path: Optional[str] = None) -> str:
     """
-    장소 카드: 정보 패널(좌/상) + 지도(우/하) 합성 PNG 저장.
+    장소 카드: 정보 패널(좌/상) + 사진 또는 지도(우/하) 합성 PNG 저장.
 
     details: {name, address, lat, lng, category}
     naver: {title, category, description, road_address, ...} 또는 None
     desc: {overview, features[], highlights[], tip} (Gemini 생성)
-    가로 → 패널 좌·지도 우. 세로 → 지도 상·패널 하.
+    photo_path: 장소 사진 파일 경로. None 이면 지도 폴백.
+    가로 → 패널 좌·이미지 우. 세로 → 이미지 상·패널 하.
     """
     out_path.parent.mkdir(parents=True, exist_ok=True)
     W, H = canvas
@@ -657,23 +659,46 @@ def render_place_card(details: dict, naver: Optional[dict], desc: dict,
     d.text((panel_rect[2] - int(pw * 0.05) - aiw, panel_rect[3] - int(H * 0.04)),
            "✦ AI 생성 요약", font=f_small, fill=_PANEL_MUTED)
 
-    # ── 지도 ──
+    # ── 사진(없으면 지도 폴백) ──
     mw = map_rect[2] - map_rect[0]
     mh = map_rect[3] - map_rect[1]
-    m = StaticMap(mw, mh, url_template=_TILE_URL, tile_request_timeout=20,
-                  headers={"User-Agent": MAP_USER_AGENT})
-    pin_size = max(40, min(mw, mh) // 10)
-    icon = _pin_icon(_CURRENT_COLOR, "★", pin_size)
-    m.add_marker(IconMarker((details["lng"], details["lat"]), icon, pin_size // 2, 0))
-    try:
-        map_img = m.render(zoom=16).convert("RGBA")
-    except Exception as e:
-        logger.warning(f"장소 카드 지도 렌더 실패(패널만 저장): {e}")
-        map_img = Image.new("RGBA", (mw, mh), (220, 220, 220, 255))
-    base.paste(map_img, (map_rect[0], map_rect[1]))
+    media_img: Optional[Image.Image] = None
+    if photo_path:
+        try:
+            media_img = _cover_fit(photo_path, (mw, mh))
+        except Exception as e:
+            logger.warning(f"장소 사진 로드 실패(지도 폴백): {e}")
+            media_img = None
+    if media_img is None:
+        m = StaticMap(mw, mh, url_template=_TILE_URL, tile_request_timeout=20,
+                      headers={"User-Agent": MAP_USER_AGENT})
+        pin_size = max(40, min(mw, mh) // 10)
+        icon = _pin_icon(_CURRENT_COLOR, "★", pin_size)
+        m.add_marker(IconMarker((details["lng"], details["lat"]), icon, pin_size // 2, 0))
+        try:
+            media_img = m.render(zoom=16).convert("RGBA")
+        except Exception as e:
+            logger.warning(f"장소 카드 지도 렌더 실패(패널만 저장): {e}")
+            media_img = Image.new("RGBA", (mw, mh), (220, 220, 220, 255))
+    base.paste(media_img, (map_rect[0], map_rect[1]))
 
     base.save(str(out_path))
     return out_path.name
+
+
+def _cover_fit(src_path: str, size: Tuple[int, int]) -> Image.Image:
+    """이미지를 size 에 맞춰 cover(잘라 채우) 리사이즈 후 RGBA 반환."""
+    with Image.open(src_path) as im:
+        im = im.convert("RGBA")
+        tw, th = size
+        sw, sh = im.size
+        scale = max(tw / sw, th / sh)
+        nw, nh = max(1, round(sw * scale)), max(1, round(sh * scale))
+        im = im.resize((nw, nh), Image.LANCZOS)
+        # 중앙 crop
+        left = (nw - tw) // 2
+        top = (nh - th) // 2
+        return im.crop((left, top, left + tw, top + th))
 
 
 def render_route_frames(geometry_lnglat: List[Tuple[float, float]],
