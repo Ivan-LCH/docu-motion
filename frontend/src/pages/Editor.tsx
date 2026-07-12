@@ -2905,6 +2905,15 @@ export default function Editor() {
           </div>
         </button>
 
+        {/* 음악(BGM) → 검색 모달 직접 진입 */}
+        <button className="action-card" onClick={() => setShowBgmSearch(true)} title="배경음악 검색 · 업로드">
+          <div className="action-icon" style={{ background: 'rgba(236,72,153,0.12)' }}>&#x1F3B5;</div>
+          <div className="action-label">
+            <span>음악</span>
+            <span>배경음악 검색 · 추가</span>
+          </div>
+        </button>
+
         {/* 렌더링 → 모달 (진행 중일 때 % 표시) */}
         <button className="action-card" onClick={() => setShowRender(true)}>
           <div className="action-icon" style={{ background: 'rgba(239,68,68,0.12)' }}>&#x1F3AC;</div>
