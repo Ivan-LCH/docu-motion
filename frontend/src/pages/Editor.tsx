@@ -713,7 +713,7 @@ function RouteSlideModal({ slides, insertAt, setInsertAt, loading, onCreate, onC
             <button className="btn btn-secondary" type="button" style={{ flex: '0 0 auto' }}
               disabled={!origin.trim() || checking === 'origin'}
               onClick={() => checkPlace('origin', origin)}>
-              {checking === 'origin' ? <span className="spinner" /> : '&#x1F50D; 확인'}
+              {checking === 'origin' ? <span className="spinner" /> : '🔍 확인'}
             </button>
           </div>
           {quickChips(v => { setOrigin(v); setOriginCheck(null); setOriginErr('') })}
@@ -728,7 +728,7 @@ function RouteSlideModal({ slides, insertAt, setInsertAt, loading, onCreate, onC
             <button className="btn btn-secondary" type="button" style={{ flex: '0 0 auto' }}
               disabled={!destination.trim() || checking === 'dest'}
               onClick={() => checkPlace('dest', destination)}>
-              {checking === 'dest' ? <span className="spinner" /> : '&#x1F50D; 확인'}
+              {checking === 'dest' ? <span className="spinner" /> : '🔍 확인'}
             </button>
           </div>
           {quickChips(v => { setDestination(v); setDestCheck(null); setDestErr('') })}
