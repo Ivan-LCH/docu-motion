@@ -50,6 +50,8 @@ def _migrate_columns():
             ("slides", "ken_burns", "INTEGER DEFAULT 0"),
             ("projects", "title_text", "TEXT DEFAULT ''"),
             ("slides", "meta", "TEXT DEFAULT '{}'"),
+            ("projects", "resolution", "TEXT DEFAULT '720p'"),
+            ("projects", "transition_duration", "FLOAT DEFAULT 0.7"),
         ]
         for table, column, col_type in migrations:
             try:

@@ -201,6 +201,91 @@
 
 
 ================================================================================
+8. ✨ 품질·자동화 개선 (2026-07-24 전체 시스템 리뷰)
+   목표: 손 덜 쓰고 멋진 영상 만들기. AI 자동화 + 시각/음성 품질 기본값 상향.
+   출처: 백엔드(renderer/worker/tts/api) + 프론트엔드(Editor UX) 종합 분석.
+================================================================================
+  ── Phase 0. Quick wins (저논력 고효과) ──
+  - [O] 8-1. 전환 효과 기본값 'none' → 'crossfade' ✓ 2026-07-24
+        . 현황: 기본 'none'이라 설정 안 만지면 하드컷 (Editor.tsx:1168)
+        . 작업: 프로젝트/슬라이드 기본 전환을 crossfade로 (DB default + 프론트 초기값)
+        . 구현: models.py:32,63 + schema/project.py 4곳 기본값 → "crossfade",
+                Editor.tsx 슬라이드 폭백 `?? 'crossfade'` 2곳. py_compile OK.
+                (기존 프로젝트/슬라이드의 저장된 'none' 값은 유지됨 — 신규 생성분부터 적용)
+  - [O] 8-2. 일반 자막 가독성 — 외곽선/반투명 배경 ✓ 2026-07-24
+        . 현황: Route 슬라이드만 stroke_color 적용, 일반 자막은 흰 글씨 무장식
+                (renderer.py:561-576 vs 614-628)
+        . 작업: 일반 자막에도 stroke + 반투명 박스 일관 적용
+        . 구현: 자막 TextClip 3개 경로 모두 stroke_color='black', stroke_width=2 +
+                ColorClip(opacity 0.45) 배경 박스 추가 — TTS 자막(문장별), TTS-오프
+                텍스트 자막, 비디오 슬라이드 수동 자막. py_compile OK. 시각 확인 권장.
+  - [C] 8-3. 슬라이드 길이 = TTS 길이 자동 맞춤 → 검토 결과 이미 구현됨
+        . 확인: TTS 켜진 슬라이드는 total_duration = a_clip.duration (TTS 실측 +
+                앞뒤 PAD 1.0s) — renderer.py:574-575. 텍스트 없음/TTS 오프만
+                default_slide_duration(3초)/글자수 비례 사용으로 합리적. 변경 불필요.
+  - [O] 8-4. 슬라이드 삭제 확인 + 실수 복구 ✓ 2026-07-24
+        . 현황: 삭제 확인 없이 즉시 API 호출, Undo 없음 (Editor.tsx:2796-2805)
+        . 작업: 삭제 확인 모달 (또는 실행 취소 토스트 + 소프트 삭제)
+        . 구현: window.confirm으로 슬라이드 번호/타입 표시 후 확인 시에만 삭제.
+
+  ── Phase 1. AI 나레이션 자동화 (수동 작업 최대 감소) ──
+  - [O] 8-5. Gemini Vision 이미지 → 나레이션 초안 자동 생성 ✓ 2026-07-24
+        . 구현:
+          - services/narration.py: generate_narration_for_image() — base64 인라인 이미지 +
+            환각 방지 프롬프트(보이는 것만 묘사/메타 표현 금지/다큐 톤 2~3문장)
+          - api/v1/narration.py: POST /slides/{sid}/narration (단일, text 자동 저장),
+            POST /narration/generate-all (기본 빈 슬라이드만, overwrite 옵션)
+          - 프론트: SlideCard 대사 탭 "✨ AI 대사 생성" 버튼,
+            설정 모달 "🖼️ 사진 보고 전체 대사 생성" 버튼 (완료 후 슬라이드 재조회)
+        . 검증: 단일 생성 OK(문장 품질 양호), 일괄 skip/overwrite 동작 OK, 테스트 프로젝트 정리
+  - [O] 8-6. 전체 스크립트 한 번에 생성 + 자동 분할 ✓ 2026-07-24
+        . 구현:
+          - services/narration.py: split_script() — JSON 스키마(parts[]) + 개수 보정
+            (부족 시 빈 문자열, 초과 시 마지막 파트에 병합)
+          - POST /narration/split — 슬라이드 순서대로 text 저장
+          - 프론트: 설정 모달 "✨ AI 대사 자동화" 섹션 — 스크립트 붙여넣기 +
+            "🪄 스크립트 자동 분할 (N개 슬라이드)" 버튼 (기존 JSON 입력은 유지)
+        . 검증: 4문장→2슬라이드 분할 OK, 문장 경계 보존 확인
+
+  ── Phase 2. 오디오 품질 ──
+  - [O] 8-7. BGM sidechain 덕킹 (나레이션 구간 자동 볼륨 다운) ✓ 2026-07-24
+        . 구현:
+          - build_slide_clip()에 narration_segments 옵션 파라미터 — TTS 음성 구간
+            (start,end)을 클립 상대시간으로 수집 (이미지 문장별 + 비디오 자막 TTS)
+          - render_project()에서 전환 overlap 누적 반영 → 글로벌 타임라인 환산 후
+            BGM에 _make_volume_duck_filter 체인 적용 (DUCK 25%, fade 0.4s)
+          - 모듈 레벨 _make_volume_duck_filter 추가 — numpy 배열 t 벡터 처리
+            (기존 인라인 필터는 스칼라 가정이라 "truth value of an array" 오류로
+             사실상 미동작이었음 → 비디오 원본 오디오 덕킹도 공용 헬퍼로 교체)
+        . 검증: 2슬라이드+BGM 실렌더 COMPLETED, 로그 "BGM ducking applied: 4
+          narration segments" 확인. 테스트 프로젝트 정리.
+  - [O] 8-8. 원클릭 BGM — AI 추천 → 자동 다운로드·적용 ✓ 2026-07-24
+        . 구현: BGM 검색 모달에 "⚡ 즉시 적용" 버튼 — suggestBgm → 첫 곡
+          downloadBgm → 프로젝트 적용까지 원클릭 (토스트에 곡명+키워드 표시)
+        . 검증: npm build 통과, 라이브 서빙. 브라우저 클릭 확인 권장.
+
+  ── Phase 3. 완성도 마무리 ──
+  - [O] 8-9. 1080p 출력 옵션 ✓ 2026-07-24
+        . 구현: projects.resolution 컬럼('720p'|'1080p', 마이그레이션 추가) +
+          worker에서 canvas 1.5배 스케일(16:9→1920x1080) + 자막 폰트 캔버스 높이
+          비례 스케일링(720 기준) + 설정 모달 "출력 해상도" 즉시 적용 select.
+        . 검증: 1080p 실렌더 → ffprobe 1920x1080 확인. 테스트 프로젝트 정리.
+  - [O] 8-10. 트랜지션 길이 설정 노출 ✓ 2026-07-24
+        . 구현: projects.transition_duration 컬럼(기본 0.7) + apply_transition에
+          duration 파라미터 + 설정 모달 "전환 길이" 슬라이더(0.3~2.0s).
+  - [O] 8-11. 렌더 실패 내성 ✓ 2026-07-24
+        . 구현: 문장 단위 TTS 실패 시 raise 대신 추정 길이 무음으로 대체
+          (자막 타이밍 유지, 경고 로그) + generate_with_fallback 예외도 catch.
+        . 참고: 실 TTS 장애 시나리오는 미검증 (코드 경로 확인으로 대체).
+  - [O] 8-12. 미리보기 강화 ✓ 2026-07-24
+        . 구현: (a) 슬라이드 미리보기 forceTts 기본값 true (음성 기본 포함,
+          빠른 모드로 끌 수 있음 — 안내 문구도 갱신)
+          (b) 사이드바 "📋 스토리보드" 액션 카드 + StoryboardModal —
+          슬라이드별 썸네일/대사 요약/전환/예상 시간 + 예상 총 길이.
+        . 검증: npm build 통과, 라이브 서빙. 브라우저 확인 권장.
+
+
+================================================================================
 📝 참고: 완료된 과거 이력은 TO-DO-ARCHIVE.md 파일에서 확인하세요.
         최근 완료(2026-06-24): 6-18~6-21 실시간/구간 미리보기 전체 완료.
         이전(2026-06-23): 6-9 BGM 라이브러리, 6-13 오버레이/회전, 6-14 구글 포토 정렬,

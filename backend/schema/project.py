@@ -30,7 +30,7 @@ class SlideBase(BaseModel):
     use_tts: int = 1  # 1=TTS 생성, 0=자막만
     trim_start: float = 0.0
     trim_end: float = 0.0
-    transition: str = "none"  # 'none'|'crossfade'|'fade_black'|'slide_left'|'slide_right'
+    transition: str = "crossfade"  # 'none'|'crossfade'|'fade_black'|'slide_left'|'slide_right'
     tts_volume: float = 1.0  # TTS 볼륨 (0.0 ~ 2.0)
     rotation: int = 0        # 회전 각도: 0, 90, 180, 270
     overlays: str = "[]"     # JSON array of overlay objects
@@ -65,7 +65,7 @@ class SlideUpdate(BaseModel):
     use_tts: int = 1  # 1=TTS 생성, 0=자막만
     trim_start: float = 0.0
     trim_end: float = 0.0
-    transition: str = "none"
+    transition: str = "crossfade"
     tts_volume: float = 1.0
     rotation: int = 0
     overlays: str = "[]"
@@ -89,7 +89,7 @@ class SlideRead(SlideBase):
     use_tts: int = 1
     trim_start: float = 0.0
     trim_end: float = 0.0
-    transition: str = "none"
+    transition: str = "crossfade"
     tts_volume: float = 1.0
     rotation: int = 0
     overlays: str = "[]"
@@ -128,13 +128,15 @@ class ProjectRead(BaseModel):
     bgm_volume: float = 0.3
     aspect_ratio: str = "16:9"
     tts_master_volume: float = 1.0
-    default_transition: str = "none"
+    default_transition: str = "crossfade"
     default_slide_duration: float = 3.0
     subtitle_font_size: int = 28
     subtitle_font_color: str = "white"
     watermark_text: str = ""
     watermark_opacity: float = 0.3
     title_text: str = ""
+    resolution: str = "720p"
+    transition_duration: float = 0.7
 
     model_config = {"from_attributes": True}
 

@@ -216,7 +216,30 @@ def make_overlay_frame_fn(overlays: list):
 # Apply Transition
 # ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── #
 
-def apply_transition(clip_a, clip_b, transition: str):
+def _make_volume_duck_filter(t_start, t_end, duck_vol, fade):
+    """
+    [t_start, t_end] 구간에서 볼륨을 duck_vol로 낮추는 MoviePy fl() 필터.
+    구간 전후 fade초에 걸쳐 부드럽게 전환 (BGM/원본 오디오 덕킹 공용).
+    오디오 렌더링 시 t가 numpy 배열로 들어오므로 벡터 연산으로 처리한다.
+    """
+    def volume_filter(get_frame, t):
+        frame = get_frame(t)
+        t_arr = np.atleast_1d(np.asarray(t, dtype=float))
+        vol = np.ones_like(t_arr)
+        ramp_in  = (t_arr >= t_start - fade) & (t_arr < t_start)
+        inside   = (t_arr >= t_start) & (t_arr <= t_end)
+        ramp_out = (t_arr > t_end) & (t_arr <= t_end + fade)
+        vol[ramp_in]  = 1.0 - ((t_arr[ramp_in] - (t_start - fade)) / fade) * (1.0 - duck_vol)
+        vol[inside]   = duck_vol
+        vol[ramp_out] = duck_vol + ((t_arr[ramp_out] - t_end) / fade) * (1.0 - duck_vol)
+        if np.ndim(t) == 0:
+            return frame * vol[0]
+        # 배열 t: frame은 (n_samples, n_channels) — 채널 축에 브로드캐스트
+        return frame * vol.reshape(-1, 1)
+    return volume_filter
+
+
+def apply_transition(clip_a, clip_b, transition: str, duration: float = None):
     """
     clip_a → clip_b 사이에 전환 효과를 적용하여 연결된 클립 리스트를 반환합니다.
     각 클립의 start 오프셋은 concatenate 방식 대신 직접 배치합니다.
@@ -224,7 +247,7 @@ def apply_transition(clip_a, clip_b, transition: str):
     반환: (처리된 clip_a, 처리된 clip_b, offset_delta)
       offset_delta = clip_a가 끝나기 전에 clip_b가 시작되는 시간 (겹침)
     """
-    t = TRANSITION_DURATION
+    t = duration if duration and duration > 0 else TRANSITION_DURATION
     transition = (transition or "none").lower()
 
     if transition == "crossfade":
@@ -308,11 +331,15 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
                      canvas_size: tuple, tts_engine=None,
                      font_size: int = FONT_SIZE, font_color: str = TEXT_COLOR,
                      default_slide_duration: float = 3.0,
-                     tts_master_volume: float = 1.0):
+                     tts_master_volume: float = 1.0,
+                     narration_segments: list = None):
     """
     단일 슬라이드 → MoviePy 클립 생성 (비디오 / 이미지 공용).
     render_project()의 슬라이드 루프 본문을 추출한 것으로, 풀 렌더와
     구간 미리보기(6-19) 양쪽에서 동일 로직을 재사용한다.
+
+    narration_segments: 리스트를 넘기면 TTS 음성 구간 (start, end)이
+      클립 기준 상대 시간으로 append됨 (BGM 덕킹용, 8-7). None이면 수집 안 함.
 
     반환:
       - MoviePy VideoClip: 정상 생성된 슬라이드 클립
@@ -383,16 +410,26 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
                 # TextClip 자막
                 tc = TextClip(
                     txt=sub_txt, font=FONT_PATH, fontsize=_font_size,
-                    color=_font_color, size=(canvas_size[0] - 100, None),
+                    color=_font_color, stroke_color='black', stroke_width=2,
+                    size=(canvas_size[0] - 100, None),
                     method='caption', align='center', interline=8
                 )
                 tc_y = canvas_size[1] - 30 - tc.size[1]
+                sub_dur = min(dur, total_duration - start)
+                box = (
+                    ColorClip(size=(tc.size[0] + 24, tc.size[1] + 14), color=(0, 0, 0))
+                    .set_opacity(0.45)
+                    .set_start(start)
+                    .set_duration(sub_dur)
+                    .set_position(('center', tc_y - 7))
+                )
                 tc = (
                     tc
                     .set_start(start)
-                    .set_duration(min(dur, total_duration - start))
+                    .set_duration(sub_dur)
                     .set_position(('center', tc_y))
                 )
+                subtitle_clips.append(box)
                 subtitle_clips.append(tc)
 
                 # Optional TTS 오디오 생성
@@ -410,6 +447,8 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
                         if tts_vol != 1.0:
                             tts_audio = tts_audio.volumex(tts_vol)
                         tts_audio_clips.append((start, end, tts_audio))
+                        if narration_segments is not None:
+                            narration_segments.append((start, end))
                     else:
                         logger.warning(f"TTS 오디오 생성 실패 (비디오 자막 [{i}][{sub_idx}]) - 자막만 표시")
             except Exception as e:
@@ -423,25 +462,8 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
             # 원본 오디오를 TTS 구간에서 duck 처리
             ducked_audio = original_audio
             for tts_start, tts_end, _ in tts_audio_clips:
-                # MoviePy는 구간별 볼륨을 직접 지원하지 않으므로
-                # volumex 필터 함수로 구현
-                prev_audio = ducked_audio
-                def _make_duck_filter(t_start, t_end, duck_vol, fade):
-                    def volume_filter(get_frame, t):
-                        frame = get_frame(t)
-                        if t_start - fade <= t <= t_end + fade:
-                            if t < t_start:
-                                mix = (t - (t_start - fade)) / fade
-                                vol = 1.0 - mix * (1.0 - duck_vol)
-                            elif t > t_end:
-                                mix = (t - t_end) / fade
-                                vol = duck_vol + mix * (1.0 - duck_vol)
-                            else:
-                                vol = duck_vol
-                            return frame * vol
-                        return frame
-                    return volume_filter
-                ducked_audio = ducked_audio.fl(_make_duck_filter(tts_start, tts_end, DUCK_VOLUME, FADE_DUR))
+                ducked_audio = ducked_audio.fl(
+                    _make_volume_duck_filter(tts_start, tts_end, DUCK_VOLUME, FADE_DUR))
             audio_clips.append(ducked_audio)
             audio_clips.extend(tts_clip for _, _, tts_clip in tts_audio_clips)
         elif original_audio:
@@ -485,18 +507,28 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
                 font      = FONT_PATH,
                 fontsize  = _font_size,
                 color     = _font_color,
+                stroke_color = 'black',
+                stroke_width = 2,
                 size      = (canvas_size[0] - 100, None),
                 method    = 'caption',
                 align     = 'center',
                 interline = 8
             )
             _ty = canvas_size[1] - 30 - txt_clip.size[1]
+            box = (
+                ColorClip(size=(txt_clip.size[0] + 24, txt_clip.size[1] + 14), color=(0, 0, 0))
+                .set_opacity(0.45)
+                .set_start(current_start)
+                .set_duration(dur)
+                .set_position(('center', _ty - 7))
+            )
             txt_clip = (
                 txt_clip
                 .set_start(current_start)
                 .set_duration(dur)
                 .set_position(('center', _ty))
             )
+            subtitle_clips.append(box)
             subtitle_clips.append(txt_clip)
             current_start += dur
     else:
@@ -524,10 +556,21 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
 
             if not s_path.exists():
                 if tts_engine:
-                    tts_engine.generate_with_fallback(s, str(s_path))
+                    try:
+                        tts_engine.generate_with_fallback(s, str(s_path))
+                    except Exception as tts_err:
+                        logger.warning(f"TTS 생성 예외 (슬라이드 {i+1}, 문장 {sent_idx+1}): {tts_err}")
 
             if not s_path.exists() or s_path.stat().st_size < 100:
-                raise Exception(f"TTS 오디오 생성 실패 (슬라이드 {i+1}, 문장 {sent_idx+1})")
+                # 8-11: 문장 하나의 TTS 실패가 전체 렌더를 중단시키지 않도록
+                # 추정 길이의 무음으로 대체 (자막 타이밍은 유지)
+                logger.warning(f"TTS 실패 → 무음 대체 (슬라이드 {i+1}, 문장 {sent_idx+1})")
+                est_dur = max(1.5, len(s) * 0.15)
+                _n = int(44100 * est_dur)
+                s_clip = AudioArrayClip(np.zeros((_n, 2), dtype=np.float32), fps=44100)
+                sent_audio_clips_raw.append(s_clip)
+                sent_durations.append(est_dur)
+                continue
 
             s_clip = AudioFileClip(str(s_path))
             if tts_vol != 1.0:
@@ -560,17 +603,29 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
         for sent_idx, (s, s_dur) in enumerate(zip(sentences, sent_durations)):
             txt_clip = TextClip(
                 txt=s, font=FONT_PATH, fontsize=_font_size,
-                color=_font_color, size=(canvas_size[0] - 100, None),
+                color=_font_color, stroke_color='black', stroke_width=2,
+                size=(canvas_size[0] - 100, None),
                 method='caption', align='center', interline=8
             )
             txt_y = canvas_size[1] - BOTTOM_MARGIN - txt_clip.size[1]
+            # 자막 뒤 반투명 배경 박스 — 밝은 영상 위에서도 가독성 확보
+            box_clip = (
+                ColorClip(size=(txt_clip.size[0] + 24, txt_clip.size[1] + 14), color=(0, 0, 0))
+                .set_opacity(0.45)
+                .set_start(sub_offset)
+                .set_duration(s_dur)
+                .set_position(('center', txt_y - 7))
+            )
             txt_clip = (
                 txt_clip
                 .set_start(sub_offset)
                 .set_duration(s_dur)
                 .set_position(('center', txt_y))
             )
+            subtitle_clips.append(box_clip)
             subtitle_clips.append(txt_clip)
+            if narration_segments is not None:
+                narration_segments.append((sub_offset, sub_offset + s_dur))
             sub_offset += s_dur
             if sent_idx < num_sent - 1:
                 sub_offset += SENTENCE_GAP
@@ -754,7 +809,8 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
                    canvas_size: tuple = None, tts_master_volume: float = 1.0,
                    subtitle_font_size: int = 28, subtitle_font_color: str = "white",
                    watermark_text: str = "", watermark_opacity: float = 0.3,
-                   default_slide_duration: float = 3.0, title_text: str = ""):
+                   default_slide_duration: float = 3.0, title_text: str = "",
+                   transition_duration: float = 0.7):
     """
     영상 렌더링 메인 함수
     slides: [{"image_filename": ..., "text": ...}, ...]
@@ -771,8 +827,8 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
     """
     if canvas_size is None:
         canvas_size = CANVAS_SIZE
-    # 자막 폰트 설정 (전역)
-    _font_size = subtitle_font_size or FONT_SIZE
+    # 자막 폰트 설정 (전역) — 캔버스 높이 비례 스케일링 (1080p에서도 동일한 상대 크기, 8-9)
+    _font_size = int((subtitle_font_size or FONT_SIZE) * canvas_size[1] / 720)
     _font_color = subtitle_font_color or TEXT_COLOR
     temp_dir = assets_dir / "temp_render"
     temp_dir.mkdir(exist_ok=True)
@@ -783,6 +839,7 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
 
     total_slides = len(slides)
     final_clips  = []
+    slide_narration_segments = []  # 슬라이드별 TTS 구간 (BGM 덕킹용, 8-7)
     tts_engine   = load_tts_engine()
 
     try:
@@ -792,15 +849,18 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
             current_progress = int((i / total_slides) * 50)
             progress_callback(current_progress, f"슬라이드 처리 중 {i+1}/{total_slides}")
 
+            segs = []  # 이 슬라이드의 TTS 음성 구간 (클립 기준 상대 시간, BGM 덕킹용)
             clip = build_slide_clip(
                 item, i, assets_dir, temp_dir, canvas_size,
                 tts_engine=tts_engine,
                 font_size=_font_size, font_color=_font_color,
                 default_slide_duration=default_slide_duration,
                 tts_master_volume=tts_master_volume,
+                narration_segments=segs,
             )
             if clip is not None:
                 final_clips.append(clip)
+                slide_narration_segments.append(segs)
 
 
         # 클립 인코딩 - TTS 완료 직후 GPU 메모리 해제 후 NVENC 인코딩
@@ -811,6 +871,7 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
         # ── 전환 효과 적용 ────────────────────────────────────────────────
         # slides 데이터에서 transition 정보를 가져와 인접 클립 간 적용
         # transition은 '해당 슬라이드가 시작될 때' 적용되는 효과
+        transition_overlaps = [0.0] * len(final_clips)  # idx 슬라이드가 앞 슬라이드와 겹치는 시간
         if len(final_clips) > 1:
             transitions = [item.get('transition', 'none') for item in slides]
             composed_clips = [final_clips[0]]
@@ -821,9 +882,10 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
                 clip_next = final_clips[idx]
                 trans = transitions[idx] if idx < len(transitions) else 'none'
 
-                clip_prev_out, clip_next_in, overlap = apply_transition(clip_prev, clip_next, trans)
+                clip_prev_out, clip_next_in, overlap = apply_transition(clip_prev, clip_next, trans, duration=transition_duration)
                 composed_clips[-1] = clip_prev_out
                 composed_clips.append(clip_next_in)
+                transition_overlaps[idx] = overlap
 
                 if overlap > 0:
                     logger.info(f"Slide {idx}: applying '{trans}' transition (overlap={overlap}s)")
@@ -902,6 +964,24 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
                     .subclip(0, total_duration)
                     .volumex(bgm_volume)
                     .audio_fadeout(min(2.0, total_duration * 0.05)))
+
+                # ── BGM 덕킹 (8-7): TTS 나레이션 구간에서 BGM 볼륨 자동 감소 ──
+                # 슬라이드별 상대 구간 + 전환 overlap을 반영해 글로벌 타임라인으로 환산
+                global_narr_segs = []
+                _t = 0.0
+                for _idx, _clip in enumerate(final_clips):
+                    if _idx > 0:
+                        _t += final_clips[_idx - 1].duration - transition_overlaps[_idx]
+                    for (_s, _e) in slide_narration_segments[_idx]:
+                        global_narr_segs.append((_t + _s, _t + _e))
+
+                if global_narr_segs:
+                    BGM_DUCK_VOLUME = 0.25  # 나레이션 중 BGM 볼륨 (25%)
+                    BGM_DUCK_FADE   = 0.4   # 덕킹 페이드 시간
+                    for (_s, _e) in global_narr_segs:
+                        bgm_clip = bgm_clip.fl(
+                            _make_volume_duck_filter(_s, _e, BGM_DUCK_VOLUME, BGM_DUCK_FADE))
+                    logger.info(f"BGM ducking applied: {len(global_narr_segs)} narration segments")
 
                 if combined.audio is not None:
                     mixed_audio = CompositeAudioClip([combined.audio, bgm_clip])

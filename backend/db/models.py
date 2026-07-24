@@ -29,13 +29,15 @@ class Project(Base):
     # Master TTS Volume
     tts_master_volume = Column(Float, default=1.0)     # 0.0 ~ 2.0 — 전역 TTS 볼륨
     # Global defaults (6-10)
-    default_transition      = Column(String(50), default="none")    # 전역 전환 효과
+    default_transition      = Column(String(50), default="crossfade")    # 전역 전환 효과
     default_slide_duration  = Column(Float, default=3.0)            # 텍스트 없는 슬라이드 기본 시간(초)
     subtitle_font_size      = Column(Integer, default=28)           # 자막 폰트 크기
     subtitle_font_color     = Column(String(20), default="white")   # 자막 폰트 색상
     watermark_text          = Column(String(300), default="")       # 워터마크 텍스트
     watermark_opacity       = Column(Float, default=0.3)            # 워터마크 불투명도
     title_text              = Column(String(300), default="")       # 인트로 타이틀 (비우면 프로젝트명 사용)
+    resolution              = Column(String(10), default="720p")    # 출력 해상도 '720p' | '1080p'
+    transition_duration     = Column(Float, default=0.7)            # 전환 효과 길이(초)
 
     slides = relationship("Slide", back_populates="project",
                           cascade="all, delete-orphan",
@@ -60,7 +62,7 @@ class Slide(Base):
     use_tts        = Column(Integer, default=1)             # 0 or 1 (SQLite has no BOOLEAN)
     trim_start     = Column(Float, default=0.0)             # Video trim start time (seconds)
     trim_end       = Column(Float, default=0.0)             # Video trim end time (seconds)
-    transition     = Column(String(50), default="none")     # Scene transition: 'none'|'crossfade'|'fade_black'|'slide_left'|'slide_right'
+    transition     = Column(String(50), default="crossfade")     # Scene transition: 'none'|'crossfade'|'fade_black'|'slide_left'|'slide_right'
     tts_volume     = Column(Float, default=1.0)              # TTS audio volume (0.0 ~ 2.0), independent of video volume
     rotation       = Column(Integer, default=0)               # Image/Video rotation: 0, 90, 180, 270
     overlays       = Column(Text, default="[]")              # JSON array of overlay objects

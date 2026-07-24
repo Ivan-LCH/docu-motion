@@ -54,6 +54,8 @@ def _enrich_project(project: Project) -> dict:
         "watermark_text": getattr(project, "watermark_text", "") or "",
         "watermark_opacity": getattr(project, "watermark_opacity", 0.3) or 0.3,
         "title_text": getattr(project, "title_text", "") or "",
+        "resolution": getattr(project, "resolution", "720p") or "720p",
+        "transition_duration": getattr(project, "transition_duration", 0.7) or 0.7,
     }
 
 
@@ -183,6 +185,8 @@ class ProjectSettingsUpdate(PydanticBase):
     watermark_text: Optional[str] = None
     watermark_opacity: Optional[float] = None
     title_text: Optional[str] = None
+    resolution: Optional[str] = None
+    transition_duration: Optional[float] = None
 
 
 
@@ -402,6 +406,10 @@ def update_project_settings(project_id: str, payload: ProjectSettingsUpdate, db:
         project.watermark_opacity = payload.watermark_opacity
     if payload.title_text is not None:
         project.title_text = payload.title_text
+    if payload.resolution is not None:
+        project.resolution = payload.resolution
+    if payload.transition_duration is not None:
+        project.transition_duration = payload.transition_duration
     project.updated_at   = datetime.utcnow()
     db.commit()
     return _enrich_project(project)

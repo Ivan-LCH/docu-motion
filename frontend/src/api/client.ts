@@ -106,6 +106,8 @@ export interface Project {
   watermark_text: string
   watermark_opacity: number
   title_text: string
+  resolution: string
+  transition_duration: number
 }
 
 export interface ProjectDetail extends Project {
@@ -169,6 +171,16 @@ export const api = {
     request<{ ok: boolean }>('PUT', `/projects/${id}/slides`, slides),
   deleteSlide: (projectId: string, slideId: string) =>
     request<void>('DELETE', `/projects/${projectId}/slides/${slideId}`),
+
+  // AI 나레이션 (8-5/8-6)
+  generateNarration: (projectId: string, slideId: string) =>
+    request<Slide>('POST', `/projects/${projectId}/slides/${slideId}/narration`),
+  generateAllNarrations: (projectId: string, overwrite = false) =>
+    request<{ generated: number; failed: number; skipped: number }>(
+      'POST', `/projects/${projectId}/narration/generate-all`, { overwrite }),
+  splitScript: (projectId: string, script: string) =>
+    request<{ ok: boolean; assigned: number }>(
+      'POST', `/projects/${projectId}/narration/split`, { script }),
 
   // 렌더링
   startRender: (id: string) => request<{ ok: boolean }>('POST', `/projects/${id}/render`),

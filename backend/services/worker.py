@@ -71,10 +71,16 @@ def run_render(project_id: str):
         bgm_vol      = getattr(project, 'bgm_volume', 0.3) or 0.3
         bgm_path     = str(assets_dir / bgm_filename) if bgm_filename else ''
 
-        # 화면 비율
+        # 화면 비율 + 해상도 (8-9)
         from backend.services.renderer import ASPECT_RATIO_MAP
         aspect_ratio = getattr(project, 'aspect_ratio', '16:9') or '16:9'
-        canvas_size  = ASPECT_RATIO_MAP.get(aspect_ratio, (1280, 720))
+        resolution   = getattr(project, 'resolution', '720p') or '720p'
+        _base        = ASPECT_RATIO_MAP.get(aspect_ratio, (1280, 720))
+        _scale       = 1.5 if resolution == '1080p' else 1.0
+        canvas_size  = (int(_base[0] * _scale), int(_base[1] * _scale))
+
+        # 전환 효과 길이 (8-10)
+        transition_duration = getattr(project, 'transition_duration', 0.7) or 0.7
 
         # Master TTS Volume
         tts_master_volume = getattr(project, 'tts_master_volume', 1.0) or 1.0
@@ -142,6 +148,7 @@ def run_render(project_id: str):
             watermark_opacity=watermark_opacity,
             default_slide_duration=default_slide_duration,
             title_text=title_text,
+            transition_duration=transition_duration,
         )
 
         # 완료

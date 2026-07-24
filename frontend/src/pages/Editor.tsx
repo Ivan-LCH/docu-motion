@@ -438,6 +438,7 @@ function BgmSearchModal({ projectId, onClose, onApplied }: {
   const [suggestedKeyword, setSuggestedKeyword] = useState('')
   const [playingId, setPlayingId] = useState<number | null>(null)
   const [applyingId, setApplyingId] = useState<number | null>(null)
+  const [autoApplying, setAutoApplying] = useState(false)
   const audioRef = useRef<HTMLAudioElement | null>(null)
 
   const PER_PAGE = 15
@@ -466,6 +467,21 @@ function BgmSearchModal({ projectId, onClose, onApplied }: {
       toast(`AI 추천: "${res.keyword}"`, 'success')
     } catch { toast('AI 추천 실패', 'error') }
     finally { setSuggesting(false) }
+  }
+
+  // 8-8: 원클릭 BGM — AI 추천 키워드 → 첫 곡 자동 다운로드·적용
+  const handleAutoApply = async () => {
+    setAutoApplying(true)
+    try {
+      const res = await api.suggestBgm(projectId)
+      if (!res.hits.length) { toast('추천 곡을 찾지 못했습니다', 'error'); return }
+      const hit = res.hits[0]
+      const updated = await api.downloadBgm(projectId, hit.preview_url, `${hit.title}.mp3`)
+      onApplied(updated as unknown as ProjectDetail)
+      toast(`"${hit.title}" BGM 자동 적용 완료 (키워드: ${res.keyword})`, 'success')
+      onClose()
+    } catch { toast('BGM 자동 적용 실패', 'error') }
+    finally { setAutoApplying(false) }
   }
 
   const togglePlay = (hit: BgmHit) => {
@@ -512,9 +528,14 @@ function BgmSearchModal({ projectId, onClose, onApplied }: {
           <button className="btn btn-primary" onClick={() => doSearch(query)} disabled={loading || !query.trim()}>
             {loading ? '...' : '검색'}
           </button>
-          <button className="btn" onClick={handleSuggest} disabled={suggesting}
+          <button className="btn" onClick={handleSuggest} disabled={suggesting || autoApplying}
             style={{ background: 'rgba(168,85,247,0.15)', color: '#a855f7', border: '1px solid rgba(168,85,247,0.3)', whiteSpace: 'nowrap' }}>
             {suggesting ? '분석 중...' : '✨ AI 추천'}
+          </button>
+          <button className="btn" onClick={handleAutoApply} disabled={autoApplying || suggesting}
+            title="AI가 키워드를 추천하고 첫 곡을 바로 BGM으로 적용합니다"
+            style={{ background: 'rgba(34,197,94,0.15)', color: '#22c55e', border: '1px solid rgba(34,197,94,0.3)', whiteSpace: 'nowrap' }}>
+            {autoApplying ? '적용 중...' : '⚡ 즉시 적용'}
           </button>
         </div>
         {suggestedKeyword && (
@@ -992,6 +1013,7 @@ function GlobalSettingsModal({ project, projectId, slides, onClose, onSave, onPr
 }) {
   const { toast } = useToast()
   const [defaultTransition, setDefaultTransition] = useState(project.default_transition || 'none')
+  const [transitionDuration, setTransitionDuration] = useState(project.transition_duration ?? 0.7)
   const [defaultSlideDuration, setDefaultSlideDuration] = useState(project.default_slide_duration || 3.0)
   const [subtitleFontSize, setSubtitleFontSize] = useState(project.subtitle_font_size || 28)
   const [subtitleFontColor, setSubtitleFontColor] = useState(project.subtitle_font_color || 'white')
@@ -1028,6 +1050,42 @@ function GlobalSettingsModal({ project, projectId, slides, onClose, onSave, onPr
     } finally { setLocSaving(false) }
   }
   const [jsonText, setJsonText] = useState('')
+  const [scriptText, setScriptText] = useState('')
+  const [aiAllBusy, setAiAllBusy] = useState(false)
+  const [splitBusy, setSplitBusy] = useState(false)
+
+  // 8-5: 전체 슬라이드 AI 대사 일괄 생성 (비어있는 슬라이드만)
+  const handleGenerateAll = async () => {
+    if (aiAllBusy) return
+    setAiAllBusy(true)
+    try {
+      const r = await api.generateAllNarrations(projectId, false)
+      const fresh = await api.getSlides(projectId)
+      onApplySlides(fresh)
+      toast(`AI 대사 ${r.generated}개 생성${r.skipped ? ` (기존 대사 ${r.skipped}개 유지)` : ''}${r.failed ? `, 실패 ${r.failed}개` : ''}`, r.failed ? 'error' : 'success')
+    } catch (e: unknown) {
+      toast(e instanceof Error ? e.message : 'AI 대사 생성 실패', 'error')
+    } finally {
+      setAiAllBusy(false)
+    }
+  }
+
+  // 8-6: 긴 스크립트 → 슬라이드 수에 맞춰 AI 자동 분할
+  const handleSplitScript = async () => {
+    if (splitBusy || !scriptText.trim()) return
+    setSplitBusy(true)
+    try {
+      await api.splitScript(projectId, scriptText)
+      const fresh = await api.getSlides(projectId)
+      onApplySlides(fresh)
+      toast(`${fresh.length}개 슬라이드에 대사 자동 분할 완료`, 'success')
+      setScriptText('')
+    } catch (e: unknown) {
+      toast(e instanceof Error ? e.message : '스크립트 분할 실패', 'error')
+    } finally {
+      setSplitBusy(false)
+    }
+  }
 
   const FONT_COLORS = [
     { value: 'white', label: '흰색', color: '#fff' },
@@ -1039,7 +1097,7 @@ function GlobalSettingsModal({ project, projectId, slides, onClose, onSave, onPr
   ]
 
   // ── 즉시 적용 헬퍼 (비율/오디오) — 변경 즉시 저장 (7-1 통합, 동작 보존) ──
-  const saveImmediate = async (patch: { aspect_ratio?: string; bgm_volume?: number; tts_master_volume?: number }) => {
+  const saveImmediate = async (patch: { aspect_ratio?: string; bgm_volume?: number; tts_master_volume?: number; resolution?: string }) => {
     try {
       await api.updateSettings(projectId, {
         bgm_volume: project.bgm_volume ?? 0.3,
@@ -1054,6 +1112,7 @@ function GlobalSettingsModal({ project, projectId, slides, onClose, onSave, onPr
     setSaving(true)
     await onSave({
       default_transition: defaultTransition,
+      transition_duration: transitionDuration,
       default_slide_duration: defaultSlideDuration,
       subtitle_font_size: subtitleFontSize,
       subtitle_font_color: subtitleFontColor,
@@ -1083,6 +1142,22 @@ function GlobalSettingsModal({ project, projectId, slides, onClose, onSave, onPr
             <option value="16:9">16:9 (가로)</option>
             <option value="9:16">9:16 (세로)</option>
             <option value="1:1">1:1 (정사각형)</option>
+          </select>
+        </div>
+
+        {/* ── 영상 규격: 출력 해상도 (즉시 적용, 8-9) ── */}
+        <div style={{ marginBottom: '1rem' }}>
+          <label className="label">출력 해상도</label>
+          <select className="input" value={project.resolution || '720p'}
+            onChange={async e => {
+              const val = e.target.value
+              onProjectUpdate({ resolution: val })
+              await saveImmediate({ resolution: val })
+              toast(`출력 해상도: ${val}`, 'success')
+            }}
+            style={{ width: '100%' }}>
+            <option value="720p">720p (HD, 빠른 렌더)</option>
+            <option value="1080p">1080p (Full HD, 고화질)</option>
           </select>
         </div>
 
@@ -1176,6 +1251,12 @@ function GlobalSettingsModal({ project, projectId, slides, onClose, onSave, onPr
             <input type="checkbox" checked={applyTransition} onChange={e => setApplyTransition(e.target.checked)} />
             저장 시 기존 슬라이드에 즉시 일괄 적용
           </label>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.5rem' }}>
+            <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>전환 길이</span>
+            <input type="range" min={0.3} max={2.0} step={0.1} value={transitionDuration}
+              style={{ flex: 1 }} onChange={e => setTransitionDuration(parseFloat(e.target.value))} />
+            <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', width: 34 }}>{transitionDuration.toFixed(1)}s</span>
+          </div>
         </div>
 
         {/* ── Default Slide Duration ── */}
@@ -1290,6 +1371,25 @@ function GlobalSettingsModal({ project, projectId, slides, onClose, onSave, onPr
               <span style={{ fontSize: '0.78rem', width: 36 }}>{Math.round(watermarkOpacity * 100)}%</span>
             </div>
           )}
+        </div>
+
+        {/* ── AI 대사 자동화 (8-5/8-6) ── */}
+        <div style={{ marginBottom: '1rem' }}>
+          <label className="label">✨ AI 대사 자동화</label>
+          <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', margin: '0 0 0.4rem' }}>
+            사진을 보고 AI가 대사 초안을 작성하거나, 완성된 스크립트를 슬라이드에 자동 배분합니다.
+          </p>
+          <button className="btn btn-ghost" style={{ width: '100%', fontSize: '0.82rem', marginBottom: '0.6rem' }}
+            onClick={handleGenerateAll} disabled={aiAllBusy || slides.length === 0}>
+            {aiAllBusy ? '⏳ 생성 중... (슬라이드당 수 초)' : '🖼️ 사진 보고 전체 대사 생성 (빈 슬라이드만)'}
+          </button>
+          <textarea className="textarea" rows={4} value={scriptText} onChange={e => setScriptText(e.target.value)}
+            placeholder="완성된 스크립트를 붙여넣으면 슬라이드 순서대로 AI가 나눠줍니다..."
+            style={{ width: '100%', fontSize: '0.82rem' }} />
+          <button className="btn btn-ghost" style={{ marginTop: '0.4rem', width: '100%', fontSize: '0.82rem' }}
+            onClick={handleSplitScript} disabled={splitBusy || !scriptText.trim() || slides.length === 0}>
+            {splitBusy ? '⏳ 분할 중...' : `🪄 스크립트 자동 분할 (${slides.length}개 슬라이드)`}
+          </button>
         </div>
 
         {/* ── JSON 대사 일괄 입력 ── */}
@@ -1408,7 +1508,7 @@ function KenBurnsFallback({ projectId, slide }: { projectId: string; slide: Slid
 function PreviewPlayerModal({ projectId, slide, onClose }: {
   projectId: string; slide: Slide; onClose: () => void
 }) {
-  const [forceTts, setForceTts] = useState(false)
+  const [forceTts, setForceTts] = useState(true)  // 8-12: 미리보기에 TTS 기본 포함
   const [includeNeighbors, setIncludeNeighbors] = useState(false)
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading')
   const [videoUrl, setVideoUrl] = useState<string>('')
@@ -1505,7 +1605,7 @@ function PreviewPlayerModal({ projectId, slide, onClose }: {
         </div>
         <p style={{ color: 'var(--text-muted)', fontSize: '0.78rem', textAlign: 'center', maxWidth: 600 }}>
           트랜지션·Ken Burns·오버레이·자막 타이밍을 실제 렌더 결과로 확인합니다.
-          {!forceTts && ' 기본 모드는 캐시된 TTS만 사용(없으면 무음). "정확히 듣기"로 음성을 포함하세요.'}
+          {!forceTts && ' 빠른 모드: 캐시된 TTS만 사용(없으면 무음). 음성을 들으려면 "정확히 듣기"를 켜세요.'}
         </p>
       </div>
     </div>
@@ -2185,7 +2285,7 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
   const [videoDuration, setVideoDuration] = useState<number>(0)
   const [useTts, setUseTts] = useState<boolean>((slide.use_tts ?? 1) === 1)
   const [subs, setSubs] = useState<SubEntry[]>(() => parseSubtitles(slide.subtitles))
-  const [transition, setTransition] = useState<string>(slide.transition ?? 'none')
+  const [transition, setTransition] = useState<string>(slide.transition ?? 'crossfade')
   const [ttsVolume, setTtsVolume] = useState(slide.tts_volume ?? 1.0)
   const [rotation, setRotation] = useState(slide.rotation ?? 0)
   const [overlays, setOverlays] = useState<Overlay[]>(() => parseOverlays(slide.overlays ?? '[]'))
@@ -2193,6 +2293,24 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
   const [kenBurns, setKenBurns] = useState<number>(slide.ken_burns ?? 0)
   const [showOverlayModal, setShowOverlayModal] = useState(false)
   const [tab, setTab] = useState<'content' | 'visual'>('content')
+  const { toast } = useToast()
+  const [aiBusy, setAiBusy] = useState(false)
+
+  // 8-5: Gemini Vision으로 슬라이드 이미지 → 나레이션 초안 생성
+  const generateAiNarration = async () => {
+    if (aiBusy) return
+    setAiBusy(true)
+    try {
+      const updated = await api.generateNarration(projectId, slide.id)
+      setText(updated.text)
+      onUpdate({ text: updated.text })
+      toast('AI 대사 생성 완료', 'success')
+    } catch (e: unknown) {
+      toast(e instanceof Error ? e.message : 'AI 대사 생성 실패', 'error')
+    } finally {
+      setAiBusy(false)
+    }
+  }
   const videoRef = useRef<HTMLVideoElement>(null)
   const thumbCanvasRef = useRef<HTMLCanvasElement>(null)
   const thumbSrc = slide.image_filename ? api.assetUrl(projectId, slide.image_filename) : ''
@@ -2202,7 +2320,7 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
   useEffect(() => { setVolume(slide.volume ?? 1.0) }, [slide.volume])
   useEffect(() => { setUseTts((slide.use_tts ?? 1) === 1) }, [slide.use_tts])
   useEffect(() => { setSubs(parseSubtitles(slide.subtitles)) }, [slide.subtitles])
-  useEffect(() => { setTransition(slide.transition ?? 'none') }, [slide.transition])
+  useEffect(() => { setTransition(slide.transition ?? 'crossfade') }, [slide.transition])
   useEffect(() => { setTtsVolume(slide.tts_volume ?? 1.0) }, [slide.tts_volume])
   useEffect(() => { setRotation(slide.rotation ?? 0) }, [slide.rotation])
   useEffect(() => { setOverlays(parseOverlays(slide.overlays ?? '[]')) }, [slide.overlays])
@@ -2414,6 +2532,11 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
             ) : (
               <>
                 <textarea className="textarea" value={text} onChange={e => setText(e.target.value)} onBlur={() => { if (text !== slide.text) onUpdate({ text }) }} placeholder="TTS 대사 / 자막 텍스트를 입력하세요..." rows={4} />
+                <button className="btn btn-secondary" onClick={generateAiNarration} disabled={aiBusy || !slide.image_filename}
+                  title={slide.image_filename ? '사진을 보고 AI가 대사 초안을 작성합니다' : '이미지가 있는 슬라이드만 가능합니다'}
+                  style={{ fontSize: '0.82rem', padding: '0.35rem 0.7rem' }}>
+                  {aiBusy ? '⏳ 생성 중...' : '✨ AI 대사 생성'}
+                </button>
                 <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.85rem', cursor: 'pointer', color: 'var(--text-secondary)' }}>
                   <input type="checkbox" checked={useTts} onChange={e => { const v = e.target.checked; setUseTts(v); onUpdate({ use_tts: v ? 1 : 0 }) }} />
                   &#x1F50A; TTS 음성 생성 {useTts ? '(켜짐 — 음성 + 자막)' : '(꺼짐 — 자막만)'}
@@ -2508,6 +2631,72 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
 }
 
 
+// ─── Storyboard Modal (8-12) ──────────────────
+const TRANSITION_LABELS: Record<string, string> = {
+  none: '없음', crossfade: '크로스페이드', fade_black: '페이드 투 블랙',
+  slide_left: '슬라이드 ←', slide_right: '슬라이드 →',
+}
+
+function estimateSlideDuration(s: Slide, defaultDuration: number): number {
+  if (s.slide_type === 'video') {
+    const ts = s.trim_start || 0, te = s.trim_end || 0
+    return te > ts ? te - ts : 0  // 0 = 길이 미상
+  }
+  const len = (s.text || '').trim().length
+  if (!len) return defaultDuration
+  if ((s.use_tts ?? 1) === 1) return len * 0.15 + 2.3  // TTS 실측 + 앞뒤 패드 근사
+  return Math.max(3.0, len * 0.15)
+}
+
+function StoryboardModal({ projectId, project, slides, onClose }: {
+  projectId: string
+  project: ProjectDetail
+  slides: Slide[]
+  onClose: () => void
+}) {
+  const defaultDur = project.default_slide_duration || 3.0
+  const durations = slides.map(s => estimateSlideDuration(s, defaultDur))
+  const total = durations.reduce((a, b) => a + b, 0)
+  const fmt = (sec: number) => `${Math.floor(sec / 60)}:${String(Math.round(sec % 60)).padStart(2, '0')}`
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" style={{ maxWidth: 620, maxHeight: '85vh', display: 'flex', flexDirection: 'column' }} onClick={e => e.stopPropagation()}>
+        <h2 style={{ margin: '0 0 0.4rem', fontSize: '1.1rem' }}>📋 스토리보드</h2>
+        <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', margin: '0 0 0.8rem' }}>
+          {slides.length}개 슬라이드 · 예상 총 길이 약 <strong>{fmt(total)}</strong> (TTS 실측과 다를 수 있음)
+        </p>
+        <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+          {slides.map((s, i) => (
+            <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)', padding: '0.4rem 0.6rem' }}>
+              <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', width: 20, textAlign: 'right', flexShrink: 0 }}>{i + 1}</span>
+              {s.image_filename ? (
+                <img src={api.assetUrl(projectId, s.image_filename)} alt="" style={{ width: 64, height: 36, objectFit: 'cover', borderRadius: 4, flexShrink: 0 }} />
+              ) : (
+                <div style={{ width: 64, height: 36, borderRadius: 4, background: 'var(--bg-secondary)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>🎬</div>
+              )}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: '0.78rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-secondary)' }}>
+                  {(s.text || '').trim() || <span style={{ color: 'var(--text-muted)' }}>(대사 없음)</span>}
+                </div>
+                <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                  {i > 0 ? `${TRANSITION_LABELS[s.transition || 'none'] || s.transition} · ` : ''}
+                  {s.slide_type === 'video' ? '비디오' : '이미지'}
+                  {(s.use_tts ?? 1) === 0 && ' · TTS 꺼짐'}
+                </div>
+              </div>
+              <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', flexShrink: 0, width: 40, textAlign: 'right' }}>
+                {durations[i] > 0 ? `${durations[i].toFixed(1)}s` : '-'}
+              </span>
+            </div>
+          ))}
+        </div>
+        <button className="btn btn-ghost" style={{ marginTop: '0.8rem', width: '100%' }} onClick={onClose}>닫기</button>
+      </div>
+    </div>
+  )
+}
+
 // ─── Main Component ──────────────────────────
 export default function Editor() {
   const { id: projectId } = useParams<{ id: string }>()
@@ -2536,6 +2725,7 @@ export default function Editor() {
   const reloadLocations = useCallback(() => { api.listLocations().then(setSavedLocations).catch(() => {}) }, [])
   useEffect(() => { reloadLocations() }, [reloadLocations])
   const [showRender, setShowRender] = useState(false)
+  const [showStoryboard, setShowStoryboard] = useState(false)
   const [isDragging, setIsDragging] = useState(false)
   const [previewVideoSlide, setPreviewVideoSlide] = useState<Slide | null>(null)
   const [selectedSlideIds, setSelectedSlideIds] = useState<Set<string>>(new Set())
@@ -2796,6 +2986,8 @@ export default function Editor() {
   const deleteSlide = async (i: number) => {
     if (!projectId) return
     const slide = slides[i]
+    const label = slide.slide_type === 'video' ? '비디오' : '이미지'
+    if (!window.confirm(`슬라이드 ${i + 1}번(${label})을 삭제할까요? 이 작업은 되돌릴 수 없습니다.`)) return
     try {
       await api.deleteSlide(projectId, slide.id)
       setSlides(prev => { const next = prev.filter((_, idx) => idx !== i); slidesRef.current = next; return next })
@@ -2911,6 +3103,15 @@ export default function Editor() {
           <div className="action-label">
             <span>음악</span>
             <span>배경음악 검색 · 추가</span>
+          </div>
+        </button>
+
+        {/* 스토리보드 → 전체 구성 한눈에 보기 (8-12) */}
+        <button className="action-card" onClick={() => setShowStoryboard(true)} title="슬라이드 구성 · 예상 길이 확인">
+          <div className="action-icon" style={{ background: 'rgba(14,165,233,0.12)' }}>&#x1F4CB;</div>
+          <div className="action-label">
+            <span>스토리보드</span>
+            <span>전체 구성 · 예상 길이</span>
           </div>
         </button>
 
@@ -3136,6 +3337,15 @@ export default function Editor() {
           />
         )
       })()}
+      {showStoryboard && project && (
+        <StoryboardModal
+          projectId={projectId!}
+          project={project}
+          slides={slides}
+          onClose={() => setShowStoryboard(false)}
+        />
+      )}
+
       {showRender && (
         <RenderModal
           isActive={isActive}
