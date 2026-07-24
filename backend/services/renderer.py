@@ -642,13 +642,19 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
         frame_paths = [p for p in frame_paths if Path(p).exists()]
 
         if frame_paths:
-            from moviepy.editor import ImageSequenceClip
-            _route_fps = float(_meta.get('fps') or 6)
+            from moviepy.editor import ImageSequenceClip, ImageClip, concatenate_videoclips
+            # 여정이 슬라이드 길이의 85% 시점에 완주하도록 fps를 슬라이드 길이에 맞춤.
+            # (기존: 고정 6fps라 나레이션이 짧으면 도착 전에 장면 전환되는 문제)
+            _n = len(frame_paths)
+            _travel_dur = max(1.0, total_duration * 0.85)
+            _route_fps = _n / _travel_dur
             seq = ImageSequenceClip(frame_paths, fps=_route_fps)
             if seq.duration < total_duration:
-                seq = seq.loop(duration=total_duration)
+                # 도착 후 남은 시간은 마지막(도착) 프레임 유지
+                _hold = ImageClip(frame_paths[-1]).set_duration(total_duration - seq.duration)
+                seq = concatenate_videoclips([seq, _hold], method="compose")
             else:
-                seq = seq.set_duration(total_duration)
+                seq = seq.subclip(0, total_duration)
             # 캔버스와 해상도가 다르면 cover 리사이즈
             cw, ch = canvas_size
             if seq.size != (cw, ch):
@@ -659,7 +665,8 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
 
         bg_clip = ColorClip(size=canvas_size, color=BG_COLOR).set_duration(total_duration)
 
-        # 이동 정보 오버레이 (출발→도착 / 거리·시간·수단) — 영상 위에 표시
+        # 이동 정보 오버레이 (출발→도착) — 거리/시간/수단/진행률은 프레임 상단 알약에
+        # 이미 구워져 있으므로 TextClip 중복 표시는 제거 (8-x 리디자인)
         route_overlays = list(subtitle_clips)
         try:
             _o = (_meta.get('origin') or {}).get('name', '')
@@ -671,17 +678,6 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
                     color='white', stroke_color='black', stroke_width=2, method='label',
                 ).set_duration(total_duration).set_position((24, 20))
                 route_overlays.append(_title_clip)
-
-                _info_txt = _format_route_info(
-                    float(_meta.get('distance_m', 0) or 0),
-                    float(_meta.get('duration_s', 0) or 0),
-                    _meta.get('profile', ''),
-                )
-                _info_clip = TextClip(
-                    txt=_info_txt, font=FONT_PATH, fontsize=int(canvas_size[1] * 0.035),
-                    color='white', stroke_color='black', stroke_width=2, method='label',
-                ).set_duration(total_duration).set_position((24, 20 + int(canvas_size[1] * 0.06)))
-                route_overlays.append(_info_clip)
         except Exception as _e:
             logger.warning(f"Route overlay 생성 실패(무시): {_e}")
 

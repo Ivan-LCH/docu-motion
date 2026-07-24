@@ -83,6 +83,7 @@ def slide_to_item(s: Slide) -> dict:
         "overlays": s.overlays or "[]",
         "image_fit": s.image_fit or "cover",
         "ken_burns": s.ken_burns if s.ken_burns is not None else 0,
+        "meta": s.meta or "{}",
     }
 
 
@@ -114,6 +115,7 @@ def _HASHABLE_FIELDS(it: dict, project_id: str) -> dict:
         "trim_start": it.get("trim_start"),
         "trim_end": it.get("trim_end"),
         "volume": it.get("volume"),
+        "meta": it.get("meta", "{}"),
         "image_filename": it.get("image_filename", ""),
         "video_filename": it.get("video_filename", ""),
     }

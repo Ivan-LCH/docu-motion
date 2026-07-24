@@ -138,16 +138,20 @@ def _pin_icon(color: str, glyph: str = "", size: int = 56) -> str:
     return str(fp)
 
 
-def _draw_info_pill(img: Image.Image, profile: str, distance_m: float, duration_s: float) -> None:
+def _draw_info_pill(img: Image.Image, profile: str, distance_m: float, duration_s: float,
+                    frac: float = None) -> None:
     """
     이미지 상단 중앙에 소요시간/거리 알약 라벨을 그린다(픽셀 공간, 투영 불필요).
     예: "자동차 약 25분 · 10.4km"  (이모지는 font.ttf가 흑백으로만 표시되어 텍스트 사용)
+    frac(0~1)이 주어지면 알약 안에 진행률(%)도 표시.
     """
     mode = {"driving": "자동차", "foot": "도보", "walking": "도보",
             "bicycle": "자전거", "bike": "자전거"}.get(profile, "경로")
     mins = max(1, round(duration_s / 60.0)) if duration_s > 0 else 0
     dist_km = distance_m / 1000.0
     text = f"{mode} 약 {mins}분 · {dist_km:.1f}km" if mins else f"{mode} {dist_km:.1f}km"
+    if frac is not None:
+        text += f"  ·  {int(round(frac * 100))}%"
 
     fs = max(18, img.width // 30)
     f = _get_font(fs)
@@ -165,6 +169,23 @@ def _draw_info_pill(img: Image.Image, profile: str, distance_m: float, duration_
     # 알약 배경 (반투명 검정 + 둥근 모서리)
     d.rounded_rectangle([x, y, x + box_w, y + box_h], radius=box_h // 2, fill=(0, 0, 0, 160))
     d.text((x + pad_x - bbox[0], y + pad_y - bbox[1] - th // 6), text, font=f, fill=(255, 255, 255, 255))
+
+
+def _draw_progress_bar(img: Image.Image, frac: float) -> None:
+    """하단에 여정 진행률 바 (트랙 + 채움). 최신 납작한(flat) 스타일."""
+    W, H = img.size
+    bar_h = max(6, H // 90)
+    margin_x = W // 20
+    y0 = H - bar_h - max(8, H // 60)
+    d = ImageDraw.Draw(img, "RGBA")
+    # 트랙 (반투명 흰색)
+    d.rounded_rectangle([margin_x, y0, W - margin_x, y0 + bar_h], radius=bar_h // 2,
+                        fill=(255, 255, 255, 90))
+    # 채움
+    fill_w = int((W - margin_x * 2) * max(0.0, min(1.0, frac)))
+    if fill_w > bar_h:
+        d.rounded_rectangle([margin_x, y0, margin_x + fill_w, y0 + bar_h], radius=bar_h // 2,
+                            fill=_ROUTE_FG_COLOR)
 
 
 def _kakao_search(query: str) -> dict | None:
@@ -569,119 +590,126 @@ def render_place_card(details: dict, naver: Optional[dict], desc: dict,
                       canvas: Tuple[int, int], out_path: Path,
                       photo_path: Optional[str] = None) -> str:
     """
-    장소 카드: 정보 패널(좌/상) + 사진 또는 지도(우/하) 합성 PNG 저장.
+    장소 카드 (2026 리디자인): 전체 배경 사진/지도 + 하단 그라디언트 + 핵심 정볧만.
 
+    표시 요소 (위→아래):
+      카테고리 배지 / 장소명(대) / 주소(소) / 개요 최대 2줄 / 키워드 칩 최대 3개
     details: {name, address, lat, lng, category}
     naver: {title, category, description, road_address, ...} 또는 None
     desc: {overview, features[], highlights[], tip} (Gemini 생성)
-    photo_path: 장소 사진 파일 경로. None 이면 지도 폴백.
-    가로 → 패널 좌·이미지 우. 세로 → 이미지 상·패널 하.
+    photo_path: 장소 사진 파일 경로. None 이면 지도 폴리백.
     """
     out_path.parent.mkdir(parents=True, exist_ok=True)
     W, H = canvas
-    landscape = W >= H
 
-    if landscape:
-        panel_rect = (0, 0, int(W * 0.46), H)
-        map_rect = (panel_rect[2], 0, W, H)
-    else:
-        map_rect = (0, 0, W, int(H * 0.46))
-        panel_rect = (0, map_rect[3], W, H)
+    # ── 배경: 사진(없으면 지도) 전체 채움 ──
+    bg: Optional[Image.Image] = None
+    if photo_path:
+        try:
+            bg = _cover_fit(photo_path, (W, H))
+        except Exception as e:
+            logger.warning(f"장소 사진 로드 실패(지도 폴리백): {e}")
+            bg = None
+    if bg is None:
+        m = StaticMap(W, H, url_template=_TILE_URL, tile_request_timeout=20,
+                      headers={"User-Agent": MAP_USER_AGENT})
+        pin_size = max(40, min(W, H) // 10)
+        icon = _pin_icon(_CURRENT_COLOR, "★", pin_size)
+        m.add_marker(IconMarker((details["lng"], details["lat"]), icon, pin_size // 2, 0))
+        try:
+            bg = m.render(zoom=16).convert("RGBA")
+        except Exception as e:
+            logger.warning(f"장소 카드 지도 렌더 실패(단색 배경): {e}")
+            bg = Image.new("RGBA", (W, H), _PANEL_BG)
+    base = bg.copy()
 
-    base = Image.new("RGBA", (W, H), _PANEL_BG)
-
-    # ── 패널 ──
-    pw = panel_rect[2] - panel_rect[0]
-    px0 = panel_rect[0] + int(pw * 0.06)
-    pw_inner = panel_rect[2] - px0 - int(pw * 0.05)
-    y = panel_rect[1] + int(H * 0.05)
+    # ── 하단 그라디언트 (투명 → 검정 84%) ──
+    grad_top = int(H * 0.42)
+    grad = Image.new("L", (1, H - grad_top), 0)
+    for yy in range(H - grad_top):
+        t = yy / max(1, (H - grad_top - 1))
+        grad.putpixel((0, yy), int(215 * (t ** 1.4)))
+    alpha = grad.resize((W, H - grad_top))
+    black = Image.new("RGBA", (W, H - grad_top), (8, 12, 20, 255))
+    base.paste(black, (0, grad_top), alpha)
 
     d = ImageDraw.Draw(base, "RGBA")
-    f_title = _get_font(max(26, H // 20))
-    f_badge = _get_font(max(14, H // 42))
-    f_addr = _get_font(max(15, H // 40))
-    f_head = _get_font(max(18, H // 34))
-    f_body = _get_font(max(16, H // 38))
-    f_small = _get_font(max(12, H // 52))
+    pad_x = int(W * 0.05)
+    max_w = W - pad_x * 2
+
+    f_title = _get_font(max(30, H // 16))
+    f_badge = _get_font(max(15, H // 44))
+    f_addr  = _get_font(max(15, H // 42))
+    f_body  = _get_font(max(17, H // 36))
+    f_chip  = _get_font(max(15, H // 44))
 
     name = (naver or {}).get("title") or details.get("name") or "장소"
     cat = (naver or {}).get("category") or details.get("category") or ""
     addr = (naver or {}).get("road_address") or (naver or {}).get("address") or details.get("address") or ""
+    overview = (desc.get("overview") or "").strip()
+    # 개요는 첫 2문장만 (핵심 정보 중심)
+    if overview:
+        sents = [s.strip() for s in re.split(r"(?<=[.!?])\s+", overview) if s.strip()]
+        overview = " ".join(sents[:2])
+    chips = [s.strip() for s in (desc.get("highlights") or []) if s.strip()][:3]
 
-    # 제목
-    for ln in _wrap_text(name, f_title, pw_inner):
-        d.text((px0, y), ln, font=f_title, fill=_PANEL_TITLE)
-        y += f_title.size + 4
-    y += 4
+    # ── 텍스트 블록: 아래에서 위로 쌓기 ──
+    y = H - int(H * 0.055)
 
-    # 카테고리 배지
+    # 키워드 칩 (최대 3개, 가로 나란히) — 가장 아래
+    if chips:
+        chip_h = f_chip.size + 14
+        y -= chip_h
+        cx = pad_x
+        for chip in chips:
+            try:
+                cw_text = f_chip.getlength(chip)
+            except Exception:
+                cw_text = len(chip) * 10
+            cw = int(cw_text) + 22
+            if cx + cw > W - pad_x:
+                break
+            d.rounded_rectangle([cx, y, cx + cw, y + chip_h], radius=chip_h // 2,
+                                fill=(255, 255, 255, 36), outline=(255, 255, 255, 130), width=1)
+            d.text((cx + 11, y + 6), chip, font=f_chip, fill=(255, 255, 255, 235))
+            cx += cw + 10
+        y -= int(H * 0.02)
+
+    # 개요 (최대 2줄)
+    if overview:
+        ov_lines = _wrap_text(overview, f_body, max_w)[:2]
+        y -= len(ov_lines) * (f_body.size + 5)
+        for i, ln in enumerate(ov_lines):
+            d.text((pad_x, y + i * (f_body.size + 5)), ln, font=f_body, fill=(226, 232, 240, 255))
+        y -= int(H * 0.018)
+
+    # 주소 (1줄)
+    if addr:
+        addr_lines = _wrap_text(addr, f_addr, max_w)[:1]
+        y -= f_addr.size + 4
+        d.text((pad_x, y), addr_lines[0], font=f_addr, fill=(148, 163, 184, 255))
+        y -= int(H * 0.012)
+
+    # 장소명 (최대 2줄)
+    name_lines = _wrap_text(name, f_title, max_w)[:2]
+    y -= len(name_lines) * (f_title.size + 6)
+    for i, ln in enumerate(name_lines):
+        d.text((pad_x, y + i * (f_title.size + 6)), ln, font=f_title, fill=(255, 255, 255, 255))
+    y -= int(H * 0.014)
+
+    # 카테고리 배지 — 장소명 바로 위
     if cat:
-        badge_lines = _wrap_text(cat, f_badge, pw_inner - 20)
+        badge_lines = _wrap_text(cat, f_badge, max_w - 24)
         badge_text = badge_lines[0] if badge_lines else cat
         try:
-            tw = f_badge.getlength(badge_text)
+            btw = f_badge.getlength(badge_text)
         except Exception:
-            tw = len(badge_text) * 10
-        d.rounded_rectangle([px0, y, px0 + tw + 16, y + f_badge.size + 10], radius=8,
-                            fill=(251, 191, 36, 60), outline=_PANEL_BADGE, width=1)
-        d.text((px0 + 8, y + 4), badge_text, font=f_badge, fill=_PANEL_BADGE)
-        y += f_badge.size + 18
-
-    # 주소
-    if addr:
-        for ln in _wrap_text(f"📍 {addr}", f_addr, pw_inner):
-            d.text((px0, y), ln, font=f_addr, fill=_PANEL_MUTED)
-            y += f_addr.size + 2
-        y += 6
-
-    # 본문 섹션들
-    ov_lines = _wrap_text(desc.get("overview", ""), f_body, pw_inner)
-    y = _draw_section(d, px0, y, pw_inner, "개요", ov_lines, f_head, f_body)
-    feat_lines = ["· " + s for s in desc.get("features", [])]
-    y = _draw_section(d, px0, y, pw_inner, "장소 특징", feat_lines, f_head, f_body)
-    hi_lines = ["· " + s for s in desc.get("highlights", [])]
-    y = _draw_section(d, px0, y, pw_inner, "추천 포인트", hi_lines, f_head, f_body)
-    tip_lines = _wrap_text(desc.get("tip", ""), f_body, pw_inner) if desc.get("tip") else []
-    _draw_section(d, px0, y, pw_inner, "방문 팁", tip_lines, f_head, f_body)
-
-    # 네이버 한 줄 소개 (실데이터) — 패널 하단 좌측
-    nv_desc = (naver or {}).get("description") or ""
-    if nv_desc:
-        nv_lines = _wrap_text(f'"네이버 소개: {nv_desc}"', f_small, pw_inner)
-        for i, ln in enumerate(nv_lines):
-            yy = panel_rect[3] - int(H * 0.05) - (len(nv_lines) - 1 - i) * (f_small.size + 2)
-            d.text((px0, yy), ln, font=f_small, fill=_PANEL_MUTED)
-
-    # AI 생성 표기 — 패널 하단 우측
-    try:
-        aiw = f_small.getlength("✦ AI 생성 요약")
-    except Exception:
-        aiw = 90
-    d.text((panel_rect[2] - int(pw * 0.05) - aiw, panel_rect[3] - int(H * 0.04)),
-           "✦ AI 생성 요약", font=f_small, fill=_PANEL_MUTED)
-
-    # ── 사진(없으면 지도 폴백) ──
-    mw = map_rect[2] - map_rect[0]
-    mh = map_rect[3] - map_rect[1]
-    media_img: Optional[Image.Image] = None
-    if photo_path:
-        try:
-            media_img = _cover_fit(photo_path, (mw, mh))
-        except Exception as e:
-            logger.warning(f"장소 사진 로드 실패(지도 폴백): {e}")
-            media_img = None
-    if media_img is None:
-        m = StaticMap(mw, mh, url_template=_TILE_URL, tile_request_timeout=20,
-                      headers={"User-Agent": MAP_USER_AGENT})
-        pin_size = max(40, min(mw, mh) // 10)
-        icon = _pin_icon(_CURRENT_COLOR, "★", pin_size)
-        m.add_marker(IconMarker((details["lng"], details["lat"]), icon, pin_size // 2, 0))
-        try:
-            media_img = m.render(zoom=16).convert("RGBA")
-        except Exception as e:
-            logger.warning(f"장소 카드 지도 렌더 실패(패널만 저장): {e}")
-            media_img = Image.new("RGBA", (mw, mh), (220, 220, 220, 255))
-    base.paste(media_img, (map_rect[0], map_rect[1]))
+            btw = len(badge_text) * 10
+        bh = f_badge.size + 12
+        y -= bh
+        d.rounded_rectangle([pad_x, y, pad_x + int(btw) + 20, y + bh], radius=bh // 2,
+                            fill=(251, 191, 36, 48), outline=_PANEL_BADGE, width=1)
+        d.text((pad_x + 10, y + 5), badge_text, font=f_badge, fill=_PANEL_BADGE)
 
     base.save(str(out_path))
     return out_path.name
@@ -759,8 +787,10 @@ def render_route_frames(geometry_lnglat: List[Tuple[float, float]],
             m.add_marker(CircleMarker((cur_lng, cur_lat), _CURRENT_COLOR, 9))
 
         img = m.render()
-        # 상단 소요시간/거리 라벨
-        _draw_info_pill(img, profile, distance_m, duration_s)
+        # 상단 소요시간/거리 라벨 (+ 진행률)
+        frac = idx / max(1, len(frames_meta) - 1)
+        _draw_info_pill(img, profile, distance_m, duration_s, frac=frac)
+        _draw_progress_bar(img, frac)
         fname = f"{slide_id}_frame_{idx:03d}.png"
         img.save(str(out_dir / fname))
         filenames.append(fname)

@@ -69,14 +69,14 @@ def fetch_naver_local(query: str) -> Optional[dict]:
 _GEMINI_SCHEMA = {
     "type": "object",
     "properties": {
-        "overview": {"type": "string", "description": "장소 개요. 2~3문장."},
+        "overview": {"type": "string", "description": "장소 개요. 1~2문장으로 짧게."},
         "features": {
             "type": "array", "items": {"type": "string"},
             "description": "장소의 특징/볼거리. 짧은 항목 3~4개.",
         },
         "highlights": {
             "type": "array", "items": {"type": "string"},
-            "description": "추천 포인트/대표 메뉴/체험. 짧은 항목 3~4개.",
+            "description": "핵심 키워드. 2~6글자 명사구 정확히 3개 (예: 오션뷰, 브런치, 포토존).",
         },
         "tip": {"type": "string", "description": "방문 팁 1문장."},
     },
@@ -104,7 +104,7 @@ def generate_description(query: str, naver: Optional[dict], geo: dict) -> dict:
         "사실 정보(이름/주소/카테고리/한줄소개)를 기반으로 하되, 모르는 구체적 사실(메뉴/가격/영업시간 등)은 지어내지 말 것. "
         "일반적이고 안전한 설명 위주로.\n\n"
         f"장소 정보:\n{json.dumps(facts, ensure_ascii=False, indent=2)}\n\n"
-        "overview는 2~3문장 개요. features/highlights는 각각 짧은 구(명사구) 3~4개. tip은 방문 팁 1문장."
+        "overview는 1~2문장 개요(짧게). features는 짧은 구 3~4개. highlights는 2~6글자 명사구 키워드 정확히 3개. tip은 방문 팁 1문장."
     )
     try:
         r = httpx.post(
