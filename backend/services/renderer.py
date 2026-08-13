@@ -32,6 +32,7 @@ try:
 except ImportError:
     TTSEngine = None
 
+from backend.services.color_grade import apply_cinematic
 from backend.core.config import CANVAS_SIZE, FONT_PATH, TTS_SERVER_URL, TTS_VOICE_NAME
 from backend.core.logger import get_logger
 
@@ -806,7 +807,7 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
                    subtitle_font_size: int = 28, subtitle_font_color: str = "white",
                    watermark_text: str = "", watermark_opacity: float = 0.3,
                    default_slide_duration: float = 3.0, title_text: str = "",
-                   transition_duration: float = 0.7):
+                   transition_duration: float = 0.7, style_preset: str = "none"):
     """
     영상 렌더링 메인 함수
     slides: [{"image_filename": ..., "text": ...}, ...]
@@ -943,6 +944,14 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
                 logger.info(f"Intro title applied: '{title_text}' ({t_dur}s)")
             except Exception as title_err:
                 logger.warning(f"Intro title failed (skipping): {title_err}")
+
+        # ── 시네마틱 후반 (자동 색보정/질감, Phase A) ──────────────
+        if style_preset and style_preset != "none":
+            try:
+                combined = apply_cinematic(combined, style_preset, canvas_size)
+                logger.info(f"Style preset applied: {style_preset}")
+            except Exception as style_err:
+                logger.warning(f"Style preset failed (skipping): {style_err}")
 
         # ── BGM 믹싱 ───────────────────────────────────────────────
         if bgm_path and Path(bgm_path).exists():

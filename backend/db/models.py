@@ -38,6 +38,7 @@ class Project(Base):
     title_text              = Column(String(300), default="")       # 인트로 타이틀 (비우면 프로젝트명 사용)
     resolution              = Column(String(10), default="720p")    # 출력 해상도 '720p' | '1080p'
     transition_duration     = Column(Float, default=0.7)            # 전환 효과 길이(초)
+    style_preset            = Column(String(30), default="none")    # 자동 연출 스타일 'none'|'cinematic'|'vlog'|'documentary'|'trending' (Phase A)
 
     slides = relationship("Slide", back_populates="project",
                           cascade="all, delete-orphan",

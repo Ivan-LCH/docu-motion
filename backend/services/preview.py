@@ -27,6 +27,7 @@ from backend.db.models import Project, Slide
 from backend.services.renderer import (
     build_slide_clip, apply_transition, ASPECT_RATIO_MAP, split_sentences,
 )
+from backend.services.color_grade import apply_cinematic
 
 logger = get_logger(__name__)
 
@@ -128,6 +129,7 @@ def compute_hash(items: list, project: Project, force_tts: bool, include_neighbo
         "font_size": getattr(project, "subtitle_font_size", 28),
         "font_color": getattr(project, "subtitle_font_color", "white"),
         "default_slide_duration": getattr(project, "default_slide_duration", 3.0),
+        "style_preset": getattr(project, "style_preset", "none") or "none",
         "force_tts": bool(force_tts),
         "include_neighbors": bool(include_neighbors),
         "slides": [_HASHABLE_FIELDS(it, project.id) for it in items],
@@ -237,6 +239,7 @@ def render_slide_preview(project_id: str, slide_id: str,
         font_color  = getattr(project, "subtitle_font_color", "white") or "white"
         default_dur = getattr(project, "default_slide_duration", 3.0) or 3.0
         master_vol  = getattr(project, "tts_master_volume", 1.0) or 1.0
+        style_preset = getattr(project, "style_preset", "none") or "none"
 
         tts_engine = _load_tts_engine() if force_tts else None
 
@@ -268,6 +271,14 @@ def render_slide_preview(project_id: str, slide_id: str,
 
         combined = (concatenate_videoclips(clips, method="compose")
                     if len(clips) > 1 else clips[0])
+
+        # 시네마틱 후반 — canvas 풀사이즈에서 grade 후 다운스케일 (그레인 다운샘플링이 필름감)
+        if style_preset and style_preset != "none":
+            try:
+                combined = apply_cinematic(combined, style_preset, canvas)
+            except Exception as style_err:
+                logger.warning(f"Preview style failed (skipping): {style_err}")
+
         combined = combined.resize(PREVIEW_SCALE)
 
         tmp_out = cache.with_suffix(".tmp.mp4")

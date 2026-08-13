@@ -108,6 +108,7 @@ export interface Project {
   title_text: string
   resolution: string
   transition_duration: number
+  style_preset: string
 }
 
 export interface ProjectDetail extends Project {

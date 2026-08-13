@@ -137,6 +137,7 @@ class ProjectRead(BaseModel):
     title_text: str = ""
     resolution: str = "720p"
     transition_duration: float = 0.7
+    style_preset: str = "none"
 
     model_config = {"from_attributes": True}
 

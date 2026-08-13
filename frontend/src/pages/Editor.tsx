@@ -1097,7 +1097,7 @@ function GlobalSettingsModal({ project, projectId, slides, onClose, onSave, onPr
   ]
 
   // ── 즉시 적용 헬퍼 (비율/오디오) — 변경 즉시 저장 (7-1 통합, 동작 보존) ──
-  const saveImmediate = async (patch: { aspect_ratio?: string; bgm_volume?: number; tts_master_volume?: number; resolution?: string }) => {
+  const saveImmediate = async (patch: { aspect_ratio?: string; bgm_volume?: number; tts_master_volume?: number; resolution?: string; style_preset?: string }) => {
     try {
       await api.updateSettings(projectId, {
         bgm_volume: project.bgm_volume ?? 0.3,
@@ -1158,6 +1158,25 @@ function GlobalSettingsModal({ project, projectId, slides, onClose, onSave, onPr
             style={{ width: '100%' }}>
             <option value="720p">720p (HD, 빠른 렌더)</option>
             <option value="1080p">1080p (Full HD, 고화질)</option>
+          </select>
+        </div>
+
+        {/* ── 자동 연출: 스타일 (즉시 적용, Phase A) ── */}
+        <div style={{ marginBottom: '1rem' }}>
+          <label className="label">🎨 스타일 (자동 색감/질감)</label>
+          <select className="input" value={project.style_preset || 'none'}
+            onChange={async e => {
+              const val = e.target.value
+              onProjectUpdate({ style_preset: val })
+              await saveImmediate({ style_preset: val })
+              toast(`스타일: ${val}`, 'success')
+            }}
+            style={{ width: '100%' }}>
+            <option value="none">없음 (원본)</option>
+            <option value="cinematic">시네마틱 (틸-오렌지)</option>
+            <option value="vlog">브이로그 (밝고 선명)</option>
+            <option value="documentary">다큐 (중립/차분)</option>
+            <option value="trending">트렌딩 (따뜻한 빈티지)</option>
           </select>
         </div>
 

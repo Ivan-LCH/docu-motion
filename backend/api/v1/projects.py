@@ -17,6 +17,7 @@ from backend.db.models import Project, Slide
 from backend.schema.project import ProjectCreate, ProjectRead, ProjectDetail
 from backend.core.config import OUTPUTS_DIR, GOOGLE_API_KEY, JAMENDO_CLIENT_ID, GEMINI_MODEL
 from backend.core.logger import get_logger
+from backend.services.color_grade import VALID_STYLE_PRESETS
 
 
 # ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── #
@@ -56,6 +57,7 @@ def _enrich_project(project: Project) -> dict:
         "title_text": getattr(project, "title_text", "") or "",
         "resolution": getattr(project, "resolution", "720p") or "720p",
         "transition_duration": getattr(project, "transition_duration", 0.7) or 0.7,
+        "style_preset": getattr(project, "style_preset", "none") or "none",
     }
 
 
@@ -187,6 +189,7 @@ class ProjectSettingsUpdate(PydanticBase):
     title_text: Optional[str] = None
     resolution: Optional[str] = None
     transition_duration: Optional[float] = None
+    style_preset: Optional[str] = None
 
 
 
@@ -410,6 +413,10 @@ def update_project_settings(project_id: str, payload: ProjectSettingsUpdate, db:
         project.resolution = payload.resolution
     if payload.transition_duration is not None:
         project.transition_duration = payload.transition_duration
+    if payload.style_preset is not None:
+        if payload.style_preset not in VALID_STYLE_PRESETS:
+            raise HTTPException(status_code=400, detail=f"Invalid style_preset. Allowed: {VALID_STYLE_PRESETS}")
+        project.style_preset = payload.style_preset
     project.updated_at   = datetime.utcnow()
     db.commit()
     return _enrich_project(project)

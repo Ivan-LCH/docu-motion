@@ -82,6 +82,9 @@ def run_render(project_id: str):
         # 전환 효과 길이 (8-10)
         transition_duration = getattr(project, 'transition_duration', 0.7) or 0.7
 
+        # 자동 연출 스타일 (Phase A)
+        style_preset = getattr(project, 'style_preset', 'none') or 'none'
+
         # Master TTS Volume
         tts_master_volume = getattr(project, 'tts_master_volume', 1.0) or 1.0
 
@@ -149,6 +152,7 @@ def run_render(project_id: str):
             default_slide_duration=default_slide_duration,
             title_text=title_text,
             transition_duration=transition_duration,
+            style_preset=style_preset,
         )
 
         # 완료
