@@ -59,8 +59,8 @@ STYLE_PRESETS: dict = {
             "grain": 0.12,
             "light_leak": {"type": "warm_radial", "intensity": 0.22, "pos": "top_left"},
         },
-        "rhythm": None,    # Phase B: beat_sync, cut_pacing
-        "motion": None,    # Phase C: motion_intensity, parallax
+        "rhythm": {"beat_snap": True, "tolerance": 0.45, "min": 2.0, "max": 6.0},
+        "motion": {"intensity": 1.0, "variety": "calm", "ease": "smoothstep"},
         "structure": None,  # Phase D: intro_style, outro_style
     },
 
@@ -77,7 +77,9 @@ STYLE_PRESETS: dict = {
             "grain": 0.05,
             "light_leak": {"type": "none", "intensity": 0.0},
         },
-        "rhythm": None, "motion": None, "structure": None,
+        "rhythm": {"beat_snap": True, "tolerance": 0.35, "min": 2.0, "max": 5.0},
+        "motion": {"intensity": 1.3, "variety": "full", "ease": "smoothstep"},
+        "structure": None,
     },
 
     "documentary": {
@@ -93,7 +95,9 @@ STYLE_PRESETS: dict = {
             "grain": 0.08,
             "light_leak": {"type": "none", "intensity": 0.0},
         },
-        "rhythm": None, "motion": None, "structure": None,
+        "rhythm": {"beat_snap": False, "tolerance": 0.45, "min": 2.0, "max": 6.0},
+        "motion": {"intensity": 0.7, "variety": "calm", "ease": "smoothstep"},
+        "structure": None,
     },
 
     "trending": {
@@ -109,11 +113,46 @@ STYLE_PRESETS: dict = {
             "grain": 0.10,
             "light_leak": {"type": "warm_radial", "intensity": 0.35, "pos": "bottom_right"},
         },
-        "rhythm": None, "motion": None, "structure": None,
+        "rhythm": {"beat_snap": True, "tolerance": 0.40, "min": 1.8, "max": 5.0},
+        "motion": {"intensity": 1.5, "variety": "full", "ease": "smoothstep"},
+        "structure": None,
     },
 }
 
 VALID_STYLE_PRESETS = list(STYLE_PRESETS.keys())
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# 모션/리듬 설정 (Phase B)
+# ──────────────────────────────────────────────────────────────────────────
+# variety → 허용 모션 타입 튜플 (순환 순열용, 인접 중복 없음)
+MOTION_VARIETY = {
+    "calm": ("zoom_in", "zoom_out"),
+    "full": ("zoom_in", "pan_left", "zoom_out", "pan_right", "zoom_diag", "pan_up"),
+}
+
+
+def _resolve_motion_cfg(preset_name):
+    """프리셋의 motion 설정 dict 또는 None (preset none/unknown/motion 누락)."""
+    if not preset_name or preset_name == "none":
+        return None
+    cfg = STYLE_PRESETS.get(preset_name)
+    if not cfg:
+        return None
+    m = cfg.get("motion")
+    return m if isinstance(m, dict) else None
+
+
+def _resolve_rhythm_cfg(preset_name):
+    """프리셋의 rhythm 설정 dict 또는 None."""
+    if not preset_name or preset_name == "none":
+        return None
+    cfg = STYLE_PRESETS.get(preset_name)
+    if not cfg:
+        return None
+    r = cfg.get("rhythm")
+    return r if isinstance(r, dict) else None
+
 
 
 # ──────────────────────────────────────────────────────────────────────────

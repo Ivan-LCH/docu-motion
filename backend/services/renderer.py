@@ -32,7 +32,9 @@ try:
 except ImportError:
     TTSEngine = None
 
-from backend.services.color_grade import apply_cinematic
+from backend.services.color_grade import apply_cinematic, _resolve_motion_cfg, _resolve_rhythm_cfg, MOTION_VARIETY
+from backend.services.face_detect import detect_face_center
+from backend.services.beat_detect import detect_beats, nearest_beat
 from backend.core.config import CANVAS_SIZE, FONT_PATH, TTS_SERVER_URL, TTS_VOICE_NAME
 from backend.core.logger import get_logger
 
@@ -333,7 +335,9 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
                      font_size: int = FONT_SIZE, font_color: str = TEXT_COLOR,
                      default_slide_duration: float = 3.0,
                      tts_master_volume: float = 1.0,
-                     narration_segments: list = None):
+                     narration_segments: list = None,
+                     style_preset: str = "none",
+                     free_slide_duration: float = None):
     """
     단일 슬라이드 → MoviePy 클립 생성 (비디오 / 이미지 공용).
     render_project()의 슬라이드 루프 본문을 추출한 것으로, 풀 렌더와
@@ -490,8 +494,8 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
     use_tts_flag = bool(item.get('use_tts', 1))
 
     if not text:
-        # 텍스트가 없으면 기본 슬라이드 시간만큼 이미지 유지
-        total_duration = default_slide_duration
+        # 텍스트가 없으면 기본 슬라이드 시간만큼 이미지 유지 (B2 비트 스냅 시 free_slide_duration 사용)
+        total_duration = free_slide_duration if free_slide_duration is not None else default_slide_duration
     elif not use_tts_flag:
         # TTS 꺼짐 → 텍스트 길이에 비례해 시간 계산 (글자당 0.15초, 최소 3초)
         total_duration = max(3.0, len(text) * 0.15)
@@ -643,7 +647,7 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
         frame_paths = [p for p in frame_paths if Path(p).exists()]
 
         if frame_paths:
-            from moviepy.editor import ImageSequenceClip, ImageClip, concatenate_videoclips
+            from moviepy.editor import ImageSequenceClip  # ImageClip/concatenate_videoclips 은 모듈 top import 재사용 (local 재 import 시 image 분기에서 UnboundLocalError)
             # 여정이 슬라이드 길이의 85% 시점에 완주하도록 fps를 슬라이드 길이에 맞춤.
             # (기존: 고정 6fps라 나레이션이 짧으면 도착 전에 장면 전환되는 문제)
             _n = len(frame_paths)
@@ -737,15 +741,42 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
             base_img = raw_img_clip.resize((int(iw * cover_scale), int(ih * cover_scale)))
             kb_area = (cw, ch)
 
-        # 짝수: 줌인, 홀수: 줌아웃 — 강도에 비례 (max ±13%)
-        if ken_burns > 0:
-            max_zoom = 0.13 * kb_intensity
-            kb_start = 1.0
-            kb_end = (1.0 + max_zoom) if (i % 2 == 0) else (1.0 - max_zoom * 0.85)
+        # ── 모션 설정 (Phase B) ──────────────────────────────────────────
+        # motion_cfg: 스타일 프리셋의 모션 설정 (preset none → None)
+        # face_center: (fx, fy) ∈ [0,1]², motion_cfg 있을 때만 감지 (얼굴 없으면 None)
+        motion_cfg = _resolve_motion_cfg(style_preset)
+        face_center = detect_face_center(str(img_path)) if motion_cfg else None
+        motion_active = (ken_burns > 0) and (motion_cfg is not None)
+
+        # 줌 강도: 슬라이드 ken_burns × 프리셋 intensity 곱. preset none → 1.0 (기존 동일)
+        scale_mul = float(motion_cfg.get("intensity", 1.0)) if motion_cfg else 1.0
+        max_zoom = 0.13 * kb_intensity * scale_mul   # ±최대 비율
+
+        # 모션 타입 결정 (순환 순열 — 인접 중복 회피). 백호환 경로는 None.
+        if motion_active:
+            variety = motion_cfg.get("variety", "calm")
+            allowed = MOTION_VARIETY.get(variety, MOTION_VARIETY["calm"])
+            motion_type = allowed[i % len(allowed)]
         else:
-            kb_start = kb_end = 1.0
+            motion_type = None
+            kb_start = 1.0
+            kb_end = (1.0 + max_zoom) if (ken_burns > 0 and i % 2 == 0) else \
+                     ((1.0 - max_zoom * 0.85) if ken_burns > 0 else 1.0)
+
+        def _biased_center(w, h, view_w, view_h):
+            """얼굴 바이어스 크롭 중심 (px). face_center 없으면 정중앙."""
+            cx, cy = w * 0.5, h * 0.5
+            if face_center is not None:
+                fxn, fyn = face_center
+                BIAS = 0.6
+                cx = (1 - BIAS) * (w * 0.5) + BIAS * (fxn * w)
+                cy = (1 - BIAS) * (h * 0.5) + BIAS * (fyn * h)
+            left = min(max(cx - view_w * 0.5, 0.0), max(w - view_w, 0.0))
+            top  = min(max(cy - view_h * 0.5, 0.0), max(h - view_h, 0.0))
+            return left, top
 
         def _make_kb(clip, start_scale, end_scale, dur, area):
+            # 백호환 선형 줌 (preset none + ken_burns>0). 정중앙 크롭, 이징 無.
             def make_frame(t):
                 from PIL import Image as PILImage
                 import numpy as np
@@ -765,20 +796,67 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
             from moviepy.editor import VideoClip
             return VideoClip(make_frame, duration=dur).set_fps(24)
 
+        def _make_motion_clip(clip, mt, dur, area, max_z):
+            # Phase B 모션 프리셋: smoothstep 이징 + 얼굴 바이어스 + 다축 팬/줌.
+            from PIL import Image as PILImage
+            import numpy as np
+            from moviepy.editor import VideoClip
+            target_w, target_h = area
+            pan_delta = 0.06   # 팬 이동폭 (프레임 대비 6%)
+
+            def make_frame(t):
+                p = t / dur if dur > 0 else 0.0
+                e = p * p * (3 - 2 * p)   # smoothstep
+                frame = clip.get_frame(0)
+                h, w = frame.shape[:2]
+
+                if mt == "zoom_in":
+                    scale = 1.0 + max_z * e
+                    view_w, view_h = target_w / scale, target_h / scale
+                    left, top = _biased_center(w, h, view_w, view_h)
+                elif mt == "zoom_out":
+                    scale = (1.0 + max_z) - max_z * e
+                    view_w, view_h = target_w / scale, target_h / scale
+                    left, top = _biased_center(w, h, view_w, view_h)
+                elif mt == "zoom_diag":
+                    scale = 1.0 + max_z * e
+                    view_w, view_h = target_w / scale, target_h / scale
+                    left, top = _biased_center(w, h, view_w, view_h)
+                    left = min(max(left + (pan_delta * w) * (0.5 - e), 0.0), max(w - view_w, 0.0))
+                    top  = min(max(top + (pan_delta * h) * (0.5 - e), 0.0), max(h - view_h, 0.0))
+                else:  # pan_left / pan_right / pan_up — 약간 줌인 고정 후 단축 이동
+                    scale = 1.0 + max_z * 0.5
+                    view_w, view_h = target_w / scale, target_h / scale
+                    left, top = _biased_center(w, h, view_w, view_h)
+                    if mt == "pan_left":
+                        left = min(max(left + (pan_delta * w) * (0.5 - e), 0.0), max(w - view_w, 0.0))
+                    elif mt == "pan_right":
+                        left = min(max(left - (pan_delta * w) * (0.5 - e), 0.0), max(w - view_w, 0.0))
+                    elif mt == "pan_up":
+                        top = min(max(top + (pan_delta * h) * (0.5 - e), 0.0), max(h - view_h, 0.0))
+
+                cropped = PILImage.fromarray(frame).crop(
+                    (left, top, left + view_w, top + view_h)
+                )
+                return np.array(cropped.resize((target_w, target_h), PILImage.LANCZOS))
+            return VideoClip(make_frame, duration=dur).set_fps(24)
+
         if ken_burns <= 0:
             # 정적 이미지: 한 번만 처리해서 ImageClip으로 (성능 최적화)
+            # motion_cfg 있으면 얼굴 바이어스 중앙 크롭, 없으면 정중앙 (백호환).
             import numpy as _np2
             target_w, target_h = kb_area
             src_frame = base_img.get_frame(0)
             sh, sw = src_frame.shape[:2]
-            crop_left = (sw - target_w) / 2.0
-            crop_top  = (sh - target_h) / 2.0
+            crop_left, crop_top = _biased_center(sw, sh, target_w, target_h)
             static_pil = Image.fromarray(src_frame).crop(
                 (crop_left, crop_top, crop_left + target_w, crop_top + target_h)
             )
             if static_pil.size != (target_w, target_h):
                 static_pil = static_pil.resize((target_w, target_h), Image.LANCZOS)
             img_clip = ImageClip(_np2.array(static_pil)).set_duration(total_duration)
+        elif motion_active:
+            img_clip = _make_motion_clip(base_img, motion_type, total_duration, kb_area, max_zoom)
         else:
             img_clip = _make_kb(base_img, kb_start, kb_end, total_duration, kb_area)
 
@@ -854,10 +932,69 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
                 default_slide_duration=default_slide_duration,
                 tts_master_volume=tts_master_volume,
                 narration_segments=segs,
+                style_preset=style_preset,
             )
             if clip is not None:
                 final_clips.append(clip)
                 slide_narration_segments.append(segs)
+
+
+        # ── B2: 비트 스냅 컷 ────────────────────────────────────────────────
+        # 자유 길이(텍스트 없는) 이미지 슬라이드의 종료 시점을 BGM 비트에 정렬.
+        # TTS/텍스트/비디오 슬라이드는 길이 불변 (나레이션/자막 박자 보존).
+        # transition overlap 은 transition 타입+duration 의 함수(crossfade=duration, else 0)이므로
+        # apply_transition 전에 글로벌 clock 을 단일 패스로 계산 가능.
+        try:
+            rhythm_cfg = _resolve_rhythm_cfg(style_preset)
+            if (rhythm_cfg and rhythm_cfg.get("beat_snap") and bgm_path
+                    and len(final_clips) > 0):
+                beats = detect_beats(bgm_path)
+                if beats.size > 0:
+                    tol  = float(rhythm_cfg.get("tolerance", 0.45))
+                    dmin = float(rhythm_cfg.get("min", 2.0))
+                    dmax = float(rhythm_cfg.get("max", 6.0))
+                    transitions = [item.get('transition', 'none') for item in slides]
+                    _ov = lambda t: transition_duration if t == 'crossfade' else 0.0
+
+                    clock = 0.0
+                    free_durs = {}
+                    for idx in range(len(final_clips)):
+                        dur = final_clips[idx].duration or 0.0
+                        if idx > 0:
+                            clock -= _ov(transitions[idx] if idx < len(transitions) else 'none')
+                        s = slides[idx]
+                        # 자유 길이 = 텍스트 없는 이미지 슬라이드만
+                        is_free = (not s.get('text')) and bool(s.get('image_filename')) \
+                                  and not s.get('video_filename')
+                        if is_free:
+                            target = nearest_beat(beats, clock + dur, tol)
+                            if target is not None:
+                                new_dur = max(dmin, min(dmax, target - clock))
+                                if new_dur > 0 and abs(new_dur - dur) > 0.05:
+                                    free_durs[idx] = new_dur
+                                    dur = new_dur
+                        clock += dur
+
+                    # 스냅된 클립만 rebuild (TTS 無 → 비용 저렴)
+                    for idx, nd in free_durs.items():
+                        segs = slide_narration_segments[idx] if idx < len(slide_narration_segments) else []
+                        nb = build_slide_clip(
+                            slides[idx], idx, assets_dir, temp_dir, canvas_size,
+                            tts_engine=tts_engine,
+                            font_size=_font_size, font_color=_font_color,
+                            default_slide_duration=default_slide_duration,
+                            tts_master_volume=tts_master_volume,
+                            narration_segments=segs,
+                            style_preset=style_preset,
+                            free_slide_duration=nd,
+                        )
+                        if nb is not None:
+                            final_clips[idx] = nb
+                    if free_durs:
+                        logger.info(f"B2 beat-snap: {len(free_durs)}/{len(final_clips)} "
+                                    f"free slides snapped to beats (clock end={clock:.2f}s)")
+        except Exception as _b2_err:
+            logger.warning(f"B2 beat-snap skipped (using unsnapped clips): {_b2_err}")
 
 
         # 클립 인코딩 - TTS 완료 직후 GPU 메모리 해제 후 NVENC 인코딩

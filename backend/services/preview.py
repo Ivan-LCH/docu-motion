@@ -255,6 +255,7 @@ def render_slide_preview(project_id: str, slide_id: str,
                 font_size=font_size, font_color=font_color,
                 default_slide_duration=default_dur,
                 tts_master_volume=master_vol,
+                style_preset=style_preset,
             )
             if clip is not None:
                 clips.append(clip)

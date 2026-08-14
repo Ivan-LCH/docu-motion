@@ -23,3 +23,7 @@ httpx==0.27.0
 
 # Map (route/place slides) — OSM static map rendering
 staticmap==0.5.7
+
+# Face detection (auto-style face-zoom, Phase B). Pin <5: 5.x headless wheel drops bundled haarcascades.
+opencv-python-headless==4.10.0.84
+
