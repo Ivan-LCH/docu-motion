@@ -35,7 +35,7 @@ except ImportError:
 from backend.services.color_grade import apply_cinematic, _resolve_motion_cfg, _resolve_rhythm_cfg, MOTION_VARIETY
 from backend.services.face_detect import detect_face_center
 from backend.services.beat_detect import detect_beats, nearest_beat
-from backend.core.config import CANVAS_SIZE, FONT_PATH, TTS_SERVER_URL, TTS_VOICE_NAME
+from backend.core.config import CANVAS_SIZE, FONT_PATH, FONT_BOLD_PATH, TTS_SERVER_URL, TTS_VOICE_NAME
 from backend.core.logger import get_logger
 
 # ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── #
@@ -414,7 +414,7 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
 
                 # TextClip 자막
                 tc = TextClip(
-                    txt=sub_txt, font=FONT_PATH, fontsize=_font_size,
+                    txt=sub_txt, font=FONT_BOLD_PATH, fontsize=_font_size,
                     color=_font_color, stroke_color='black', stroke_width=2,
                     size=(canvas_size[0] - 100, None),
                     method='caption', align='center', interline=8
@@ -509,7 +509,7 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
             dur        = char_ratio * (total_duration - 0.2)
             txt_clip = TextClip(
                 txt       = s,
-                font      = FONT_PATH,
+                font      = FONT_BOLD_PATH,
                 fontsize  = _font_size,
                 color     = _font_color,
                 stroke_color = 'black',
@@ -607,7 +607,7 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
         BOTTOM_MARGIN = 30
         for sent_idx, (s, s_dur) in enumerate(zip(sentences, sent_durations)):
             txt_clip = TextClip(
-                txt=s, font=FONT_PATH, fontsize=_font_size,
+                txt=s, font=FONT_BOLD_PATH, fontsize=_font_size,
                 color=_font_color, stroke_color='black', stroke_width=2,
                 size=(canvas_size[0] - 100, None),
                 method='caption', align='center', interline=8

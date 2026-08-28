@@ -130,7 +130,7 @@ class ProjectRead(BaseModel):
     tts_master_volume: float = 1.0
     default_transition: str = "crossfade"
     default_slide_duration: float = 3.0
-    subtitle_font_size: int = 28
+    subtitle_font_size: int = 30
     subtitle_font_color: str = "white"
     watermark_text: str = ""
     watermark_opacity: float = 0.3

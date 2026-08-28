@@ -59,4 +59,7 @@ VERSION  = "5.0.0 (FastAPI)"
 # ─────────────────────────────────────────────
 CANVAS_SIZE = (1280, 720)
 FONT_PATH   = str(RESOURCES_DIR / "font.ttf")
-FONT_SIZE   = 28
+# 자막용 굵은 폰트 (작은 크기에서도 가독성 확보). 파일 없으면 기본 폰트로 폴백.
+_bold = RESOURCES_DIR / "NanumGothic-ExtraBold.ttf"
+FONT_BOLD_PATH = str(_bold) if _bold.exists() else FONT_PATH
+FONT_SIZE   = 30

@@ -126,7 +126,7 @@ def compute_hash(items: list, project: Project, force_tts: bool, include_neighbo
     payload = {
         "aspect": getattr(project, "aspect_ratio", "16:9"),
         "tts_master_volume": getattr(project, "tts_master_volume", 1.0),
-        "font_size": getattr(project, "subtitle_font_size", 28),
+        "font_size": getattr(project, "subtitle_font_size", 30),
         "font_color": getattr(project, "subtitle_font_color", "white"),
         "default_slide_duration": getattr(project, "default_slide_duration", 3.0),
         "style_preset": getattr(project, "style_preset", "none") or "none",
@@ -235,7 +235,7 @@ def render_slide_preview(project_id: str, slide_id: str,
         assets    = OUTPUTS_DIR / project_id / "assets"
         temp_dir  = tts_cache_dir(project_id)
 
-        font_size   = getattr(project, "subtitle_font_size", 28) or 28
+        font_size   = getattr(project, "subtitle_font_size", 30) or 28
         font_color  = getattr(project, "subtitle_font_color", "white") or "white"
         default_dur = getattr(project, "default_slide_duration", 3.0) or 3.0
         master_vol  = getattr(project, "tts_master_volume", 1.0) or 1.0

@@ -31,7 +31,7 @@ class Project(Base):
     # Global defaults (6-10)
     default_transition      = Column(String(50), default="crossfade")    # 전역 전환 효과
     default_slide_duration  = Column(Float, default=3.0)            # 텍스트 없는 슬라이드 기본 시간(초)
-    subtitle_font_size      = Column(Integer, default=28)           # 자막 폰트 크기
+    subtitle_font_size      = Column(Integer, default=30)           # 자막 폰트 크기
     subtitle_font_color     = Column(String(20), default="white")   # 자막 폰트 색상
     watermark_text          = Column(String(300), default="")       # 워터마크 텍스트
     watermark_opacity       = Column(Float, default=0.3)            # 워터마크 불투명도

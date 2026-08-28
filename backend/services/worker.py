@@ -125,7 +125,7 @@ def run_render(project_id: str):
                 tts.unload_model()
 
         # 전역 설정 (6-10)
-        subtitle_font_size = getattr(project, 'subtitle_font_size', 28) or 28
+        subtitle_font_size = getattr(project, 'subtitle_font_size', 30) or 30
         subtitle_font_color = getattr(project, 'subtitle_font_color', 'white') or 'white'
         watermark_text = getattr(project, 'watermark_text', '') or ''
         watermark_opacity = getattr(project, 'watermark_opacity', 0.3) or 0.3

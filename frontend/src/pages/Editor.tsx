@@ -1015,7 +1015,7 @@ function GlobalSettingsModal({ project, projectId, slides, onClose, onSave, onPr
   const [defaultTransition, setDefaultTransition] = useState(project.default_transition || 'none')
   const [transitionDuration, setTransitionDuration] = useState(project.transition_duration ?? 0.7)
   const [defaultSlideDuration, setDefaultSlideDuration] = useState(project.default_slide_duration || 3.0)
-  const [subtitleFontSize, setSubtitleFontSize] = useState(project.subtitle_font_size || 28)
+  const [subtitleFontSize, setSubtitleFontSize] = useState(project.subtitle_font_size || 30)
   const [subtitleFontColor, setSubtitleFontColor] = useState(project.subtitle_font_color || 'white')
   const [watermarkText, setWatermarkText] = useState(project.watermark_text || '')
   const [watermarkOpacity, setWatermarkOpacity] = useState(project.watermark_opacity ?? 0.3)

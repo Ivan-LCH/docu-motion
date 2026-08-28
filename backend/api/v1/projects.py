@@ -50,7 +50,7 @@ def _enrich_project(project: Project) -> dict:
         "tts_master_volume": getattr(project, "tts_master_volume", 1.0) or 1.0,
         "default_transition": getattr(project, "default_transition", "none") or "none",
         "default_slide_duration": getattr(project, "default_slide_duration", 3.0) or 3.0,
-        "subtitle_font_size": getattr(project, "subtitle_font_size", 28) or 28,
+        "subtitle_font_size": getattr(project, "subtitle_font_size", 30) or 30,
         "subtitle_font_color": getattr(project, "subtitle_font_color", "white") or "white",
         "watermark_text": getattr(project, "watermark_text", "") or "",
         "watermark_opacity": getattr(project, "watermark_opacity", 0.3) or 0.3,
