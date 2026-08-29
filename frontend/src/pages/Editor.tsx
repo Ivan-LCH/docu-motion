@@ -1052,20 +1052,44 @@ function GlobalSettingsModal({ project, projectId, slides, onClose, onSave, onPr
   const [jsonText, setJsonText] = useState('')
   const [scriptText, setScriptText] = useState('')
   const [aiAllBusy, setAiAllBusy] = useState(false)
+  const [aiTone, setAiTone] = useState<'documentary' | 'vlog'>('documentary')   // F2: 나레이션 톤
+  const [aiProgress, setAiProgress] = useState<{ done: number; total: number } | null>(null)
   const [splitBusy, setSplitBusy] = useState(false)
+  const aiPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  useEffect(() => () => { if (aiPollRef.current) clearInterval(aiPollRef.current) }, [])
 
-  // 8-5: 전체 슬라이드 AI 대사 일괄 생성 (비어있는 슬라이드만)
+  // F2: 전체 슬라이드 AI 대사 일괄 생성 (비동기 + 진행률 폴링, 빈 슬라이드만)
   const handleGenerateAll = async () => {
     if (aiAllBusy) return
     setAiAllBusy(true)
+    setAiProgress(null)
     try {
-      const r = await api.generateAllNarrations(projectId, false)
-      const fresh = await api.getSlides(projectId)
-      onApplySlides(fresh)
-      toast(`AI 대사 ${r.generated}개 생성${r.skipped ? ` (기존 대사 ${r.skipped}개 유지)` : ''}${r.failed ? `, 실패 ${r.failed}개` : ''}`, r.failed ? 'error' : 'success')
+      const r = await api.generateAllNarrations(projectId, false, aiTone)
+      if (r.status === 'nothing_to_do') {
+        toast('생성할 빈 슬라이드가 없습니다', 'info')
+        setAiAllBusy(false)
+        return
+      }
+      aiPollRef.current = setInterval(async () => {
+        try {
+          const st = await api.getNarrationStatus(projectId)
+          if (st.total) setAiProgress({ done: st.done ?? 0, total: st.total })
+          if (st.status === 'done') {
+            if (aiPollRef.current) clearInterval(aiPollRef.current)
+            const fresh = await api.getSlides(projectId)
+            onApplySlides(fresh)
+            const failed = st.failed ?? 0
+            toast(`AI 대사 ${st.done ?? 0}개 생성${failed ? `, 실패 ${failed}개 (API 키/네트워크 확인)` : ''}`, failed ? 'error' : 'success')
+            setAiAllBusy(false)
+          } else if (st.status === 'error') {
+            if (aiPollRef.current) clearInterval(aiPollRef.current)
+            toast(st.message || 'AI 대사 생성 실패', 'error')
+            setAiAllBusy(false)
+          }
+        } catch { /* 일시 오류 — 다음 틱 재시도 */ }
+      }, 1000)
     } catch (e: unknown) {
       toast(e instanceof Error ? e.message : 'AI 대사 생성 실패', 'error')
-    } finally {
       setAiAllBusy(false)
     }
   }
@@ -1398,10 +1422,28 @@ function GlobalSettingsModal({ project, projectId, slides, onClose, onSave, onPr
           <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', margin: '0 0 0.4rem' }}>
             사진을 보고 AI가 대사 초안을 작성하거나, 완성된 스크립트를 슬라이드에 자동 배분합니다.
           </p>
+          <div style={{ display: 'flex', gap: '0.3rem', marginBottom: '0.4rem' }}>
+            {(['documentary', 'vlog'] as const).map(t => (
+              <button key={t} className="btn" style={{
+                flex: 1, fontSize: '0.75rem', padding: '0.3rem 0',
+                background: aiTone === t ? 'var(--accent)' : undefined,
+                color: aiTone === t ? '#fff' : undefined }}
+                onClick={() => setAiTone(t)} disabled={aiAllBusy}>
+                {t === 'documentary' ? '🎙 다큐멘터리' : '📹 브이로그'}
+              </button>
+            ))}
+          </div>
           <button className="btn btn-ghost" style={{ width: '100%', fontSize: '0.82rem', marginBottom: '0.6rem' }}
             onClick={handleGenerateAll} disabled={aiAllBusy || slides.length === 0}>
-            {aiAllBusy ? '⏳ 생성 중... (슬라이드당 수 초)' : '🖼️ 사진 보고 전체 대사 생성 (빈 슬라이드만)'}
+            {aiAllBusy
+              ? `⏳ 생성 중...${aiProgress ? ` (${aiProgress.done}/${aiProgress.total})` : ''}`
+              : '🖼️ 사진 보고 전체 대사 생성 (빈 슬라이드만)'}
           </button>
+          {aiAllBusy && aiProgress && (
+            <div style={{ height: 5, background: 'var(--bg-secondary)', borderRadius: 3, overflow: 'hidden', marginBottom: '0.6rem' }}>
+              <div style={{ height: '100%', width: `${(aiProgress.done / Math.max(aiProgress.total, 1)) * 100}%`, background: 'var(--accent)', transition: 'width 0.5s' }} />
+            </div>
+          )}
           <textarea className="textarea" rows={4} value={scriptText} onChange={e => setScriptText(e.target.value)}
             placeholder="완성된 스크립트를 붙여넣으면 슬라이드 순서대로 AI가 나눠줍니다..."
             style={{ width: '100%', fontSize: '0.82rem' }} />

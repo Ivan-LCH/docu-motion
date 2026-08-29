@@ -30,30 +30,37 @@ _MIME_BY_SUFFIX = {
 
 
 def _post_gemini(parts: list, generation_config: Optional[dict] = None) -> Optional[str]:
-    """Gemini generateContent 호출 → 텍스트. 실패 시 None."""
+    """Gemini generateContent 호출 → 텍스트. 실패 시 None. 429은 5초 후 1회 재시도."""
     if not GOOGLE_API_KEY:
         return None
-    try:
-        r = httpx.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GOOGLE_API_KEY}",
-            json={
-                "contents": [{"parts": parts}],
-                "generationConfig": generation_config or {"temperature": 0.7},
-            },
-            timeout=_TIMEOUT,
-        )
-        if r.status_code != 200:
-            logger.warning(f"Gemini 응답 {r.status_code}: {r.text[:160]}")
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GOOGLE_API_KEY}"
+    payload = {
+        "contents": [{"parts": parts}],
+        "generationConfig": generation_config or {"temperature": 0.7},
+    }
+    for attempt in range(2):
+        try:
+            r = httpx.post(url, json=payload, timeout=_TIMEOUT)
+            if r.status_code == 429 and attempt == 0:
+                logger.warning("Gemini 429 (rate limit) — 5초 후 재시도")
+                import time
+                time.sleep(5)
+                continue
+            if r.status_code != 200:
+                logger.warning(f"Gemini 응답 {r.status_code}: {r.text[:160]}")
+                return None
+            return r.json()["candidates"][0]["content"]["parts"][0]["text"]
+        except Exception as e:
+            logger.warning(f"Gemini 호출 실패: {e}")
             return None
-        return r.json()["candidates"][0]["content"]["parts"][0]["text"]
-    except Exception as e:
-        logger.warning(f"Gemini 호출 실패: {e}")
-        return None
+    return None
 
 
-def generate_narration_for_image(image_path: Path, project_title: str = "") -> str:
+def generate_narration_for_image(image_path: Path, project_title: str = "",
+                                 tone: str = "documentary") -> str:
     """
     슬라이드 이미지 1장 → 한국어 나레이션 초안 (2~3문장).
+    tone: "documentary"(기본, 기존 동작) | "vlog"(캐주얼 1인칭)
     실패 시 빈 문자열.
     """
     if not image_path.exists():
@@ -62,13 +69,17 @@ def generate_narration_for_image(image_path: Path, project_title: str = "") -> s
     b64 = base64.b64encode(image_path.read_bytes()).decode("ascii")
 
     title_hint = f"영상 주제는 '{project_title}'이다. " if project_title else ""
+    if tone == "vlog":
+        tone_rule = "- 밝고 캐주얼한 브이로그 톤, 친구에게 말하듯 1인칭 ('~했어요', '~더라고요')"
+    else:
+        tone_rule = "- 구어체, 담담하고 따뜻한 다큐멘터리 톤"
     prompt = (
         "이 사진은 사진 슬라이쇼 영상의 한 장면이다. "
         f"{title_hint}"
         "이 장면 위에 얹을 나레이션(낭독용 대사)을 한국어로 2~3문장 작성하라.\n"
         "규칙:\n"
         "- 사진에 실제로 보이는 것만 묘사할 것 (장소명/날짜/인물 이름 등 보이지 않는 사실 지어내기 금지)\n"
-        "- 구어체, 담담하고 따뜻한 다큐멘터리 톤\n"
+        f"{tone_rule}\n"
         "- '사진에는', '이미지에는' 같은 메타 표현 금지, 장면을 직접 말할 것\n"
         "- 문장만 출력 (따옴표/머리말/설명 없이)"
     )

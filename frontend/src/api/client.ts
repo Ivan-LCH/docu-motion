@@ -208,9 +208,12 @@ export const api = {
   // AI 나레이션 (8-5/8-6)
   generateNarration: (projectId: string, slideId: string) =>
     request<Slide>('POST', `/projects/${projectId}/slides/${slideId}/narration`),
-  generateAllNarrations: (projectId: string, overwrite = false) =>
-    request<{ generated: number; failed: number; skipped: number }>(
-      'POST', `/projects/${projectId}/narration/generate-all`, { overwrite }),
+  generateAllNarrations: (projectId: string, overwrite = false, tone: 'documentary' | 'vlog' = 'documentary') =>
+    request<{ status: string; total?: number; skipped?: number }>(
+      'POST', `/projects/${projectId}/narration/generate-all`, { overwrite, tone }),
+  getNarrationStatus: (projectId: string) =>
+    request<{ status: string; progress: number; done?: number; total?: number; failed?: number; message?: string }>(
+      'GET', `/projects/${projectId}/narration/generate-all/status`),
   splitScript: (projectId: string, script: string) =>
     request<{ ok: boolean; assigned: number }>(
       'POST', `/projects/${projectId}/narration/split`, { script }),
