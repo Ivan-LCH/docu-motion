@@ -150,6 +150,23 @@ export interface OrganizeSuggestions {
   routes: RouteSuggestion[]
 }
 
+// 스마트 사진 선별 (Photo-Vlog F1)
+export interface CurationSuggestion {
+  slide_id: string
+  action: 'duplicate' | 'blurry' | 'dark'
+  reason: string
+  cluster_id: number
+  is_best: boolean
+  image_filename: string
+  label: string
+}
+export interface CurationStatus {
+  status: 'running' | 'done' | 'error'
+  progress: number
+  message?: string
+  result?: { suggestions: CurationSuggestion[]; total: number; clustered: number }
+}
+
 export interface BgmHit {
   id: number
   title: string
@@ -313,4 +330,13 @@ export const api = {
     projectId: string,
     payload: { after_slide_id: string; origin: { lat: number; lng: number; name?: string }; destination: { lat: number; lng: number; name?: string }; profile?: string },
   ) => request<{ ok: boolean; slide_id: string; label: string }>('POST', `/projects/${projectId}/organize/insert-route`, payload),
+
+  // 스마트 사진 선별 (Photo-Vlog F1)
+  runCuration: (projectId: string) =>
+    request<{ status: string; total: number }>('POST', `/projects/${projectId}/curation/run`),
+  getCurationStatus: (projectId: string) =>
+    request<CurationStatus>('GET', `/projects/${projectId}/curation/status`),
+  applyCuration: (projectId: string, slideIds: string[]) =>
+    request<{ ok: boolean; deleted: number; remaining: number }>(
+      'POST', `/projects/${projectId}/curation/apply`, { slide_ids: slideIds }),
 }

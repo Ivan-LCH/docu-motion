@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { api, Slide, ProjectDetail, BgmHit, PhotosSortOrder, parseSlideMeta, RouteMeta, SavedLocation, GeocodeResult, OrganizeSuggestions, RouteSuggestion } from '../api/client'
+import { api, Slide, ProjectDetail, BgmHit, PhotosSortOrder, parseSlideMeta, RouteMeta, SavedLocation, GeocodeResult, OrganizeSuggestions, RouteSuggestion, CurationSuggestion } from '../api/client'
 import { useToast } from '../components/ToastContext'
 import GoogleAuthSection, { extractCodeFromUrl } from '../components/GoogleAuthSection'
 
@@ -2760,6 +2760,12 @@ export default function Editor() {
   const [dropIdx, setDropIdx] = useState<number | null>(null)
   const [activeSlideIdx, setActiveSlideIdx] = useState<number | null>(null)
   const [organizeSug, setOrganizeSug] = useState<OrganizeSuggestions | null>(null)   // EXIF 자동 구성 제안 (F3)
+  const [curating, setCurating] = useState(false)                                    // 스마트 선별 진행 중 (F1)
+  const [curProgress, setCurProgress] = useState(0)
+  const [curSuggestions, setCurSuggestions] = useState<CurationSuggestion[] | null>(null)
+  const [curChecked, setCurChecked] = useState<Set<string>>(new Set())
+  const [applyingCuration, setApplyingCuration] = useState(false)
+  const curPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -2967,6 +2973,54 @@ export default function Editor() {
       else next.add(id)
       return next
     })
+  }
+
+  // ── 스마트 사진 선별 (F1) ──
+  const stopCurationPoll = () => {
+    if (curPollRef.current) { clearInterval(curPollRef.current); curPollRef.current = null }
+  }
+  useEffect(() => stopCurationPoll, [])  // 언마운트 시 폴링 정리
+
+  const handleRunCuration = async () => {
+    if (!projectId) return
+    setCurating(true); setCurProgress(0); setCurSuggestions(null)
+    try {
+      await api.runCuration(projectId)
+      curPollRef.current = setInterval(async () => {
+        try {
+          const st = await api.getCurationStatus(projectId)
+          setCurProgress(st.progress ?? 0)
+          if (st.status === 'done') {
+            stopCurationPoll(); setCurating(false)
+            const sugs = st.result?.suggestions ?? []
+            if (sugs.length === 0) { toast('제외할 사진이 없습니다 — 전부 좋은 컷이에요!', 'success'); return }
+            setCurSuggestions(sugs)
+            setCurChecked(new Set(sugs.map(s => s.slide_id)))  // 기본 전체 체크
+          } else if (st.status === 'error') {
+            stopCurationPoll(); setCurating(false)
+            toast(st.message || '선별 분석 실패', 'error')
+          }
+        } catch { /* 404 등 일시 오류 — 다음 틱 재시도 */ }
+      }, 1000)
+    } catch (err) {
+      setCurating(false)
+      toast(err instanceof Error ? err.message : '선별 시작 실패', 'error')
+    }
+  }
+
+  const handleApplyCuration = async () => {
+    if (!projectId || curChecked.size === 0) { setCurSuggestions(null); return }
+    setApplyingCuration(true)
+    try {
+      const r = await api.applyCuration(projectId, Array.from(curChecked))
+      toast(`${r.deleted}장 제외 완료 (${r.remaining}장 남음)`, 'success')
+      setCurSuggestions(null)
+      await loadProject()
+    } catch (err) {
+      toast(err instanceof Error ? err.message : '적용 실패', 'error')
+    } finally {
+      setApplyingCuration(false)
+    }
   }
 
   // Drag & Drop Handlers
@@ -3285,6 +3339,25 @@ export default function Editor() {
 
               <div style={{ flex: 1 }} />
 
+              {!curating && (
+                <button
+                  className="btn"
+                  onClick={handleRunCuration}
+                  disabled={uploading || slides.every(s => s.slide_type !== 'image')}
+                  style={{ fontSize: '0.8rem' }}
+                >
+                  ✨ 스마트 선별
+                </button>
+              )}
+              {curating && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                  선별 분석 중… {Math.round(curProgress)}%
+                  <div style={{ width: 100, height: 6, background: 'var(--bg-secondary)', borderRadius: 3, overflow: 'hidden' }}>
+                    <div style={{ width: `${curProgress}%`, height: '100%', background: 'var(--accent)', transition: 'width 0.5s' }} />
+                  </div>
+                </div>
+              )}
+
               {selectedSlideIds.size >= 2 && selectedSlideIds.size <= 4 && (
                 <>
                   <select
@@ -3517,6 +3590,45 @@ export default function Editor() {
           slide={previewVideoSlide}
           onClose={() => setPreviewVideoSlide(null)}
         />
+      )}
+
+      {/* ── 스마트 선별 제안 모달 (F1) ── */}
+      {curSuggestions && projectId && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={() => setCurSuggestions(null)}>
+          <div style={{ background: 'var(--bg-primary)', borderRadius: 12, padding: '1.5rem', width: 'min(680px, 92vw)', maxHeight: '82vh', display: 'flex', flexDirection: 'column' }} onClick={e => e.stopPropagation()}>
+            <h3 style={{ margin: 0, marginBottom: '0.25rem' }}>✨ 스마트 선별 제안</h3>
+            <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', margin: '0 0 1rem' }}>
+              유사 장면·흐림·어둠 컷 {curSuggestions.length}장을 제외할 수 있어요. 체크를 해제하면 남깁니다.
+            </p>
+            <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+              {curSuggestions.map(sug => (
+                <label key={sug.slide_id} style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.5rem', border: '1px solid var(--border)', borderRadius: 8, cursor: 'pointer' }}>
+                  <input type="checkbox" checked={curChecked.has(sug.slide_id)} onChange={() => {
+                    setCurChecked(prev => {
+                      const next = new Set(prev)
+                      if (next.has(sug.slide_id)) next.delete(sug.slide_id)
+                      else next.add(sug.slide_id)
+                      return next
+                    })
+                  }} />
+                  <img src={api.assetUrl(projectId, sug.image_filename)} alt="" style={{ width: 56, height: 42, objectFit: 'cover', borderRadius: 4 }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: '0.85rem', fontWeight: 600 }}>
+                      {sug.action === 'duplicate' ? '🔁 유사 장면' : sug.action === 'blurry' ? '🌫️ 흐림' : '🌙 어두운 사진'}
+                    </div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>{sug.reason}</div>
+                  </div>
+                </label>
+              ))}
+            </div>
+            <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', marginTop: '1rem' }}>
+              <button className="btn" onClick={() => setCurSuggestions(null)}>취소</button>
+              <button className="btn btn-primary" onClick={handleApplyCuration} disabled={applyingCuration || curChecked.size === 0}>
+                {applyingCuration ? '적용 중…' : `${curChecked.size}장 제외`}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
     </div>
