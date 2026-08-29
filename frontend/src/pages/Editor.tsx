@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { api, Slide, ProjectDetail, BgmHit, PhotosSortOrder, parseSlideMeta, RouteMeta, SavedLocation, GeocodeResult } from '../api/client'
+import { api, Slide, ProjectDetail, BgmHit, PhotosSortOrder, parseSlideMeta, RouteMeta, SavedLocation, GeocodeResult, OrganizeSuggestions, RouteSuggestion } from '../api/client'
 import { useToast } from '../components/ToastContext'
 import GoogleAuthSection, { extractCodeFromUrl } from '../components/GoogleAuthSection'
 
@@ -2656,6 +2656,13 @@ const TRANSITION_LABELS: Record<string, string> = {
   slide_left: '슬라이드 ←', slide_right: '슬라이드 →',
 }
 
+// EXIF 자동 구성 제안 배너 버튼 스타일 (F3)
+const orgBtnStyle: React.CSSProperties = {
+  background: 'var(--accent-light)', border: '1px solid var(--accent)', color: 'var(--accent)',
+  borderRadius: 'var(--radius-sm)', padding: '0.35rem 0.5rem', cursor: 'pointer',
+  fontSize: '0.72rem', fontWeight: 600, textAlign: 'left',
+}
+
 function estimateSlideDuration(s: Slide, defaultDuration: number): number {
   if (s.slide_type === 'video') {
     const ts = s.trim_start || 0, te = s.trim_end || 0
@@ -2752,6 +2759,7 @@ export default function Editor() {
   const [dragIdx, setDragIdx] = useState<number | null>(null)
   const [dropIdx, setDropIdx] = useState<number | null>(null)
   const [activeSlideIdx, setActiveSlideIdx] = useState<number | null>(null)
+  const [organizeSug, setOrganizeSug] = useState<OrganizeSuggestions | null>(null)   // EXIF 자동 구성 제안 (F3)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -2829,6 +2837,11 @@ export default function Editor() {
       })
       toast(`${newSlides.length}장 업로드 완료!`, 'success')
       setInsertAt(-1)
+      // EXIF 자동 구성 제안 조회 (실패해도 업로드 UX에 영향 없음)
+      try {
+        const sug = await api.getOrganizeSuggestions(projectId)
+        setOrganizeSug((sug.needs_sort || sug.routes.length) ? sug : null)
+      } catch { /* 제안 기능은 부가 기능 — 조용히 무시 */ }
     } catch (e: unknown) {
       toast(e instanceof Error ? e.message : '업로드 실패', 'error')
     } finally {
@@ -2846,6 +2859,34 @@ export default function Editor() {
       return result
     })
     setInsertAt(-1)
+  }
+
+  // ── EXIF 자동 구성 제안 (F3) ─────────────────────────────────────
+  const acceptOrganizeSort = async () => {
+    if (!projectId) return
+    try {
+      await api.sortSlides(projectId)
+      toast('촬영 시간순으로 정렬했습니다', 'success')
+      setOrganizeSug(prev => prev ? { ...prev, needs_sort: false } : null)
+      await loadProject()
+    } catch (e: unknown) {
+      toast(e instanceof Error ? e.message : '정렬 실패', 'error')
+    }
+  }
+
+  const acceptRouteSuggestion = async (r: RouteSuggestion) => {
+    if (!projectId) return
+    try {
+      const res = await api.insertRouteSuggestion(projectId, {
+        after_slide_id: r.after_slide_id,
+        origin: r.from, destination: r.to, profile: 'driving',
+      })
+      toast(`경로 슬라이드 추가: ${res.label}`, 'success')
+      setOrganizeSug(prev => prev ? { ...prev, routes: prev.routes.filter(x => x.after_slide_id !== r.after_slide_id) } : null)
+      await loadProject()
+    } catch (e: unknown) {
+      toast(e instanceof Error ? e.message : '경로 슬라이드 생성 실패', 'error')
+    }
   }
 
   const handleCreateRoute = async (origin: string, destination: string, profile: string, nFrames: number, duration: number) => {
@@ -3155,6 +3196,26 @@ export default function Editor() {
         <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', textAlign: 'center', fontWeight: 600, padding: '0.25rem 0' }}>
           슬라이드 ({slides.length})
         </div>
+
+        {/* EXIF 자동 구성 제안 배너 (F3) — 정렬/경로 제안이 있을 때만 */}
+        {organizeSug && (organizeSug.needs_sort || organizeSug.routes.length > 0) && (
+          <div style={{ background: 'var(--bg-card)', border: '1px solid var(--accent)', borderRadius: 'var(--radius-sm)', padding: '0.5rem 0.55rem', fontSize: '0.72rem', display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+            <div style={{ fontWeight: 700, color: 'var(--accent)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span>📍 사진 정보로 정리 제안</span>
+              <button onClick={() => setOrganizeSug(null)} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '0.75rem', padding: 0 }}>✕</button>
+            </div>
+            {organizeSug.needs_sort && (
+              <button onClick={acceptOrganizeSort} style={{ ...orgBtnStyle }}>
+                🕒 촬영 시간순으로 정렬
+              </button>
+            )}
+            {organizeSug.routes.map(r => (
+              <button key={r.after_slide_id} onClick={() => acceptRouteSuggestion(r)} style={{ ...orgBtnStyle }}>
+                🚗 {r.distance_km}km 이동 — 경로 슬라이드 추가
+              </button>
+            ))}
+          </div>
+        )}
         {slides.map((slide, idx) => {
           const isVideo = slide.slide_type === 'video'
           const isActive = activeSlideIdx === idx

@@ -53,6 +53,7 @@ def _migrate_columns():
             ("projects", "resolution", "TEXT DEFAULT '720p'"),
             ("projects", "transition_duration", "FLOAT DEFAULT 0.7"),
             ("projects", "style_preset", "TEXT DEFAULT 'none'"),
+            ("slides", "exif", "TEXT DEFAULT '{}'"),
         ]
         for table, column, col_type in migrations:
             try:

@@ -20,6 +20,8 @@ from backend.core.config import OUTPUTS_DIR
 from backend.core.logger import get_logger
 from backend.services import map_service
 from backend.services import place_info
+from backend.services.exif_service import extract_exif
+from backend.services import route_slide_service
 from backend.services.renderer import ASPECT_RATIO_MAP
 
 router = APIRouter(prefix="/projects", tags=["slides"])
@@ -180,12 +182,18 @@ async def upload_slides(
                 new_slides.append(slide)
             os.unlink(saved_path)  # 원본 PDF 제거
         else:
+            # EXIF 촬원시각/GPS 추출 (F3 자동 구성용 — 실패해도 업로드에 영향 없음)
+            try:
+                exif_data = extract_exif(saved_path)
+            except Exception:
+                exif_data = {"captured_at": None, "gps": None}
             slide = Slide(
                 project_id=project_id,
                 order_index=0, # 임시 지정
                 image_filename=saved_filename,
                 label=f.filename,
-                text=""
+                text="",
+                exif=json.dumps(exif_data, ensure_ascii=False) if (exif_data.get("captured_at") or exif_data.get("gps")) else "{}"
             )
             db.add(slide)
             new_slides.append(slide)
@@ -354,67 +362,17 @@ def create_route_slide(
     assets_dir = _assets_dir(project_id)
 
     try:
-        origin = map_service.geocode(request.origin)
-        destination = map_service.geocode(request.destination)
-        route = map_service.get_route(origin, destination, profile=request.profile)
+        return route_slide_service.create_route_slide(
+            db, project, assets_dir,
+            origin=request.origin, destination=request.destination,
+            profile=request.profile, duration=request.duration,
+            n_frames=request.n_frames, insert_at=request.insert_at,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Route slide 생성 실패: {e}", exc_info=True)
         raise HTTPException(status_code=502, detail=f"경로 정보 조회 실패: {e}")
-
-    # 임시 slide_id 로 프레임 생성
-    import uuid as _uuid
-    slide_id = str(_uuid.uuid4())
-    n_frames = max(6, min(60, int(request.n_frames)))
-    try:
-        canvas = _canvas_for(project)
-        frames = map_service.render_route_frames(
-            route["geometry_lnglat"], n_frames, canvas, assets_dir, slide_id,
-            distance_m=route["distance_m"], duration_s=route["duration_s"], profile=route["profile"],
-        )
-    except Exception as e:
-        logger.error(f"Route frame 렌더링 실패: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"경로 지도 생성 실패: {e}")
-
-    fps = (n_frames - 1) / float(request.duration) if request.duration > 0 else 6.0
-    meta = {
-        "type": "route",
-        "origin": origin,
-        "destination": destination,
-        "profile": route["profile"],
-        "geometry_lnglat": route["geometry_lnglat"],
-        "distance_m": route["distance_m"],
-        "duration_s": route["duration_s"],
-        "frames": frames,
-        "n_frames": n_frames,
-        "duration": float(request.duration),
-        "fps": fps,
-        "canvas": [canvas[0], canvas[1]],
-    }
-
-    insert_idx, existing = _insert_order_index(db, project_id, request.insert_at)
-    slide = Slide(
-        id=slide_id,
-        project_id=project_id,
-        order_index=insert_idx,
-        image_filename=frames[0] if frames else "",
-        label=f"{origin['name']} → {destination['name']}",
-        text=f"{origin['name']}에서 {destination['name']}까지 이동했습니다.",
-        slide_type="route",
-        use_tts=1,
-        meta=json.dumps(meta, ensure_ascii=False),
-    )
-    db.add(slide)
-    combined = existing[:insert_idx] + [slide] + existing[insert_idx:]
-    for idx, s in enumerate(combined):
-        s.order_index = idx
-    project.stage = "uploaded"
-    project.updated_at = datetime.utcnow()
-    db.commit()
-    db.refresh(slide)
-    logger.info(f"[{project_id}] Route slide created: {origin['name']} → {destination['name']} ({n_frames} frames)")
-    return slide
 
 
 @router.post("/{project_id}/slides/{slide_id}/route/regenerate", response_model=SlideRead)
@@ -643,8 +601,15 @@ def create_collage(
     else:  # horizontal
         cols, rows = n, 1
 
-    # 셀 크기 균일화: 모든 이미지를 동일 셀 크기로 리사이즈
-    CELL_W, CELL_H = 640, 480
+    # 셀 크기 적응형: 선택 이미지들의 평균 가로세로 비율로 셀 방향 결정
+    #   가로 위주 → 640×480 / 세로 위주 → 480×640 / 혼합·정방형 → 560×560
+    mean_ratio = sum(im.width / im.height for im in images) / len(images)
+    if mean_ratio >= 1.2:
+        CELL_W, CELL_H = 640, 480
+    elif mean_ratio <= 0.8:
+        CELL_W, CELL_H = 480, 640
+    else:
+        CELL_W, CELL_H = 560, 560
     GAP = 4
 
     canvas_w = cols * CELL_W + (cols - 1) * GAP
@@ -656,19 +621,20 @@ def create_collage(
             break
         col = idx % cols
         row = idx // cols
-        # 셀 영역에 맞춰 리사이즈 (비율 유지, 중앙 정렬)
+        # 셀을 가득 채우기(cover): 비율 맞춰 확대 후 중앙 크롭 — 셀 내 여백 없음
         im_ratio = im.width / im.height
         cell_ratio = CELL_W / CELL_H
         if im_ratio > cell_ratio:
-            new_w = CELL_W
-            new_h = int(CELL_W / im_ratio)
-        else:
             new_h = CELL_H
             new_w = int(CELL_H * im_ratio)
+        else:
+            new_w = CELL_W
+            new_h = int(CELL_W / im_ratio)
         resized = im.resize((new_w, new_h), Image.Resampling.LANCZOS)
-        x = col * (CELL_W + GAP) + (CELL_W - new_w) // 2
-        y = row * (CELL_H + GAP) + (CELL_H - new_h) // 2
-        collage_im.paste(resized, (x, y))
+        left = max(0, (new_w - CELL_W) // 2)
+        top = max(0, (new_h - CELL_H) // 2)
+        cropped = resized.crop((left, top, left + CELL_W, top + CELL_H))
+        collage_im.paste(cropped, (col * (CELL_W + GAP), row * (CELL_H + GAP)))
 
     # 저장
     timestamp = datetime.now().strftime('%H%M%S%f')

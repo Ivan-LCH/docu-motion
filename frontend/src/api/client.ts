@@ -135,6 +135,21 @@ export interface PickerImportResult {
 
 export type PhotosSortOrder = 'selected' | 'oldest' | 'newest' | 'api'
 
+// EXIF 자동 구성 제안 (Photo-Vlog F3)
+export interface RouteSuggestion {
+  after_slide_id: string
+  after_image_filename: string
+  from: { lat: number; lng: number; name?: string }
+  to: { lat: number; lng: number; name?: string }
+  distance_km: number
+}
+export interface OrganizeSuggestions {
+  needs_sort: boolean
+  has_time: boolean
+  has_gps: boolean
+  routes: RouteSuggestion[]
+}
+
 export interface BgmHit {
   id: number
   title: string
@@ -286,4 +301,16 @@ export const api = {
   photosPollSession: (sessionId: string) => request<PickerSession>('GET', `/photos/session/${sessionId}`),
   photosImport: (projectId: string, sessionId: string, sortOrder: PhotosSortOrder = 'selected') =>
     request<PickerImportResult>('POST', `/photos/import/${projectId}`, { session_id: sessionId, sort_order: sortOrder }),
+
+  // EXIF 자동 구성 (Photo-Vlog F3)
+  scanExif: (projectId: string) =>
+    request<{ scanned: number; with_time: number; with_gps: number }>('POST', `/projects/${projectId}/slides/exif/scan`),
+  getOrganizeSuggestions: (projectId: string) =>
+    request<OrganizeSuggestions>('GET', `/projects/${projectId}/organize/suggestions`),
+  sortSlides: (projectId: string) =>
+    request<{ ok: boolean; reordered: number }>('POST', `/projects/${projectId}/organize/sort`),
+  insertRouteSuggestion: (
+    projectId: string,
+    payload: { after_slide_id: string; origin: { lat: number; lng: number; name?: string }; destination: { lat: number; lng: number; name?: string }; profile?: string },
+  ) => request<{ ok: boolean; slide_id: string; label: string }>('POST', `/projects/${projectId}/organize/insert-route`, payload),
 }
