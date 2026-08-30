@@ -24,8 +24,6 @@ from backend.core.logger import get_logger
 
 logger = get_logger(__name__)
 
-# DateTimeOriginal(0x9003), DateTime(0x0132) 태그 번호
-_DATETIME_TAGS = (36867, 306)
 _EXIF_TIME_FMT = "%Y:%m:%d %H:%M:%S"
 
 GROUP_RADIUS_KM = 2.0    # 이 거리 이내 = 같은 장소 그룹
@@ -88,12 +86,16 @@ def extract_exif(image_path) -> dict:
             except Exception:
                 return result
 
-        # IFD0 태그명 매핑 (숫자 키 → 이름)
-        named = {TAGS.get(k, k): v for k, v in raw.items()}
+        # IFD0 + Exif IFD 태그명 매핑 (숫자 키 → 이름)
+        # 스마트폰 사진의 DateTimeOriginal은 Exif IFD(0x8769) 안에 있으므로 함께 펼친다.
+        flat = dict(raw.items())
+        if hasattr(raw, "get_ifd"):
+            flat.update(raw.get_ifd(0x8769).items())
+        named = {TAGS.get(k, k): v for k, v in flat.items()}
 
-        # 촬영시각: DateTimeOriginal 우선 → DateTime 폴백
-        for tag in _DATETIME_TAGS:
-            v = raw.get(tag) or named.get("DateTimeOriginal") or named.get("DateTime")
+        # 촬영시각: DateTimeOriginal(Exif IFD) 우선 → DateTime(IFD0) 폴백
+        for name in ("DateTimeOriginal", "DateTime"):
+            v = named.get(name)
             if isinstance(v, str) and v.strip():
                 try:
                     result["captured_at"] = datetime.strptime(v.strip(), _EXIF_TIME_FMT).isoformat()
