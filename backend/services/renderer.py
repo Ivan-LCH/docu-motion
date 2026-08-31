@@ -317,11 +317,11 @@ class WorkerProgressLogger(ProgressBarLogger):
 # Render Logic
 # ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── #
 
-def load_tts_engine():
+def load_tts_engine(voice_name: str = ""):
     if TTSEngine is None:
         return None
     try:
-        return TTSEngine(server_url=TTS_SERVER_URL, voice_name=TTS_VOICE_NAME)
+        return TTSEngine(server_url=TTS_SERVER_URL, voice_name=voice_name or TTS_VOICE_NAME)
     except Exception as e:
         logger.error(f"TTS Engine Load Error: {e}")
         return None
@@ -885,7 +885,8 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
                    subtitle_font_size: int = 28, subtitle_font_color: str = "white",
                    watermark_text: str = "", watermark_opacity: float = 0.3,
                    default_slide_duration: float = 3.0, title_text: str = "",
-                   transition_duration: float = 0.7, style_preset: str = "none"):
+                   transition_duration: float = 0.7, style_preset: str = "none",
+                   tts_voice: str = ""):
     """
     영상 렌더링 메인 함수
     slides: [{"image_filename": ..., "text": ...}, ...]
@@ -915,7 +916,7 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
     total_slides = len(slides)
     final_clips  = []
     slide_narration_segments = []  # 슬라이드별 TTS 구간 (BGM 덕킹용, 8-7)
-    tts_engine   = load_tts_engine()
+    tts_engine   = load_tts_engine(tts_voice)
 
     try:
         progress_callback(0, "렌더링 시작...")

@@ -199,9 +199,9 @@ def _needs_tts_but_missing(item: dict, slide_index: int, temp_dir: Path) -> bool
     return False
 
 
-def _load_tts_engine():
+def _load_tts_engine(voice_name: str = ""):
     from backend.services.tts_manager import TTSEngine
-    tts = TTSEngine(server_url=TTS_SERVER_URL, voice_name=TTS_VOICE_NAME)
+    tts = TTSEngine(server_url=TTS_SERVER_URL, voice_name=voice_name or TTS_VOICE_NAME)
     for attempt in range(1, 4):
         if tts.load_model():
             return tts
@@ -241,7 +241,7 @@ def render_slide_preview(project_id: str, slide_id: str,
         master_vol  = getattr(project, "tts_master_volume", 1.0) or 1.0
         style_preset = getattr(project, "style_preset", "none") or "none"
 
-        tts_engine = _load_tts_engine() if force_tts else None
+        tts_engine = _load_tts_engine(getattr(project, "tts_voice", "") or "") if force_tts else None
 
         for item, sidx in zip(items, indices):
             it = item

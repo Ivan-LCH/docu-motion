@@ -1120,8 +1120,31 @@ function GlobalSettingsModal({ project, projectId, slides, onClose, onSave, onPr
     { value: '#fb923c', label: '주황색', color: '#fb923c' },
   ]
 
+  // ── TTS 음성 관리 (다중 음성) ──
+  const [voiceList, setVoiceList] = useState<string[]>([])
+  const [showVoiceForm, setShowVoiceForm] = useState(false)
+  const [newVoiceName, setNewVoiceName] = useState('')
+  const [newVoiceText, setNewVoiceText] = useState('')
+  const [newVoiceFile, setNewVoiceFile] = useState<File | null>(null)
+  const [voiceBusy, setVoiceBusy] = useState(false)
+  const reloadVoices = () => { api.listVoices().then(r => setVoiceList(r.voices || [])).catch(() => {}) }
+  useEffect(() => { reloadVoices() }, [])
+
+  const handleRegisterVoice = async () => {
+    if (!newVoiceName.trim() || !newVoiceFile) { toast('이름과 오디오 파일(3~10초)을 넣어주세요', 'error'); return }
+    setVoiceBusy(true)
+    try {
+      await api.registerVoice(newVoiceName.trim(), newVoiceFile, newVoiceText.trim())
+      toast(`음성 '${newVoiceName}' 등록 완료!`, 'success')
+      setNewVoiceName(''); setNewVoiceText(''); setNewVoiceFile(null); setShowVoiceForm(false)
+      reloadVoices()
+    } catch (e: unknown) {
+      toast(e instanceof Error ? e.message : '음성 등록 실패', 'error')
+    } finally { setVoiceBusy(false) }
+  }
+
   // ── 즉시 적용 헬퍼 (비율/오디오) — 변경 즉시 저장 (7-1 통합, 동작 보존) ──
-  const saveImmediate = async (patch: { aspect_ratio?: string; bgm_volume?: number; tts_master_volume?: number; resolution?: string; style_preset?: string }) => {
+  const saveImmediate = async (patch: { aspect_ratio?: string; bgm_volume?: number; tts_master_volume?: number; resolution?: string; style_preset?: string; tts_voice?: string }) => {
     try {
       await api.updateSettings(projectId, {
         bgm_volume: project.bgm_volume ?? 0.3,
@@ -1272,6 +1295,49 @@ function GlobalSettingsModal({ project, projectId, slides, onClose, onSave, onPr
           <button className="btn btn-ghost" style={{ width: '100%', marginTop: '0.4rem', fontSize: '0.8rem' }} onClick={onToggleAllTts}>
             &#x1F50A; TTS 전체 On/Off (이미지 슬라이드)
           </button>
+        </div>
+
+        {/* ── 오디오: 내레이션 음성 (다중 음성) ── */}
+        <div style={{ marginBottom: '1rem' }}>
+          <label className="label">🎙 내레이션 음성</label>
+          <div style={{ display: 'flex', gap: '0.4rem' }}>
+            <select className="input" value={project.tts_voice || ''}
+              onChange={async e => {
+                const val = e.target.value
+                onProjectUpdate({ tts_voice: val })
+                await saveImmediate({ tts_voice: val })
+                toast(val ? `음성: ${val}` : '기본 음성 사용', 'success')
+              }}
+              style={{ flex: 1 }}>
+              <option value="">기본 음성 (myvoice)</option>
+              {voiceList.map(v => <option key={v} value={v}>{v}</option>)}
+            </select>
+            <button className="btn btn-ghost" style={{ fontSize: '0.78rem', whiteSpace: 'nowrap' }}
+              onClick={() => setShowVoiceForm(s => !s)}>
+              ＋ 새 음성
+            </button>
+          </div>
+          {voiceList.length === 0 && (
+            <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)', margin: '0.3rem 0 0' }}>
+              등록된 음성이 없습니다 — 다른 사람 목소리 3~10초 샘플로 새 음성을 만들어보세요.
+            </p>
+          )}
+          {showVoiceForm && (
+            <div style={{ marginTop: '0.5rem', padding: '0.6rem', border: '1px solid var(--border)', borderRadius: 8 }}>
+              <input className="input" placeholder="음성 이름 (영문/숫자, 예: mom, friend1)" value={newVoiceName}
+                onChange={e => setNewVoiceName(e.target.value)} style={{ width: '100%', marginBottom: '0.4rem', fontSize: '0.8rem' }} />
+              <input type="file" accept="audio/*" onChange={e => setNewVoiceFile(e.target.files?.[0] ?? null)}
+                style={{ fontSize: '0.75rem', marginBottom: '0.4rem', width: '100%' }} />
+              <input className="input" placeholder="샘플 오디오의 대사 (정확도 향상, 선택)" value={newVoiceText}
+                onChange={e => setNewVoiceText(e.target.value)} style={{ width: '100%', marginBottom: '0.5rem', fontSize: '0.8rem' }} />
+              <div style={{ display: 'flex', gap: '0.4rem' }}>
+                <button className="btn" style={{ flex: 1, fontSize: '0.8rem' }} onClick={() => setShowVoiceForm(false)}>취소</button>
+                <button className="btn btn-primary" style={{ flex: 1, fontSize: '0.8rem' }} onClick={handleRegisterVoice} disabled={voiceBusy}>
+                  {voiceBusy ? '⏳ 등록 중...' : '🎧 음성 등록'}
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
         <hr className="divider" style={{ margin: '0.25rem 0 1rem' }} />
@@ -2827,6 +2893,11 @@ export default function Editor() {
       } else {
         setRendering(false)
       }
+      // EXIF 자동 구성 제안은 페이지 재진입 시에도 다시 띄운다 (F3)
+      try {
+        const sug = await api.getOrganizeSuggestions(projectId)
+        setOrganizeSug((sug.needs_sort || sug.routes.length) ? sug : null)
+      } catch { setOrganizeSug(null) }
     } catch (e) {
       toast('프로젝트를 불러올 수 없습니다', 'error')
       navigate('/')

@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse
 from backend.core.config import APP_NAME, VERSION, OUTPUTS_DIR
 from backend.core.logger import setup_logging, get_logger
 from backend.db.session import init_db
-from backend.api.v1 import projects, slides, render, youtube, photos, preview, locations, narration, organize, curation
+from backend.api.v1 import projects, slides, render, youtube, photos, preview, locations, narration, organize, curation, voices
 
 # ─────────────────────────────────────────────
 # 시작/종료 이벤트
@@ -60,6 +60,7 @@ app.include_router(locations.router, prefix=PREFIX)
 app.include_router(narration.router, prefix=PREFIX)
 app.include_router(organize.router,  prefix=PREFIX)
 app.include_router(curation.router,  prefix=PREFIX)
+app.include_router(voices.router,    prefix=PREFIX)
 
 
 # ─────────────────────────────────────────────

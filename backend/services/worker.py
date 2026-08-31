@@ -102,7 +102,7 @@ def run_render(project_id: str):
                 logger.warning(f"Progress callback failed: {e}")
 
         # TTS 모델 사전 로드 (최대 3회 재시도, 실패 시 edge-tts 전용 모드)
-        tts = TTSEngine()
+        tts = TTSEngine(voice_name=(getattr(project, 'tts_voice', '') or ''))
         tts_loaded = False
         progress_callback(5, "TTS AI 모델을 GPU 메모리에 불러오는 중...")
         for attempt in range(1, 4):
@@ -153,6 +153,7 @@ def run_render(project_id: str):
             title_text=title_text,
             transition_duration=transition_duration,
             style_preset=style_preset,
+            tts_voice=(getattr(project, 'tts_voice', '') or ''),
         )
 
         # 완료

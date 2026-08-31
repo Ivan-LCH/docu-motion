@@ -28,6 +28,7 @@ class Project(Base):
     aspect_ratio = Column(String(10), default="16:9") # '16:9' | '9:16' | '1:1'
     # Master TTS Volume
     tts_master_volume = Column(Float, default=1.0)     # 0.0 ~ 2.0 — 전역 TTS 볼륨
+    tts_voice = Column(Text, default="")               # 프로젝트 TTS 음성 (빈 값 → env 기본 음성)
     # Global defaults (6-10)
     default_transition      = Column(String(50), default="crossfade")    # 전역 전환 효과
     default_slide_duration  = Column(Float, default=3.0)            # 텍스트 없는 슬라이드 기본 시간(초)

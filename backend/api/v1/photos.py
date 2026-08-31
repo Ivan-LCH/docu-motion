@@ -4,6 +4,7 @@ DocuMotion - Google Photos Picker API 연동
 """
 import os
 import re
+import json
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -18,6 +19,7 @@ from backend.db.models import Project, Slide
 from backend.core.config import OUTPUTS_DIR
 from backend.core.logger import get_logger
 from backend.services import photos_manager
+from backend.services.exif_service import extract_exif
 
 router = APIRouter(prefix="/photos", tags=["photos"])
 logger = get_logger(__name__)
@@ -218,12 +220,19 @@ def import_from_session(
                     trim_end=0.0,
                 )
             else:
+                # EXIF 촬영시각/GPS 저장 (F3 — 일반 업로드와 동일)
+                try:
+                    exif_data = extract_exif(Path(dest_path))
+                    exif_json = json.dumps(exif_data, ensure_ascii=False) if (exif_data.get("captured_at") or exif_data.get("gps")) else "{}"
+                except Exception:
+                    exif_json = "{}"
                 slide = Slide(
                     project_id=project_id,
                     order_index=order_idx,
                     image_filename=saved_filename,
                     label=original_name,
                     text="",
+                    exif=exif_json,
                 )
 
             db.add(slide)

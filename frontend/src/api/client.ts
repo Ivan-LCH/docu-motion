@@ -99,6 +99,7 @@ export interface Project {
   bgm_volume: number
   aspect_ratio: string
   tts_master_volume: number
+  tts_voice: string
   default_transition: string
   default_slide_duration: number
   subtitle_font_size: number
@@ -342,4 +343,22 @@ export const api = {
   applyCuration: (projectId: string, slideIds: string[]) =>
     request<{ ok: boolean; deleted: number; remaining: number }>(
       'POST', `/projects/${projectId}/curation/apply`, { slide_ids: slideIds }),
+
+  // TTS 음성 관리 (다중 음성)
+  listVoices: () =>
+    request<{ voices: string[]; count: number }>('GET', '/voices'),
+  registerVoice: async (voiceName: string, refAudio: File, refText: string) => {
+    const fd = new FormData()
+    fd.append('voice_name', voiceName)
+    fd.append('ref_audio', refAudio)
+    fd.append('ref_text', refText)
+    const res = await fetch(`${BASE}/voices`, { method: 'POST', body: fd })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }))
+      throw new Error(err.detail || '음성 등록 실패')
+    }
+    return res.json()
+  },
+  deleteVoice: (voiceName: string) =>
+    request<{ ok: boolean }>('DELETE', `/voices/${encodeURIComponent(voiceName)}`),
 }

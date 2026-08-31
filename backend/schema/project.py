@@ -128,6 +128,7 @@ class ProjectRead(BaseModel):
     bgm_volume: float = 0.3
     aspect_ratio: str = "16:9"
     tts_master_volume: float = 1.0
+    tts_voice: str = ""
     default_transition: str = "crossfade"
     default_slide_duration: float = 3.0
     subtitle_font_size: int = 30

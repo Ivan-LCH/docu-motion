@@ -48,6 +48,7 @@ def _enrich_project(project: Project) -> dict:
         "bgm_volume"  : getattr(project, "bgm_volume", 0.3) or 0.3,
         "aspect_ratio": getattr(project, "aspect_ratio", "16:9") or "16:9",
         "tts_master_volume": getattr(project, "tts_master_volume", 1.0) or 1.0,
+        "tts_voice": getattr(project, "tts_voice", "") or "",
         "default_transition": getattr(project, "default_transition", "none") or "none",
         "default_slide_duration": getattr(project, "default_slide_duration", 3.0) or 3.0,
         "subtitle_font_size": getattr(project, "subtitle_font_size", 30) or 30,
@@ -180,6 +181,7 @@ class ProjectSettingsUpdate(PydanticBase):
     bgm_volume: float = 0.3
     aspect_ratio: str = "16:9"
     tts_master_volume: float = 1.0
+    tts_voice: Optional[str] = None
     default_transition: Optional[str] = None
     default_slide_duration: Optional[float] = None
     subtitle_font_size: Optional[int] = None
@@ -395,6 +397,8 @@ def update_project_settings(project_id: str, payload: ProjectSettingsUpdate, db:
     project.bgm_volume        = payload.bgm_volume
     project.aspect_ratio      = payload.aspect_ratio
     project.tts_master_volume = payload.tts_master_volume
+    if payload.tts_voice is not None:
+        project.tts_voice = payload.tts_voice
     if payload.default_transition is not None:
         project.default_transition = payload.default_transition
     if payload.default_slide_duration is not None:
