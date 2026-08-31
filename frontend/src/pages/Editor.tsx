@@ -1127,6 +1127,8 @@ function GlobalSettingsModal({ project, projectId, slides, onClose, onSave, onPr
   const [newVoiceText, setNewVoiceText] = useState('')
   const [newVoiceFile, setNewVoiceFile] = useState<File | null>(null)
   const [voiceBusy, setVoiceBusy] = useState(false)
+  // 추천 녹음 문장 — 약 60자(10~12초): 억양이 담기는 최적 길이
+  const VOICE_SAMPLE_SCRIPT = '안녕하세요, 오늘 하루도 정말 수고 많으셨어요. 저는 오늘도 좋은 이야기를 들려드리려고 해요.'
   const reloadVoices = () => { api.listVoices().then(r => setVoiceList(r.voices || [])).catch(() => {}) }
   useEffect(() => { reloadVoices() }, [])
 
@@ -1324,12 +1326,24 @@ function GlobalSettingsModal({ project, projectId, slides, onClose, onSave, onPr
           )}
           {showVoiceForm && (
             <div style={{ marginTop: '0.5rem', padding: '0.6rem', border: '1px solid var(--border)', borderRadius: 8 }}>
+              <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', background: 'var(--bg-secondary)', borderRadius: 6, padding: '0.5rem', marginBottom: '0.5rem' }}>
+                <div style={{ fontWeight: 600, marginBottom: '0.25rem' }}>🎙 아래 문장을 조용한 곳에서 녹음해 주세요 (10~12초)</div>
+                <div style={{ fontStyle: 'italic', marginBottom: '0.35rem' }}>"{VOICE_SAMPLE_SCRIPT}"</div>
+                <div>· 폰 기본 녹음 앱으로, 평소 말투로 또박또박 · 마이크 15~30cm</div>
+                <div>· 배경음악/소음 없이 · 웃고 말해도 OK (억양이 그대로 복제됩니다)</div>
+              </div>
               <input className="input" placeholder="음성 이름 (영문/숫자, 예: mom, friend1)" value={newVoiceName}
                 onChange={e => setNewVoiceName(e.target.value)} style={{ width: '100%', marginBottom: '0.4rem', fontSize: '0.8rem' }} />
               <input type="file" accept="audio/*" onChange={e => setNewVoiceFile(e.target.files?.[0] ?? null)}
                 style={{ fontSize: '0.75rem', marginBottom: '0.4rem', width: '100%' }} />
-              <input className="input" placeholder="샘플 오디오의 대사 (정확도 향상, 선택)" value={newVoiceText}
-                onChange={e => setNewVoiceText(e.target.value)} style={{ width: '100%', marginBottom: '0.5rem', fontSize: '0.8rem' }} />
+              <div style={{ display: 'flex', gap: '0.4rem', marginBottom: '0.5rem' }}>
+                <input className="input" placeholder="녹음한 대사 (위 문장 그대로 권장)" value={newVoiceText}
+                  onChange={e => setNewVoiceText(e.target.value)} style={{ flex: 1, fontSize: '0.8rem' }} />
+                <button className="btn btn-ghost" style={{ fontSize: '0.75rem', whiteSpace: 'nowrap' }}
+                  onClick={() => setNewVoiceText(VOICE_SAMPLE_SCRIPT)}>
+                  예제 문장 넣기
+                </button>
+              </div>
               <div style={{ display: 'flex', gap: '0.4rem' }}>
                 <button className="btn" style={{ flex: 1, fontSize: '0.8rem' }} onClick={() => setShowVoiceForm(false)}>취소</button>
                 <button className="btn btn-primary" style={{ flex: 1, fontSize: '0.8rem' }} onClick={handleRegisterVoice} disabled={voiceBusy}>
