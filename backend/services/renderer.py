@@ -1150,6 +1150,10 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
         # ffmpeg_params: -pix_fmt yuv420p 강제
         #   - h264_nvenc는 RGB 입력을 gbrp(GBR 플레이너)로 인코딩해 색왜곡(초록 우세) 발생
         #   - yuv420p 명시로 두 코덱 모두 표준 색공간 사용
+        # loudnorm: 소스별 음량 편차를 -14 LUFS(YouTube 기준)로 정규화해 전체적으로 작게 들리는 문제 방지
+        ffmpeg_params = ["-pix_fmt", "yuv420p"]
+        if combined.audio is not None:
+            ffmpeg_params += ["-af", "loudnorm=I=-14:TP=-1.5:LRA=11"]
         for video_codec in ("h264_nvenc", "libx264"):
             try:
                 logger.info(f"영상 인코딩 중... codec={video_codec}")
@@ -1161,7 +1165,7 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
                     temp_audiofile = str(temp_audio),
                     codec          = video_codec,
                     audio_codec    = 'libmp3lame',
-                    ffmpeg_params  = ["-pix_fmt", "yuv420p"]
+                    ffmpeg_params  = ffmpeg_params
                 )
                 logger.info(f"인코딩 완료: {video_codec}")
                 break  # 성공이면 루프 탈출

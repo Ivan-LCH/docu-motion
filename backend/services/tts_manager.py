@@ -8,6 +8,40 @@ import requests
 
 logger = logging.getLogger(__name__)
 
+TTS_CHUNK_LIMIT = 30  # 글자 — Qwen3-TTS 서버가 ~30자 이상 단일 텍스트에서 무한 생성(EOS 미방출)에 빠지는 문제 회피
+
+
+def _chunk_tts_text(text: str, limit: int = TTS_CHUNK_LIMIT) -> list[str]:
+    """긴 텍스트를 구두점/공백 경계에서 limit 이하 청크로 분할 (자연스러운 호흡 유지)"""
+    import re
+    text = text.strip()
+    if len(text) <= limit:
+        return [text]
+    parts = re.split(r'(?<=[,.!?~…])\s*', text)
+    chunks, buf = [], ""
+    for p in parts:
+        if not p:
+            continue
+        if len(p) > limit:
+            # 구두점 없는 긴 조각은 공백 기준 2차 분할
+            for w in p.split(" "):
+                cand = (buf + " " + w) if buf else w
+                if len(cand) > limit and buf:
+                    chunks.append(buf)
+                    buf = w
+                else:
+                    buf = cand
+        else:
+            cand = buf + p
+            if len(cand) > limit and buf:
+                chunks.append(buf)
+                buf = p
+            else:
+                buf = cand
+    if buf:
+        chunks.append(buf)
+    return chunks
+
 
 class TTSEngine:
     """Remote TTS API Client for Voice Cloning"""
@@ -22,7 +56,7 @@ class TTSEngine:
         """
         self.server_url = server_url or os.getenv("TTS_SERVER_URL", "http://localhost:8002")
         self.voice_name = voice_name or os.getenv("TTS_VOICE_NAME", "myvoice")
-        self.timeout = 1800  # 30 minutes timeout for TTS generation
+        self.timeout = 180  # seconds per chunk — Qwen3-TTS 서버는 ~30자 이상 단일 텍스트에서 무한 생성에 빠지는 버그가 있어 청크 분할 + 짧은 타임아웃 사용
         
         logger.info(f"TTS Engine initialized: server={self.server_url}, voice={self.voice_name}")
     
@@ -67,16 +101,56 @@ class TTSEngine:
     
     def generate(self, text, output_file, ref_audio_path=None, ref_text=None, language="Auto"):
         """
+        텍스트를 음성으로 변환. 긴 텍스트는 청크로 나눠 생성 후 이어붙인다
+        (서버의 긴 텍스트 무한 생성 버그 회피 — TTS_CHUNK_LIMIT 참고).
+        """
+        chunks = _chunk_tts_text(text)
+        if len(chunks) == 1:
+            return self._generate_single(chunks[0], output_file, language)
+
+        logger.info(f"Long text ({len(text)}자) → {len(chunks)}개 청크로 분할 생성")
+        from moviepy.editor import AudioFileClip, concatenate_audioclips
+
+        tmp_files, clips = [], []
+        try:
+            for idx, chunk in enumerate(chunks):
+                tmp = f"{output_file}.chunk{idx}.wav"
+                if not self._generate_single(chunk, tmp, language):
+                    logger.error(f"TTS 청크 {idx+1}/{len(chunks)} 생성 실패: {chunk[:30]}...")
+                    return False
+                tmp_files.append(tmp)
+
+            clips = [AudioFileClip(p) for p in tmp_files]
+            final = concatenate_audioclips(clips)
+            final.write_audiofile(output_file, fps=int(clips[0].fps or 24000), logger=None)
+            final.close()
+            logger.info(f"Saved chunked audio to {output_file} ({len(chunks)} chunks)")
+            return True
+        except Exception as e:
+            logger.error(f"TTS chunk concat failed: {e}")
+            return False
+        finally:
+            for c in clips:
+                try:
+                    c.close()
+                except Exception:
+                    pass
+            for p in tmp_files:
+                try:
+                    os.unlink(p)
+                except Exception:
+                    pass
+
+    def _generate_single(self, text, output_file, language="Auto"):
+        """
         Generate speech from text using remote TTS API.
         Includes retry logic for temporary connection failures.
-        
+
         Args:
-            text: Text to synthesize
+            text: Text to synthesize (TTS_CHUNK_LIMIT 이하 권장)
             output_file: Path to save the output audio
-            ref_audio_path: (Ignored - uses server-side registered voice)
-            ref_text: (Ignored - uses server-side registered voice)
             language: Language setting (passed to server)
-        
+
         Returns:
             bool: True if successful, False otherwise
         """
