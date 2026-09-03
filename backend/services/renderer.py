@@ -1150,10 +1150,6 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
         # ffmpeg_params: -pix_fmt yuv420p 강제
         #   - h264_nvenc는 RGB 입력을 gbrp(GBR 플레이너)로 인코딩해 색왜곡(초록 우세) 발생
         #   - yuv420p 명시로 두 코덱 모두 표준 색공간 사용
-        # loudnorm: 소스별 음량 편차를 -14 LUFS(YouTube 기준)로 정규화해 전체적으로 작게 들리는 문제 방지
-        ffmpeg_params = ["-pix_fmt", "yuv420p"]
-        if combined.audio is not None:
-            ffmpeg_params += ["-af", "loudnorm=I=-14:TP=-1.5:LRA=11"]
         for video_codec in ("h264_nvenc", "libx264"):
             try:
                 logger.info(f"영상 인코딩 중... codec={video_codec}")
@@ -1165,7 +1161,7 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
                     temp_audiofile = str(temp_audio),
                     codec          = video_codec,
                     audio_codec    = 'libmp3lame',
-                    ffmpeg_params  = ffmpeg_params
+                    ffmpeg_params  = ["-pix_fmt", "yuv420p"]
                 )
                 logger.info(f"인코딩 완료: {video_codec}")
                 break  # 성공이면 루프 탈출
@@ -1173,6 +1169,33 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
                 logger.warning(f"{video_codec} 인코딩 실패 → 다음 코덱으로 전환: {enc_err}")
                 if video_codec == "libx264":
                     raise  # 마지막 폴백도 실패 → 상위로 에러 전파
+
+        # ── 음량 정규화 (loudnorm) ──────────────────────────────────────────
+        # MoviePy는 오디오를 미리 인코딩해 mux 단계에서 -c:a copy 로 합치므로
+        # write_videofile 에 -af 를 줄 수 없다 → 인코딩 후 별도 ffmpeg 패스로
+        # 오디오만 -14 LUFS(YouTube 기준)로 정규화 (비디오 스트림은 copy, 무손실)
+        try:
+            import subprocess
+            progress_callback(95, "음량 정규화 중...")
+            tmp_norm = output_file.with_suffix(".norm.mp4")
+            norm = subprocess.run(
+                ["ffmpeg", "-y", "-i", str(output_file),
+                 "-c:v", "copy",
+                 "-af", "loudnorm=I=-14:TP=-1.5:LRA=11",
+                 "-c:a", "aac", "-b:a", "192k",
+                 str(tmp_norm)],
+                capture_output=True, timeout=1800,
+            )
+            if norm.returncode == 0 and tmp_norm.exists() and tmp_norm.stat().st_size > 1000:
+                os.replace(tmp_norm, output_file)
+                logger.info("loudnorm 음량 정규화 완료: -14 LUFS")
+            else:
+                logger.warning(f"loudnorm 실패 (원본 유지): {norm.stderr[-300:] if norm.stderr else 'unknown'}")
+                try: tmp_norm.unlink()
+                except Exception: pass
+        except Exception as norm_err:
+            logger.warning(f"음량 정규화 스킵: {norm_err}")
+
         progress_callback(100, "렌더링 완료!")
         # 임시 mp3 파일만 삭제 (wav 파일은 재렌더링을 위해 보존)
         cleanup_temp_files(temp_dir)
