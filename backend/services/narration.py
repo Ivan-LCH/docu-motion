@@ -145,3 +145,79 @@ def split_script(script: str, num_parts: int) -> list[str]:
     elif len(parts) > num_parts:
         parts = parts[: num_parts - 1] + [" ".join(parts[num_parts - 1:])]
     return parts
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 오타 검증 (맞춤법/띄어쓰기)
+# ─────────────────────────────────────────────────────────────────────────────
+_SPELLCHECK_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "results": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id":    {"type": "integer", "description": "입력으로 준 항목의 id (그대로 반환)"},
+                    "corrected": {"type": "string", "description": "교정된 문장. 오류가 없으면 원문과 동일"},
+                    "has_error": {"type": "boolean", "description": "오류가 있었으면 true"},
+                },
+                "required": ["id", "corrected", "has_error"],
+            },
+        },
+    },
+    "required": ["results"],
+}
+
+
+def spellcheck_texts(items: list[dict]) -> Optional[list[dict]]:
+    """
+    한국어 문장들의 맞춤법/띄어쓰기/오탈자 검사.
+
+    Args:
+        items: [{id: int, text: str}, ...]  (id는 호출자가 구분용으로 쓰는 값)
+    Returns:
+        [{id, original, corrected, has_error}, ...] — 실패 시 None
+    """
+    if not items:
+        return []
+    lines = "\n".join(f"{it['id']}: {it['text']}" for it in items)
+    prompt = (
+        "아래는 영상 나레이션 대사 목록이다. 각 줄은 'id: 문장' 형식이다.\n"
+        "각 문장의 맞춤법, 띄어쓰기, 오탈자, 조사 오류를 검사하여 교정하라.\n"
+        "규칙:\n"
+        "- 높임법/어미/문체는 절대 바꾸지 말 것 (오류 교정만)\n"
+        "- 의미를 바꾸는 교정 금지\n"
+        "- 오류가 없으면 corrected에 원문을 그대로, has_error=false\n\n"
+        f"{lines}"
+    )
+    text = _post_gemini(
+        [{"text": prompt}],
+        generation_config={
+            "responseMimeType": "application/json",
+            "responseSchema": _SPELLCHECK_SCHEMA,
+            "temperature": 0.1,
+        },
+    )
+    if not text:
+        return None
+    try:
+        data = json.loads(text)
+        by_id = {r["id"]: r for r in data.get("results", [])}
+    except Exception as e:
+        logger.warning(f"오타 검증 파싱 실패: {e}")
+        return None
+
+    out = []
+    for it in items:
+        r = by_id.get(it["id"])
+        corrected = (r or {}).get("corrected", "").strip()
+        original = it["text"].strip()
+        has_error = bool((r or {}).get("has_error")) and corrected and corrected != original
+        out.append({
+            "id": it["id"],
+            "original": original,
+            "corrected": corrected or original,
+            "has_error": has_error,
+        })
+    return out

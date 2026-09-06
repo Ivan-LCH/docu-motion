@@ -158,3 +158,70 @@ def split_script(project_id: str, req: SplitRequest, db: Session = Depends(get_d
         slide.text = text
     db.commit()
     return {"ok": True, "assigned": len(slides)}
+
+
+# ── 오타 검증 ────────────────────────────────────────────────────────────────
+class SpellcheckResult(BaseModel):
+    slide_id: str
+    original: str
+    corrected: str
+    has_error: bool
+
+
+class SpellcheckResponse(BaseModel):
+    results: list[SpellcheckResult]
+    checked: int
+    errors: int
+
+
+class SpellcheckApplyRequest(BaseModel):
+    fixes: list[dict]  # [{slide_id, corrected}]
+
+
+@router.post("/{project_id}/spellcheck", response_model=SpellcheckResponse)
+def spellcheck_project(project_id: str, db: Session = Depends(get_db)):
+    """전체 슬라이드 대사 맞춤법/오탈자 검사 (동기 — 제안만 반환, DB 변경 없음)"""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    slides = (db.query(Slide)
+              .filter(Slide.project_id == project_id)
+              .order_by(Slide.order_index).all())
+    items = [{"id": i, "text": s.text}
+             for i, s in enumerate(slides) if (s.text or "").strip()]
+    if not items:
+        raise HTTPException(status_code=400, detail="검사할 대사가 없습니다")
+
+    results = narration.spellcheck_texts(items)
+    if results is None:
+        raise HTTPException(status_code=502, detail="오타 검증 실패 (API 키/네트워크 확인)")
+
+    id_to_slide = {i: s for i, s in enumerate(slides)}
+    out = [SpellcheckResult(slide_id=id_to_slide[r["id"]].id,
+                            original=r["original"], corrected=r["corrected"],
+                            has_error=r["has_error"])
+           for r in results]
+    return SpellcheckResponse(results=out, checked=len(out),
+                              errors=sum(1 for r in out if r.has_error))
+
+
+@router.post("/{project_id}/spellcheck/apply")
+def spellcheck_apply(project_id: str, req: SpellcheckApplyRequest,
+                     db: Session = Depends(get_db)):
+    """검증 결과 중 사용자가 선택한 수정안만 일괄 적용"""
+    project = db.query(Project).filter(Project.id == project_id).first()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if not req.fixes:
+        raise HTTPException(status_code=400, detail="적용할 수정안이 없습니다")
+
+    applied = 0
+    for fix in req.fixes:
+        slide = db.query(Slide).filter(Slide.id == fix.get("slide_id"),
+                                       Slide.project_id == project_id).first()
+        if slide and (fix.get("corrected") or "").strip():
+            slide.text = fix["corrected"].strip()
+            applied += 1
+    db.commit()
+    return {"ok": True, "applied": applied}

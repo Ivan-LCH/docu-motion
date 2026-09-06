@@ -177,6 +177,14 @@ export interface BgmHit {
   page_url: string
 }
 
+// 오타 검증 결과
+export interface SpellcheckResult {
+  slide_id: string
+  original: string
+  corrected: string
+  has_error: boolean
+}
+
 // ─── Projects ───────────────────────────────
 export const api = {
   // 프로젝트
@@ -218,6 +226,14 @@ export const api = {
   splitScript: (projectId: string, script: string) =>
     request<{ ok: boolean; assigned: number }>(
       'POST', `/projects/${projectId}/narration/split`, { script }),
+
+  // 오타 검증 (맞춤법/띄어쓰기)
+  spellcheck: (projectId: string) =>
+    request<{ results: SpellcheckResult[]; checked: number; errors: number }>(
+      'POST', `/projects/${projectId}/spellcheck`),
+  applySpellcheck: (projectId: string, fixes: { slide_id: string; corrected: string }[]) =>
+    request<{ ok: boolean; applied: number }>(
+      'POST', `/projects/${projectId}/spellcheck/apply`, { fixes }),
 
   // 렌더링
   startRender: (id: string) => request<{ ok: boolean }>('POST', `/projects/${id}/render`),

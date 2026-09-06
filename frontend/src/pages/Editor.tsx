@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { api, Slide, ProjectDetail, BgmHit, PhotosSortOrder, parseSlideMeta, RouteMeta, SavedLocation, GeocodeResult, OrganizeSuggestions, RouteSuggestion, CurationSuggestion } from '../api/client'
+import { api, Slide, ProjectDetail, BgmHit, PhotosSortOrder, parseSlideMeta, RouteMeta, SavedLocation, GeocodeResult, OrganizeSuggestions, RouteSuggestion, CurationSuggestion, SpellcheckResult } from '../api/client'
 import { useToast } from '../components/ToastContext'
 import GoogleAuthSection, { extractCodeFromUrl } from '../components/GoogleAuthSection'
 
@@ -1058,6 +1058,44 @@ function GlobalSettingsModal({ project, projectId, slides, onClose, onSave, onPr
   const aiPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   useEffect(() => () => { if (aiPollRef.current) clearInterval(aiPollRef.current) }, [])
 
+  // ── 오타 검증 (맞춤법/띄어쓰기) ──
+  const [spellBusy, setSpellBusy] = useState(false)
+  const [spellResults, setSpellResults] = useState<SpellcheckResult[] | null>(null)
+  const [spellChecked, setSpellChecked] = useState<Set<string>>(new Set())
+  const [spellApplying, setSpellApplying] = useState(false)
+  const handleSpellcheck = async () => {
+    if (spellBusy || !projectId) return
+    setSpellBusy(true)
+    try {
+      const r = await api.spellcheck(projectId)
+      const errs = r.results.filter(x => x.has_error)
+      if (!errs.length) {
+        toast(`오류 없음 — ${r.checked}개 대사 검사 완료`, 'success')
+      } else {
+        setSpellResults(errs)
+        setSpellChecked(new Set(errs.map(x => x.slide_id)))
+      }
+    } catch (e: unknown) {
+      toast(e instanceof Error ? e.message : '오타 검증 실패', 'error')
+    } finally { setSpellBusy(false) }
+  }
+  const handleApplySpellcheck = async () => {
+    if (!projectId || !spellResults) return
+    setSpellApplying(true)
+    try {
+      const fixes = spellResults
+        .filter(x => spellChecked.has(x.slide_id))
+        .map(x => ({ slide_id: x.slide_id, corrected: x.corrected }))
+      const r = await api.applySpellcheck(projectId, fixes)
+      const fresh = await api.getSlides(projectId)
+      onApplySlides(fresh)
+      toast(`${r.applied}개 대사 수정 완료`, 'success')
+      setSpellResults(null)
+    } catch (e: unknown) {
+      toast(e instanceof Error ? e.message : '수정 적용 실패', 'error')
+    } finally { setSpellApplying(false) }
+  }
+
   // F2: 전체 슬라이드 AI 대사 일괄 생성 (비동기 + 진행률 폴링, 빈 슬라이드만)
   const handleGenerateAll = async () => {
     if (aiAllBusy) return
@@ -1513,11 +1551,16 @@ function GlobalSettingsModal({ project, projectId, slides, onClose, onSave, onPr
               </button>
             ))}
           </div>
-          <button className="btn btn-ghost" style={{ width: '100%', fontSize: '0.82rem', marginBottom: '0.6rem' }}
+          <button className="btn btn-ghost" style={{ width: '100%', fontSize: '0.82rem', marginBottom: '0.4rem' }}
             onClick={handleGenerateAll} disabled={aiAllBusy || slides.length === 0}>
             {aiAllBusy
               ? `⏳ 생성 중...${aiProgress ? ` (${aiProgress.done}/${aiProgress.total})` : ''}`
               : '🖼️ 사진 보고 전체 대사 생성 (빈 슬라이드만)'}
+          </button>
+          <button className="btn btn-ghost" style={{ width: '100%', fontSize: '0.82rem', marginBottom: '0.6rem' }}
+            onClick={handleSpellcheck}
+            disabled={spellBusy || aiAllBusy || !slides.some(s => (s.text || '').trim())}>
+            {spellBusy ? '⏳ 검사 중...' : '🔍 오타 검증 (맞춤법·띄어쓰기)'}
           </button>
           {aiAllBusy && aiProgress && (
             <div style={{ height: 5, background: 'var(--bg-secondary)', borderRadius: 3, overflow: 'hidden', marginBottom: '0.6rem' }}>
@@ -1593,6 +1636,42 @@ function GlobalSettingsModal({ project, projectId, slides, onClose, onSave, onPr
           </button>
         </div>
       </div>
+
+      {/* ── 오타 검증 결과 모달 ── */}
+      {spellResults && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }} onClick={() => setSpellResults(null)}>
+          <div style={{ background: 'var(--bg-primary)', borderRadius: 12, padding: '1.5rem', width: 'min(680px, 92vw)', maxHeight: '82vh', display: 'flex', flexDirection: 'column' }} onClick={e => e.stopPropagation()}>
+            <h3 style={{ margin: 0, marginBottom: '0.25rem' }}>🔍 오타 검증 결과</h3>
+            <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', margin: '0 0 1rem' }}>
+              {spellResults.length}개 대사에 수정 제안이 있어요. 체크를 해제하면 원문을 유지합니다.
+            </p>
+            <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+              {spellResults.map(r => (
+                <label key={r.slide_id} style={{ display: 'flex', alignItems: 'flex-start', gap: '0.6rem', padding: '0.55rem', border: '1px solid var(--border)', borderRadius: 8, cursor: 'pointer' }}>
+                  <input type="checkbox" style={{ marginTop: '0.2rem' }} checked={spellChecked.has(r.slide_id)} onChange={() => {
+                    setSpellChecked(prev => {
+                      const next = new Set(prev)
+                      if (next.has(r.slide_id)) next.delete(r.slide_id)
+                      else next.add(r.slide_id)
+                      return next
+                    })
+                  }} />
+                  <div style={{ flex: 1, minWidth: 0, fontSize: '0.82rem' }}>
+                    <div style={{ color: 'var(--text-secondary)', textDecoration: 'line-through' }}>{r.original}</div>
+                    <div style={{ color: 'var(--accent)', fontWeight: 600, marginTop: '0.15rem' }}>{r.corrected}</div>
+                  </div>
+                </label>
+              ))}
+            </div>
+            <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', marginTop: '1rem' }}>
+              <button className="btn" onClick={() => setSpellResults(null)}>취소</button>
+              <button className="btn btn-primary" onClick={handleApplySpellcheck} disabled={spellApplying || spellChecked.size === 0}>
+                {spellApplying ? '적용 중…' : `${spellChecked.size}개 수정`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
