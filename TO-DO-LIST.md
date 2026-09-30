@@ -340,6 +340,32 @@
         . 설정 모달 「🔍 오타 검증」 버튼 + 결과 모달(취소선 원문→수정안,
           체크박스 선택 적용) — 자동 수정 없이 항상 사용자 검토 후 수락
 
+  ── 11. 🚀 원클릭 자동 영상 (2026-09-30 신규) ──
+  목표: 구글 포토 사진 선택 → 한 번의 호출로 영상 완성.
+        기존 5단계 수작업(큐레이션 수락→나레이션→연출→렌더→확인)을 파이프라인 하나로.
+  - [O] 11-1. 자동 영상 파이프라인 백엔드 ✓ 2026-09-30
+        . 신규 backend/services/auto_video.py — run_auto_video(project_id, opts):
+          ① 자동 큐레이션: curate_photos() → blurry/dark/duplicate 자동 삭제
+             (기존 수동 수락 단계 생략), order_index 재정렬
+          ② 스마트 나레이션: narration_ratio(기본 0.4)만큼만 Gemini 자막+TTS 생성.
+             대상은 슬라이드 전체에 고르게 분산. 나머지는 use_tts=0·자막 없음 —
+             BGM 위로 그냥 통과 (자막 과다 방지)
+          ③ 자동 연출: 이미지 슬라이드별 Ken Burns 30~80 랜덤 +
+             전환 효과 crossfade/fade_black/slide_left/slide_right 순환 배정 +
+             style_preset 적용
+          ④ 렌더: 기존 worker.run_render() 재사용
+        . 실패 시 graceful degradation: GOOGLE_API_KEY 없으면 전체 무나레이션 진행,
+          단계별 실패는 상태에 기록하고 파이프라인 계속
+        . 신규 backend/api/v1/auto_video.py:
+          POST /{project_id}/auto-video (202, 옵션: narration_ratio/tone/
+            style_preset/auto_curate) + GET /status (task+render 병합) +
+          DELETE / (상태 초기화). main.py 라우터 등록
+        . 검증: 스텁 모의 테스트 7항목 통과 (분산 선택·경계값·삭제·연출·phase 흐름·완료)
+  - [ ] 11-2. 프론트엔드 「🚀 자동 영상」 버튼 + 진행률 UI
+        . 프로젝트 화면에 원클릭 버튼, 옵션(narration_ratio 슬라이더·tone·스타일) 모달,
+          phase별 진행 바 (curating→narrating→directing→rendering)
+  - [ ] 11-3. 실환경 E2E 검증 (사진 10장 샘플 프로젝트로 전 구간 실행)
+
 
 ================================================================================
 📝 참고: 완료된 과거 이력은 TO-DO-ARCHIVE.md 파일에서 확인하세요.
