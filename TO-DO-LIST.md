@@ -361,9 +361,14 @@
             style_preset/auto_curate) + GET /status (task+render 병합) +
           DELETE / (상태 초기화). main.py 라우터 등록
         . 검증: 스텁 모의 테스트 7항목 통과 (분산 선택·경계값·삭제·연출·phase 흐름·완료)
-  - [ ] 11-2. 프론트엔드 「🚀 자동 영상」 버튼 + 진행률 UI
-        . 프로젝트 화면에 원클릭 버튼, 옵션(narration_ratio 슬라이더·tone·스타일) 모달,
-          phase별 진행 바 (curating→narrating→directing→rendering)
+  - [O] 11-2. 프론트엔드 「🚀 자동 영상」 버튼 + 진행률 UI ✓ 2026-09-30
+        . client.ts: AutoVideoOptions/Task/Status 타입 + startAutoVideo/
+          getAutoVideoStatus 추가
+        . Editor.tsx: AutoVideoModal (자막 비율 슬라이더 0~100%·톤 선택·
+          스타일 선택·자동 큐레이션 체크박스) + 사이드바 「🚀 자동 영상」
+          액션 카드 (진행 중 phase·% 표시) + 2초 폴링 상태 표시
+          (🗑️ 제거·🎙️ 나레이션·🔇 무자막 통과 카운트)
+        . 검증: npx tsc --noEmit 통과 (에러 0). vite build는 사용자 수동 실행용.
   - [ ] 11-3. 실환경 E2E 검증 (사진 10장 샘플 프로젝트로 전 구간 실행)
 
 

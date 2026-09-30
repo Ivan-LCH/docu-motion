@@ -122,6 +122,29 @@ export interface RenderStatus {
   message: string
 }
 
+// 원클릭 자동 영상 (11-1)
+export interface AutoVideoOptions {
+  narration_ratio: number  // 0~1: 나레이션(자막+TTS)을 달 슬라이드 비율
+  tone: 'documentary' | 'vlog'
+  style_preset: string
+  auto_curate: boolean
+}
+export interface AutoVideoTask {
+  status?: string
+  phase?: string
+  progress?: number
+  message?: string
+  narrated?: number
+  silent?: number
+  failed?: number
+  deleted?: number
+  remaining?: number
+}
+export interface AutoVideoStatus {
+  task: AutoVideoTask
+  render: { status?: string; progress?: number; message?: string }
+}
+
 export interface PickerSession {
   id: string
   pickerUri: string
@@ -240,6 +263,12 @@ export const api = {
   getRenderStatus: (id: string) => request<RenderStatus>('GET', `/projects/${id}/render/status`),
   downloadUrl: (id: string, version?: string | number) =>
     `${BASE}/projects/${id}/download${version ? `?v=${encodeURIComponent(version)}` : ''}`,
+
+  // 원클릭 자동 영상 (11-1): 큐레이션 → 스마트 나레이션 → 자동 연출 → 렌더
+  startAutoVideo: (projectId: string, opts: AutoVideoOptions) =>
+    request<{ ok: boolean }>('POST', `/projects/${projectId}/auto-video`, opts),
+  getAutoVideoStatus: (projectId: string) =>
+    request<AutoVideoStatus>('GET', `/projects/${projectId}/auto-video/status`),
 
   // 슬라이드 미리보기 (구간 렌더) — 6-19/6-20
   requestPreview: (projectId: string, slideId: string,

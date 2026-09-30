@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { api, Slide, ProjectDetail, BgmHit, PhotosSortOrder, parseSlideMeta, RouteMeta, SavedLocation, GeocodeResult, OrganizeSuggestions, RouteSuggestion, CurationSuggestion, SpellcheckResult } from '../api/client'
+import { api, Slide, ProjectDetail, BgmHit, PhotosSortOrder, parseSlideMeta, RouteMeta, SavedLocation, GeocodeResult, OrganizeSuggestions, RouteSuggestion, CurationSuggestion, SpellcheckResult, AutoVideoOptions, AutoVideoTask } from '../api/client'
 import { useToast } from '../components/ToastContext'
 import GoogleAuthSection, { extractCodeFromUrl } from '../components/GoogleAuthSection'
 
@@ -1000,8 +1000,109 @@ function RenderModal({ isActive, progress, progressMsg, project, projectId, hasV
   )
 }
 
-function GlobalSettingsModal({ project, projectId, slides, onClose, onSave, onProjectUpdate, onOpenBgmSearch, onToggleAllTts, onApplySlides }: {
-  project: ProjectDetail
+// ─── Auto Video Modal (원클릭 자동 영상, 11-2) ──
+const AV_PHASE_LABEL: Record<string, string> = {
+  queued: '대기 중', starting: '준비 중', curating: '사진 정리 중',
+  narrating: '나레이션 생성 중', directing: '자동 연출 적용 중',
+  rendering: '렌더링 중', done: '완료',
+}
+
+function AutoVideoModal({ opts, setOpts, running, phase, progress, msg, task, onStart, onClose }: {
+  opts: AutoVideoOptions
+  setOpts: (o: AutoVideoOptions) => void
+  running: boolean
+  phase: string
+  progress: number
+  msg: string
+  task: AutoVideoTask
+  onStart: () => void
+  onClose: () => void
+}) {
+  const phaseLabel = AV_PHASE_LABEL[phase] || phase
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" style={{ maxWidth: 460 }} onClick={e => e.stopPropagation()}>
+        <div className="modal-header">
+          <span className="modal-title">&#x1F680; 원클릭 자동 영상</span>
+          <button className="btn btn-ghost btn-icon" onClick={onClose}>&#x2715;</button>
+        </div>
+
+        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.75rem', lineHeight: 1.5 }}>
+          사진 정리 → 스마트 나레이션 → 자동 연출 → 렌더까지 한 번에 처리합니다.
+        </div>
+
+        {/* 자막 비율 */}
+        <div style={{ marginBottom: '0.75rem' }}>
+          <label className="label">🎙️ 자막+나레이션 비율: <strong>{Math.round(opts.narration_ratio * 100)}%</strong></label>
+          <input type="range" min={0} max={100} value={Math.round(opts.narration_ratio * 100)}
+            onChange={e => setOpts({ ...opts, narration_ratio: Number(e.target.value) / 100 })}
+            disabled={running} style={{ width: '100%' }} />
+          <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+            나머지는 자막 없이 BGM 위로 그냥 통과합니다
+          </div>
+        </div>
+
+        {/* 톤 */}
+        <div style={{ marginBottom: '0.75rem' }}>
+          <label className="label">🗣️ 나레이션 톤</label>
+          <select className="input" value={opts.tone}
+            onChange={e => setOpts({ ...opts, tone: e.target.value as 'documentary' | 'vlog' })}
+            disabled={running} style={{ width: '100%' }}>
+            <option value="documentary">🎙 다큐멘터리 (담담하고 따뜻하게)</option>
+            <option value="vlog">📹 브이로그 (밝고 캐주얼하게)</option>
+          </select>
+        </div>
+
+        {/* 스타일 */}
+        <div style={{ marginBottom: '0.75rem' }}>
+          <label className="label">🎨 자동 연출 스타일</label>
+          <select className="input" value={opts.style_preset}
+            onChange={e => setOpts({ ...opts, style_preset: e.target.value })}
+            disabled={running} style={{ width: '100%' }}>
+            <option value="cinematic">시네마틱 (틸-오렌지)</option>
+            <option value="vlog">브이로그 (밝고 선명)</option>
+            <option value="documentary">다큐 (중립/차분)</option>
+            <option value="trending">트렌딩 (따뜻한 빈티지)</option>
+            <option value="none">없음 (원본)</option>
+          </select>
+        </div>
+
+        {/* 자동 큐레이션 */}
+        <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.8rem', marginBottom: '0.75rem', cursor: 'pointer' }}>
+          <input type="checkbox" checked={opts.auto_curate}
+            onChange={e => setOpts({ ...opts, auto_curate: e.target.checked })}
+            disabled={running} />
+          🧹 흐림/어두움/중복 컷 자동 제거
+        </label>
+
+        <button className="btn-action-primary render" onClick={onStart} disabled={running} style={{ width: '100%' }}>
+          {running ? <><span className="spinner" /> {phaseLabel}...</> : '🚀 자동 영상 만들기'}
+        </button>
+
+        {running && (
+          <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '0.6rem', marginTop: '0.5rem' }}>
+            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '0.35rem' }}>
+              {phaseLabel}: {msg} ({Math.round(progress)}%)
+            </div>
+            <div className="progress-bar-wrap">
+              <div className="progress-bar-fill animate-pulse" style={{ width: `${Math.max(5, progress)}%` }} />
+            </div>
+            {(task.deleted || task.narrated || task.silent) && (
+              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '0.35rem' }}>
+                {[task.deleted ? `🗑️ ${task.deleted}장 제거` : '',
+                  task.narrated ? `🎙️ ${task.narrated}장 나레이션` : '',
+                  task.silent ? `🔇 ${task.silent}장 무자막 통과` : '']
+                  .filter(Boolean).join(' · ')}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function GlobalSettingsModal({ project, projectId, slides, onClose, onSave, onProjectUpdate, onOpenBgmSearch, onToggleAllTts, onApplySlides }: {   project: ProjectDetail
   projectId: string
   slides: Slide[]
   onClose: () => void
@@ -2953,6 +3054,17 @@ export default function Editor() {
   useEffect(() => { reloadLocations() }, [reloadLocations])
   const [showRender, setShowRender] = useState(false)
   const [showStoryboard, setShowStoryboard] = useState(false)
+  // 원클릭 자동 영상 (11-2)
+  const [showAutoVideo, setShowAutoVideo] = useState(false)
+  const [avOpts, setAvOpts] = useState<AutoVideoOptions>({
+    narration_ratio: 0.4, tone: 'documentary', style_preset: 'cinematic', auto_curate: true,
+  })
+  const [avRunning, setAvRunning] = useState(false)
+  const [avPhase, setAvPhase] = useState('')
+  const [avProgress, setAvProgress] = useState(0)
+  const [avMsg, setAvMsg] = useState('')
+  const [avTask, setAvTask] = useState<AutoVideoTask>({})
+  const avPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [isDragging, setIsDragging] = useState(false)
   const [previewVideoSlide, setPreviewVideoSlide] = useState<Slide | null>(null)
   const [selectedSlideIds, setSelectedSlideIds] = useState<Set<string>>(new Set())
@@ -3020,6 +3132,46 @@ export default function Editor() {
     }, 2000)
     return () => { if (pollRef.current) clearInterval(pollRef.current) }
   }, [rendering, projectId, loadProject, toast])
+
+  // Auto-video polling (11-2)
+  useEffect(() => {
+    if (!avRunning || !projectId) { if (avPollRef.current) clearInterval(avPollRef.current); return }
+    avPollRef.current = setInterval(async () => {
+      try {
+        const s = await api.getAutoVideoStatus(projectId)
+        const t = s.task || {}
+        setAvTask(t)
+        setAvPhase(t.phase || '')
+        setAvProgress(t.progress || 0)
+        setAvMsg(t.message || '')
+        if (t.status === 'done' || t.status === 'error') {
+          setAvRunning(false)
+          clearInterval(avPollRef.current!)
+          await loadProject()
+          if (t.status === 'done') toast('🎉 자동 영상 완성!', 'success')
+          else toast(`자동 영상 오류: ${t.message || ''}`, 'error')
+        }
+      } catch { clearInterval(avPollRef.current!) }
+    }, 2000)
+    return () => { if (avPollRef.current) clearInterval(avPollRef.current) }
+  }, [avRunning, projectId, loadProject, toast])
+
+  const handleAutoVideo = async () => {
+    if (!projectId) return
+    const unsaved = slidesRef.current.map((s, i) => ({ ...s, order_index: i }))
+    await api.saveSlides(projectId, unsaved)
+    try {
+      await api.startAutoVideo(projectId, avOpts)
+      setAvRunning(true)
+      setAvPhase('queued')
+      setAvProgress(0)
+      setAvMsg('대기 중...')
+      setAvTask({})
+      toast('🚀 자동 영상 시작됨', 'info')
+    } catch (e: unknown) {
+      toast(e instanceof Error ? e.message : '자동 영상 시작 실패', 'error')
+    }
+  }
 
   const handleSave = async () => {
     if (!projectId) return
@@ -3445,6 +3597,16 @@ export default function Editor() {
           {isActive && <span className="spinner" style={{ marginLeft: 'auto' }} />}
         </button>
 
+        {/* 원클릭 자동 영상 (11-2) — 진행 중일 때 phase 표시 */}
+        <button className="action-card" onClick={() => setShowAutoVideo(true)}>
+          <div className="action-icon" style={{ background: 'rgba(168,85,247,0.12)' }}>&#x1F680;</div>
+          <div className="action-label">
+            <span>{avRunning ? `${AV_PHASE_LABEL[avPhase] || '처리 중'} (${Math.round(avProgress)}%)` : '자동 영상'}</span>
+            <span>정리→나레이션→연출→렌더 한번에</span>
+          </div>
+          {avRunning && <span className="spinner" style={{ marginLeft: 'auto' }} />}
+        </button>
+
       </aside>
 
       {/* Thumbnail Panel (6-2 + 6-4) */}
@@ -3705,6 +3867,19 @@ export default function Editor() {
         />
       )}
 
+      {showAutoVideo && (
+        <AutoVideoModal
+          opts={avOpts}
+          setOpts={setAvOpts}
+          running={avRunning}
+          phase={avPhase}
+          progress={avProgress}
+          msg={avMsg}
+          task={avTask}
+          onStart={handleAutoVideo}
+          onClose={() => setShowAutoVideo(false)}
+        />
+      )}
       {showRender && (
         <RenderModal
           isActive={isActive}
