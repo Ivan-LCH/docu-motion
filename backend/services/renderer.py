@@ -22,9 +22,9 @@ from pathlib import Path
 
 from moviepy.editor import (
     ImageClip, AudioFileClip, concatenate_videoclips,
-    TextClip, CompositeVideoClip, ColorClip
+    TextClip, CompositeVideoClip, ColorClip, VideoClip
 )
-from PIL import Image
+from PIL import Image, ImageColor
 from proglog import ProgressBarLogger
 
 try:
@@ -35,6 +35,10 @@ except ImportError:
 from backend.services.color_grade import apply_cinematic, _resolve_motion_cfg, _resolve_rhythm_cfg, MOTION_VARIETY
 from backend.services.face_detect import detect_face_center
 from backend.services.beat_detect import detect_beats, nearest_beat
+from backend.services.presets import (
+    TEXT_STYLES, compute_slide_starts, slide_overlap, effect_duration,
+    normalize_transition, normalize_text_style, resolve_style_text,
+)
 from backend.core.config import CANVAS_SIZE, FONT_PATH, FONT_BOLD_PATH, TTS_SERVER_URL, TTS_VOICE_NAME
 from backend.core.logger import get_logger
 
@@ -216,6 +220,213 @@ def make_overlay_frame_fn(overlays: list):
 
 
 # ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── #
+# Text Layer (PIL → ImageClip 기반 자막 / hero / punch — CinemaFlow)
+# ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── #
+
+_FONT_CACHE: dict = {}
+
+
+def _load_font(path: str, size: int):
+    key = (path, size)
+    if key not in _FONT_CACHE:
+        try:
+            _FONT_CACHE[key] = ImageFont.truetype(path, size)
+        except Exception:
+            _FONT_CACHE[key] = ImageFont.load_default()
+    return _FONT_CACHE[key]
+
+
+def _parse_color(color, default=(255, 255, 255)):
+    try:
+        return ImageColor.getrgb(color)[:3]
+    except Exception:
+        return default
+
+
+def _wrap_text(draw, text: str, font, max_w: int, stroke: int) -> list[str]:
+    """단어 단위 줄바꿈. 한 단어가 한 줄보다 길면(띄어쓰기 없는 한글 등) 글자 단위로 끊는다."""
+    def fits(s):
+        return draw.textlength(s, font=font) + 2 * stroke <= max_w
+
+    lines = []
+    for para in text.split("\n"):
+        cur = ""
+        for word in para.split(" "):
+            cand = f"{cur} {word}" if cur else word
+            if fits(cand):
+                cur = cand
+                continue
+            if cur:
+                lines.append(cur)
+                cur = ""
+            for ch in word:
+                if not cur or fits(cur + ch):
+                    cur += ch
+                else:
+                    lines.append(cur)
+                    cur = ch
+        if cur:
+            lines.append(cur)
+    return lines or [""]
+
+
+def _render_text_rgba(text: str, font_path: str, font_px: int, color, max_w: int,
+                      stroke: int, line_gap: int, box_alpha: float = 0.0,
+                      min_box_w: int = 0, shadow: bool = False,
+                      max_lines: int = 0) -> np.ndarray:
+    """텍스트 → RGBA numpy 배열 (외곽선 + 선택적 반투명 박스 / 그림자)."""
+    probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+    font = _load_font(font_path, font_px)
+    lines = _wrap_text(probe, text, font, max_w, stroke)
+    # max_lines 초과 시 폰트를 줄여 맞추고, 그래도 넘치면 말줄임
+    while max_lines and len(lines) > max_lines and font_px > 14:
+        font_px = int(font_px * 0.9)
+        stroke = max(1, int(stroke * 0.9))
+        font = _load_font(font_path, font_px)
+        lines = _wrap_text(probe, text, font, max_w, stroke)
+    if max_lines and len(lines) > max_lines:
+        lines = lines[:max_lines]
+        lines[-1] = lines[-1][:-1] + "…" if len(lines[-1]) > 1 else lines[-1]
+
+    ascent, descent = font.getmetrics()
+    line_h = ascent + descent
+    text_w = int(max(probe.textlength(l, font=font) for l in lines)) + 2 * stroke
+    text_h = len(lines) * line_h + (len(lines) - 1) * line_gap + 2 * stroke
+
+    if box_alpha > 0:
+        pad_x, pad_y = 12, 7
+    elif shadow:
+        pad_x = pad_y = max(4, font_px // 6)
+    else:
+        pad_x = pad_y = 2
+    img_w = max(text_w + 2 * pad_x, min_box_w)
+    img_h = text_h + 2 * pad_y
+    img = Image.new("RGBA", (img_w, img_h), (0, 0, 0, 0))
+
+    if box_alpha > 0:
+        ImageDraw.Draw(img).rectangle((0, 0, img_w - 1, img_h - 1),
+                                      fill=(0, 0, 0, int(255 * box_alpha)))
+
+    def draw_lines(target, fill, stroke_fill, dx=0, dy=0):
+        d = ImageDraw.Draw(target)
+        for i, line in enumerate(lines):
+            lw = d.textlength(line, font=font)
+            x = (img_w - lw) / 2 + dx
+            y = pad_y + stroke + i * (line_h + line_gap) + dy
+            d.text((x, y), line, font=font, fill=fill,
+                   stroke_width=stroke, stroke_fill=stroke_fill)
+
+    if shadow:
+        sh = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        off = max(2, font_px // 24)
+        draw_lines(sh, (0, 0, 0, 170), (0, 0, 0, 170), dx=off, dy=off)
+        sh = sh.filter(ImageFilter.GaussianBlur(radius=max(2, font_px // 14)))
+        img = Image.alpha_composite(img, sh)
+
+    draw_lines(img, (*_parse_color(color), 255), (0, 0, 0, 255))
+    return np.array(img)
+
+
+def _ease_out_cubic(p: float) -> float:
+    p = min(1.0, max(0.0, p))
+    return 1.0 - (1.0 - p) ** 3
+
+
+def _ease_out_back(p: float, c1: float = 2.2) -> float:
+    p = min(1.0, max(0.0, p))
+    c3 = c1 + 1.0
+    return 1.0 + c3 * (p - 1.0) ** 3 + c1 * (p - 1.0) ** 2
+
+
+def _animated_text_clip(rgba: np.ndarray, duration: float, center: tuple,
+                        anim: str, anim_dur: float, rise_px: float, start: float = 0.0):
+    """RGBA 텍스트 이미지를 진입 애니메이션(fade_up / rise_scale / pop)과 함께 클립화.
+    프레임은 스케일별로 캐시 — 애니메이션이 끝난 뒤에는 매 프레임 같은 배열을 재사용."""
+    h, w = rgba.shape[:2]
+    smax = 1.25 if anim == "pop" else 1.0
+    bw, bh = int(np.ceil(w * smax)) + 2, int(np.ceil(h * smax)) + 2
+    src = Image.fromarray(rgba, "RGBA")
+    cache: dict = {}
+
+    def params(t):
+        p = (t / anim_dur) if anim_dur > 0 else 1.0
+        e = _ease_out_cubic(p)
+        if anim == "fade_up":
+            return 1.0, (1.0 - e) * rise_px, e
+        if anim == "rise_scale":
+            return 0.86 + 0.14 * e, (1.0 - e) * rise_px, min(1.0, max(0.0, p * 1.6))
+        if anim == "pop":
+            return 0.45 + 0.55 * _ease_out_back(p), 0.0, min(1.0, max(0.0, p * 2.5))
+        return 1.0, 0.0, 1.0
+
+    def layer(scale):
+        key = round(scale, 3)
+        if key not in cache:
+            if len(cache) > 64:
+                cache.clear()
+            sw, sh = max(1, int(round(w * key))), max(1, int(round(h * key)))
+            im = src if (sw, sh) == (w, h) else src.resize((sw, sh), Image.BILINEAR)
+            canvas = Image.new("RGBA", (bw, bh), (0, 0, 0, 0))
+            canvas.paste(im, ((bw - sw) // 2, (bh - sh) // 2))
+            arr = np.array(canvas)
+            cache[key] = (arr[:, :, :3], arr[:, :, 3].astype(np.float32) / 255.0)
+        return cache[key]
+
+    def make_frame(t):
+        return layer(params(t)[0])[0]
+
+    def make_mask(t):
+        s, _, a = params(t)
+        m = layer(s)[1]
+        return m if a >= 1.0 else m * a
+
+    x0 = int(round(center[0] - bw / 2))
+    y0 = center[1] - bh / 2
+    mask = VideoClip(make_mask, ismask=True, duration=duration)
+    clip = VideoClip(make_frame, duration=duration).set_mask(mask)
+    return (clip
+            .set_position(lambda t: (x0, int(round(y0 + params(t)[1]))))
+            .set_start(start))
+
+
+def render_text_layer(text: str, style: str, size: tuple, duration: float,
+                      start: float = 0.0, font_size: int = FONT_SIZE,
+                      font_color: str = TEXT_COLOR) -> list:
+    """텍스트 스타일(presets.TEXT_STYLES) → 캔버스 좌표에 배치된 클립 리스트.
+      caption: 하단 자막 + 반투명 박스, 0.3초 fade-up (문장 단위로 호출)
+      hero:    하단 중앙 큰 굵은 글씨, 0.5초 떠오르며 확대
+      punch:   중앙 대형 글씨, 0.15초 팝
+      none:    []
+    """
+    style = normalize_text_style(style)
+    text = (text or "").strip()
+    if style == "none" or not text or duration <= 0:
+        return []
+    spec = TEXT_STYLES[style]
+    cw, ch = size
+
+    if style == "caption":
+        rgba = _render_text_rgba(
+            text, FONT_BOLD_PATH, int(font_size), font_color, max_w=cw - 100,
+            stroke=2, line_gap=8, box_alpha=0.45, min_box_w=cw - 76)
+        bh = rgba.shape[0]
+        center = (cw / 2, ch - 23 - bh / 2)   # 기존 자막과 동일: 하단 30px 여백 + 박스 패딩 7px
+        rise = 12 * ch / 720
+    else:
+        base = min(cw, ch)
+        px = max(16, int(base * spec["font_scale"]))
+        rgba = _render_text_rgba(
+            text, FONT_BOLD_PATH, px, font_color, max_w=int(cw * 0.86),
+            stroke=max(2, px // 14), line_gap=max(4, px // 8), shadow=True,
+            max_lines=spec.get("max_lines", 0))
+        center = (cw / 2, ch * spec["y"])
+        rise = 40 * ch / 720
+
+    return [_animated_text_clip(rgba, duration, center, spec["anim"],
+                                min(spec["anim_dur"], duration), rise, start=start)]
+
+
+# ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── #
 # Apply Transition
 # ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── #
 
@@ -242,48 +453,205 @@ def _make_volume_duck_filter(t_start, t_end, duck_vol, fade):
     return volume_filter
 
 
-def apply_transition(clip_a, clip_b, transition: str, duration: float = None):
+def _smoothstep(p: float) -> float:
+    p = min(1.0, max(0.0, p))
+    return p * p * (3.0 - 2.0 * p)
+
+
+def _hblur(frame: np.ndarray, radius: float) -> np.ndarray:
+    """가로 방향 box blur (누적합 기반 프레임 평균) — 휩 팬 모션 블러용."""
+    r = int(radius)
+    if r < 1:
+        return frame
+    h, w = frame.shape[:2]
+    p = np.pad(frame.astype(np.float32), ((0, 0), (r, r), (0, 0)), mode="edge")
+    c = np.cumsum(p, axis=1)
+    c = np.concatenate([np.zeros_like(c[:, :1]), c], axis=1)   # c[:, j] = sum(p[:, :j])
+    win = 2 * r + 1
+    out = (c[:, win:win + w] - c[:, :w]) / win
+    return np.clip(out, 0, 255).astype(np.uint8)
+
+
+def _zoom_frame(frame: np.ndarray, scale: float) -> np.ndarray:
+    """중앙 기준 줌 (scale>1 확대). 출력 크기는 입력과 동일."""
+    if scale <= 1.001:
+        return frame
+    h, w = frame.shape[:2]
+    vw, vh = w / scale, h / scale
+    left, top = (w - vw) / 2.0, (h - vh) / 2.0
+    pil = Image.fromarray(frame).crop((left, top, left + vw, top + vh))
+    return np.array(pil.resize((w, h), Image.BILINEAR))
+
+
+def _light_leak_clip(size: tuple, d: float):
+    """절차적 라이트 릭: 따뜻한 그라디언트 색 + 가로로 지나가는 빛 덩어리 마스크 (에셋 파일 불필요)."""
+    w, h = size
+    yy = np.linspace(0.0, 1.0, h, dtype=np.float32)[:, None]
+    xx = np.linspace(0.0, 1.0, w, dtype=np.float32)[None, :]
+    g = (0.6 * yy + 0.4 * xx)[:, :, None]
+    warm_a = np.array([255, 196, 110], dtype=np.float32)   # 호박색
+    warm_b = np.array([255, 92, 58], dtype=np.float32)     # 주홍
+    color = (warm_a * (1.0 - g) + warm_b * g).astype(np.uint8)
+
+    def make_mask(t):
+        p = min(1.0, max(0.0, t / d)) if d > 0 else 1.0
+        env = np.sin(np.pi * p)
+        cx = -0.25 + 1.5 * p
+        cy = 0.38 + 0.12 * np.sin(np.pi * p)
+        blob = np.exp(-(((xx - cx) / 0.42) ** 2 + ((yy - cy) / 0.85) ** 2))
+        streak = 0.55 * np.exp(-((xx - (cx * 0.8 + 0.12)) / 0.07) ** 2)
+        return np.clip((blob + streak) * env * 0.85, 0.0, 1.0)
+
+    mask = VideoClip(make_mask, ismask=True, duration=d)
+    return ImageClip(color).set_duration(d).set_mask(mask)
+
+
+def _flash_clip(size: tuple, d: float):
+    """화이트 플래시: 전환 중앙에서 완전한 흰색, 양끝에서 0."""
+    w, h = size
+    ones = np.ones((h, w), dtype=np.float32)
+
+    def make_mask(t):
+        p = min(1.0, max(0.0, t / d)) if d > 0 else 1.0
+        return ones * float((1.0 - abs(2.0 * p - 1.0)) ** 0.6)
+
+    mask = VideoClip(make_mask, ismask=True, duration=d)
+    return ColorClip(size=size, color=(255, 255, 255)).set_duration(d).set_mask(mask)
+
+
+def apply_transition(clip_a, clip_b, transition: str, duration: float, canvas_size: tuple = None):
     """
-    clip_a → clip_b 사이에 전환 효과를 적용하여 연결된 클립 리스트를 반환합니다.
-    각 클립의 start 오프셋은 concatenate 방식 대신 직접 배치합니다.
+    clip_a 꼬리 / clip_b 머리에 전환 효과를 적용한다 (타임라인 배치는 compose_timeline 담당).
+    duration 은 presets.effect_duration() 으로 이미 결정·클램프된 값이어야 한다.
 
-    반환: (처리된 clip_a, 처리된 clip_b, offset_delta)
-      offset_delta = clip_a가 끝나기 전에 clip_b가 시작되는 시간 (겹침)
+    반환: (a_out, b_in, extras, a_dx, b_dx)
+      extras : 전환 구간(clip_b 시작 기준 0~duration)에 위에 얹을 오버레이 클립
+      a_dx/b_dx : 클립 로컬 시간 t → x 오프셋(px) 함수 (None = 이동 없음)
     """
-    t = duration if duration and duration > 0 else TRANSITION_DURATION
-    transition = (transition or "none").lower()
+    d = float(duration or 0.0)
+    name = normalize_transition(transition)
+    if d <= 0 or name == "none":
+        return clip_a, clip_b, [], None, None
+    w = (canvas_size or clip_a.size)[0]
 
-    if transition == "crossfade":
-        # clip_a의 마지막 t초에서 서서히 사라지고, clip_b의 첫 t초에서 서서히 나타남
-        a_out = clip_a.crossfadeout(t)
-        b_in  = clip_b.crossfadein(t)
-        return a_out, b_in, t
+    if name == "crossfade":
+        # b가 a 위에서 서서히 나타남 (a를 동시에 지우면 중간에 검정이 비쳐 어두워짐)
+        return clip_a, clip_b.crossfadein(d), [], None, None
 
-    elif transition == "fade_black":
-        # clip_a: fadeout(검정으로), clip_b: fadein(검정에서)
-        a_out = clip_a.fadeout(t)
-        b_in  = clip_b.fadein(t)
-        return a_out, b_in, 0  # 겹침 없이 순차 배치
+    if name == "fade_black":
+        # 겹침 없음: a 검정으로 → b 검정에서
+        return clip_a.fadeout(d), clip_b.fadein(d), [], None, None
 
-    elif transition in ("slide_left", "slide_right"):
-        # clip_b가 clip_a 위로 밀려 들어오는 효과
-        w = clip_a.size[0]
-        direction = 1 if transition == "slide_left" else -1
+    if name in ("slide_left", "slide_right"):
+        # b가 정지한 a 위로 밀려 들어옴 (slide_left: 오른쪽에서 왼쪽으로)
+        sign = 1 if name == "slide_left" else -1
 
-        def pos_b(rel_t):
-            progress = min(rel_t / t, 1.0)
-            x = direction * w * (1.0 - progress)
-            return (int(x), 0)
+        def b_dx(t):
+            return sign * w * (1.0 - _ease_out_cubic(t / d)) if t < d else 0.0
+        return clip_a, clip_b, [], None, b_dx
 
-        b_moving = clip_b.set_position(pos_b).set_start(0).set_duration(min(t, clip_b.duration))
-        # slide는 두 클립을 겹쳐서 CompositeVideoClip으로 합성
-        # 편의상 fade_black과 같이 offset 없이 처리 (구현 단순화)
-        a_out = clip_a.fadeout(t * 0.3)
-        b_in  = clip_b.fadein(t * 0.3)
-        return a_out, b_in, 0
+    if name in ("whip_left", "whip_right"):
+        # a는 밀려 나가고 b가 밀고 들어오는 빠른 팬 + 속도 비례 가로 모션 블러
+        sign = 1 if name == "whip_left" else -1
+        t0 = clip_a.duration - d
+        fps = 24.0
+        max_r = 0.06 * w
 
-    else:  # 'none' or unknown
-        return clip_a, clip_b, 0
+        def radius(p):
+            # smoothstep 속도(6p(1-p)) 기준 프레임당 이동 픽셀의 절반
+            return min(max_r, 0.5 * w * 6.0 * p * (1.0 - p) / (d * fps))
+
+        def a_dx(t):
+            return -sign * w * _smoothstep((t - t0) / d) if t > t0 else 0.0
+
+        def b_dx(t):
+            return sign * w * (1.0 - _smoothstep(t / d)) if t < d else 0.0
+
+        def a_blur(gf, t):
+            return _hblur(gf(t), radius((t - t0) / d)) if t > t0 else gf(t)
+
+        def b_blur(gf, t):
+            return _hblur(gf(t), radius(t / d)) if t < d else gf(t)
+
+        return clip_a.fl(a_blur), clip_b.fl(b_blur), [], a_dx, b_dx
+
+    if name == "zoom_through":
+        # a: 가속 줌인(1→1.6), b: 확대 상태(1.4)에서 안착하며 a 위로 페이드인
+        t0 = clip_a.duration - d
+
+        def a_zoom(gf, t):
+            if t <= t0:
+                return gf(t)
+            p = min(1.0, (t - t0) / d)
+            return _zoom_frame(gf(t), 1.0 + 0.6 * p * p)
+
+        def b_zoom(gf, t):
+            if t >= d:
+                return gf(t)
+            return _zoom_frame(gf(t), 1.0 + 0.4 * (1.0 - _ease_out_cubic(t / d)))
+
+        return clip_a.fl(a_zoom), clip_b.fl(b_zoom).crossfadein(d), [], None, None
+
+    if name == "light_leak":
+        return clip_a, clip_b.crossfadein(d), [_light_leak_clip(canvas_size or clip_a.size, d)], None, None
+
+    if name == "flash":
+        return clip_a, clip_b.crossfadein(d), [_flash_clip(canvas_size or clip_a.size, d)], None, None
+
+    return clip_a, clip_b, [], None, None
+
+
+def compose_timeline(clips: list, transitions: list, transition_duration: float = TRANSITION_DURATION,
+                     canvas_size: tuple = None):
+    """
+    슬라이드 클립들을 명시적 타임라인에 배치하고 전환 효과를 적용한다.
+      clip_i.set_start(starts[i]),  starts[i] = starts[i-1] + dur[i-1] - overlap[i]
+    overlap 규칙은 presets.compute_slide_starts() — 비트 스냅/BGM 덕킹/미리보기와 공유.
+
+    transitions[i]: i번째 클립의 '진입' 전환 (transitions[0] 무시)
+    반환: (combined_clip, starts, overlaps)
+    """
+    n = len(clips)
+    if n == 0:
+        raise ValueError("compose_timeline: no clips")
+    if canvas_size is None:
+        canvas_size = tuple(clips[0].size)
+    durations = [float(c.duration or 0.0) for c in clips]
+    starts, overlaps = compute_slide_starts(durations, transitions, transition_duration)
+    if n == 1:
+        return clips[0], starts, overlaps
+
+    out = list(clips)
+    head_dx = [None] * n
+    tail_dx = [None] * n
+    extras = []
+    for i in range(1, n):
+        name = normalize_transition(transitions[i] if i < len(transitions) else "none")
+        d = effect_duration(name, transition_duration, durations[i - 1], durations[i])
+        if name == "none" or d <= 0:
+            continue
+        a, b, ex, a_dx, b_dx = apply_transition(out[i - 1], out[i], name, d, canvas_size)
+        out[i - 1], out[i] = a, b
+        if a_dx:
+            tail_dx[i - 1] = a_dx
+        if b_dx:
+            head_dx[i] = b_dx
+        extras.extend(e.set_start(starts[i]) for e in ex)
+        logger.info(f"Slide {i}: '{name}' transition (effect={d:.2f}s, overlap={overlaps[i]:.2f}s)")
+
+    placed = []
+    for i, c in enumerate(out):
+        h_fn, t_fn = head_dx[i], tail_dx[i]
+        if h_fn or t_fn:
+            def pos(t, h_fn=h_fn, t_fn=t_fn):
+                x = (h_fn(t) if h_fn else 0.0) + (t_fn(t) if t_fn else 0.0)
+                return (int(round(x)), 0)
+            c = c.set_position(pos)
+        placed.append(c.set_start(starts[i]))
+
+    # bg_color 지정 → 불필요한 전체 마스크 합성 생략 (빈 영역은 검정)
+    combined = CompositeVideoClip(placed + extras, size=canvas_size, bg_color=(0, 0, 0))
+    return combined, starts, overlaps
 
 
 
@@ -362,6 +730,22 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
     a_clip = None
     subtitle_clips = []
 
+    # CinemaFlow 텍스트 스타일: caption 일 때만 문장별 자막, hero/punch 는 슬라이드 전체 1개 레이어,
+    # none 은 텍스트 없음. 나레이션(TTS) 오디오/타이밍은 스타일과 무관하게 동일.
+    text_style = normalize_text_style(item.get('text_style'))
+
+    def _add_caption(s: str, start: float, dur: float):
+        if text_style == 'caption':
+            subtitle_clips.extend(render_text_layer(
+                s, 'caption', canvas_size, dur, start=start,
+                font_size=_font_size, font_color=_font_color))
+
+    def _style_layer(duration: float) -> list:
+        if text_style not in ('hero', 'punch'):
+            return []
+        return render_text_layer(resolve_style_text(item, text_style), text_style,
+                                 canvas_size, duration, font_color=_font_color)
+
     # ── Video Slide ──────────────────────────────────
     if slide_type == 'video':
         import json as _json
@@ -412,30 +796,8 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
                 if dur <= 0 or start >= total_duration or not sub_txt:
                     continue
 
-                # TextClip 자막
-                tc = TextClip(
-                    txt=sub_txt, font=FONT_BOLD_PATH, fontsize=_font_size,
-                    color=_font_color, stroke_color='black', stroke_width=2,
-                    size=(canvas_size[0] - 100, None),
-                    method='caption', align='center', interline=8
-                )
-                tc_y = canvas_size[1] - 30 - tc.size[1]
-                sub_dur = min(dur, total_duration - start)
-                box = (
-                    ColorClip(size=(tc.size[0] + 24, tc.size[1] + 14), color=(0, 0, 0))
-                    .set_opacity(0.45)
-                    .set_start(start)
-                    .set_duration(sub_dur)
-                    .set_position(('center', tc_y - 7))
-                )
-                tc = (
-                    tc
-                    .set_start(start)
-                    .set_duration(sub_dur)
-                    .set_position(('center', tc_y))
-                )
-                subtitle_clips.append(box)
-                subtitle_clips.append(tc)
+                # 자막 (caption 스타일일 때만)
+                _add_caption(sub_txt, start, min(dur, total_duration - start))
 
                 # Optional TTS 오디오 생성
                 if use_tts and tts_engine:
@@ -484,7 +846,8 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
         if overlays:
             video_clip = video_clip.fl_image(make_overlay_frame_fn(overlays))
 
-        final_clip = CompositeVideoClip([bg_clip, video_clip] + subtitle_clips)
+        final_clip = CompositeVideoClip([bg_clip, video_clip] + subtitle_clips
+                                        + _style_layer(total_duration))
         if audio_clips:
             final_clip = final_clip.set_audio(CompositeAudioClip(audio_clips))
 
@@ -507,34 +870,7 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
         for idx, s in enumerate(sentences):
             char_ratio = len(s) / total_chars if total_chars > 0 else 1.0 / num_sent
             dur        = char_ratio * (total_duration - 0.2)
-            txt_clip = TextClip(
-                txt       = s,
-                font      = FONT_BOLD_PATH,
-                fontsize  = _font_size,
-                color     = _font_color,
-                stroke_color = 'black',
-                stroke_width = 2,
-                size      = (canvas_size[0] - 100, None),
-                method    = 'caption',
-                align     = 'center',
-                interline = 8
-            )
-            _ty = canvas_size[1] - 30 - txt_clip.size[1]
-            box = (
-                ColorClip(size=(txt_clip.size[0] + 24, txt_clip.size[1] + 14), color=(0, 0, 0))
-                .set_opacity(0.45)
-                .set_start(current_start)
-                .set_duration(dur)
-                .set_position(('center', _ty - 7))
-            )
-            txt_clip = (
-                txt_clip
-                .set_start(current_start)
-                .set_duration(dur)
-                .set_position(('center', _ty))
-            )
-            subtitle_clips.append(box)
-            subtitle_clips.append(txt_clip)
+            _add_caption(s, current_start, dur)
             current_start += dur
     else:
         # TTS - 문장별로 따로 생성 후 순차 이어붙이기 (concatenate)
@@ -604,31 +940,9 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
 
         # 자막 타이밍 — 실제 음성 길이 기반
         sub_offset = PAD_DELAY
-        BOTTOM_MARGIN = 30
         for sent_idx, (s, s_dur) in enumerate(zip(sentences, sent_durations)):
-            txt_clip = TextClip(
-                txt=s, font=FONT_BOLD_PATH, fontsize=_font_size,
-                color=_font_color, stroke_color='black', stroke_width=2,
-                size=(canvas_size[0] - 100, None),
-                method='caption', align='center', interline=8
-            )
-            txt_y = canvas_size[1] - BOTTOM_MARGIN - txt_clip.size[1]
-            # 자막 뒤 반투명 배경 박스 — 밝은 영상 위에서도 가독성 확보
-            box_clip = (
-                ColorClip(size=(txt_clip.size[0] + 24, txt_clip.size[1] + 14), color=(0, 0, 0))
-                .set_opacity(0.45)
-                .set_start(sub_offset)
-                .set_duration(s_dur)
-                .set_position(('center', txt_y - 7))
-            )
-            txt_clip = (
-                txt_clip
-                .set_start(sub_offset)
-                .set_duration(s_dur)
-                .set_position(('center', txt_y))
-            )
-            subtitle_clips.append(box_clip)
-            subtitle_clips.append(txt_clip)
+            # 자막 + 뒤 반투명 배경 박스 — 밝은 영상 위에서도 가독성 확보
+            _add_caption(s, sub_offset, s_dur)
             if narration_segments is not None:
                 narration_segments.append((sub_offset, sub_offset + s_dur))
             sub_offset += s_dur
@@ -672,7 +986,7 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
 
         # 이동 정보 오버레이 (출발→도착) — 거리/시간/수단/진행률은 프레임 상단 알약에
         # 이미 구워져 있으므로 TextClip 중복 표시는 제거 (8-x 리디자인)
-        route_overlays = list(subtitle_clips)
+        route_overlays = list(subtitle_clips) + _style_layer(total_duration)
         try:
             _o = (_meta.get('origin') or {}).get('name', '')
             _d = (_meta.get('destination') or {}).get('name', '')
@@ -868,7 +1182,7 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
     bg_clip = ColorClip(size=canvas_size, color=BG_COLOR).set_duration(total_duration)
 
     # Assemble
-    final_clip = CompositeVideoClip([bg_clip, img_clip] + subtitle_clips)
+    final_clip = CompositeVideoClip([bg_clip, img_clip] + subtitle_clips + _style_layer(total_duration))
     if a_clip is not None:
         final_clip = final_clip.set_audio(a_clip)
     return final_clip
@@ -915,6 +1229,7 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
 
     total_slides = len(slides)
     final_clips  = []
+    clip_items   = []  # final_clips 와 1:1 대응하는 슬라이드 item (누락 슬라이드로 인덱스 어긋남 방지)
     slide_narration_segments = []  # 슬라이드별 TTS 구간 (BGM 덕킹용, 8-7)
     tts_engine   = load_tts_engine(tts_voice)
 
@@ -937,14 +1252,16 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
             )
             if clip is not None:
                 final_clips.append(clip)
+                clip_items.append((i, item))
                 slide_narration_segments.append(segs)
 
+        transitions = [it.get('transition', 'none') for _, it in clip_items]
 
         # ── B2: 비트 스냅 컷 ────────────────────────────────────────────────
         # 자유 길이(텍스트 없는) 이미지 슬라이드의 종료 시점을 BGM 비트에 정렬.
         # TTS/텍스트/비디오 슬라이드는 길이 불변 (나레이션/자막 박자 보존).
-        # transition overlap 은 transition 타입+duration 의 함수(crossfade=duration, else 0)이므로
-        # apply_transition 전에 글로벌 clock 을 단일 패스로 계산 가능.
+        # 시작 시각은 compose_timeline 과 동일한 presets.slide_overlap 규칙으로 단일 패스 계산.
+        # overlap 상한이 현재 슬라이드 길이에 의존하므로 스냅 후 한 번 재계산한다.
         try:
             rhythm_cfg = _resolve_rhythm_cfg(style_preset)
             if (rhythm_cfg and rhythm_cfg.get("beat_snap") and bgm_path
@@ -954,33 +1271,41 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
                     tol  = float(rhythm_cfg.get("tolerance", 0.45))
                     dmin = float(rhythm_cfg.get("min", 2.0))
                     dmax = float(rhythm_cfg.get("max", 6.0))
-                    transitions = [item.get('transition', 'none') for item in slides]
-                    _ov = lambda t: transition_duration if t == 'crossfade' else 0.0
+
+                    def _start_of(idx, prev_start, prev_dur, cur_dur):
+                        if idx == 0:
+                            return 0.0
+                        return prev_start + prev_dur - slide_overlap(
+                            transitions[idx], transition_duration, prev_dur, cur_dur)
 
                     clock = 0.0
+                    prev_start, prev_dur = 0.0, 0.0
                     free_durs = {}
                     for idx in range(len(final_clips)):
                         dur = final_clips[idx].duration or 0.0
-                        if idx > 0:
-                            clock -= _ov(transitions[idx] if idx < len(transitions) else 'none')
-                        s = slides[idx]
+                        start = _start_of(idx, prev_start, prev_dur, dur)
+                        s = clip_items[idx][1]
                         # 자유 길이 = 텍스트 없는 이미지 슬라이드만
                         is_free = (not s.get('text')) and bool(s.get('image_filename')) \
                                   and not s.get('video_filename')
                         if is_free:
-                            target = nearest_beat(beats, clock + dur, tol)
+                            target = nearest_beat(beats, start + dur, tol)
                             if target is not None:
-                                new_dur = max(dmin, min(dmax, target - clock))
+                                new_dur = max(dmin, min(dmax, target - start))
+                                start = _start_of(idx, prev_start, prev_dur, new_dur)
+                                new_dur = max(dmin, min(dmax, target - start))
                                 if new_dur > 0 and abs(new_dur - dur) > 0.05:
                                     free_durs[idx] = new_dur
                                     dur = new_dur
-                        clock += dur
+                        prev_start, prev_dur = start, dur
+                        clock = start + dur
 
                     # 스냅된 클립만 rebuild (TTS 無 → 비용 저렴)
                     for idx, nd in free_durs.items():
                         segs = slide_narration_segments[idx] if idx < len(slide_narration_segments) else []
+                        src_i, src_item = clip_items[idx]
                         nb = build_slide_clip(
-                            slides[idx], idx, assets_dir, temp_dir, canvas_size,
+                            src_item, src_i, assets_dir, temp_dir, canvas_size,
                             tts_engine=tts_engine,
                             font_size=_font_size, font_color=_font_color,
                             default_slide_duration=default_slide_duration,
@@ -1003,36 +1328,12 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
         if not final_clips:
             raise Exception("렌더링할 클립이 없습니다 (텍스트가 입력된 슬라이드가 필요합니다)")
 
-        # ── 전환 효과 적용 ────────────────────────────────────────────────
-        # slides 데이터에서 transition 정보를 가져와 인접 클립 간 적용
-        # transition은 '해당 슬라이드가 시작될 때' 적용되는 효과
-        transition_overlaps = [0.0] * len(final_clips)  # idx 슬라이드가 앞 슬라이드와 겹치는 시간
-        if len(final_clips) > 1:
-            transitions = [item.get('transition', 'none') for item in slides]
-            composed_clips = [final_clips[0]]
-            current_end = final_clips[0].duration  # 누적 시작 오프셋
-
-            for idx in range(1, len(final_clips)):
-                clip_prev = composed_clips[-1]
-                clip_next = final_clips[idx]
-                trans = transitions[idx] if idx < len(transitions) else 'none'
-
-                clip_prev_out, clip_next_in, overlap = apply_transition(clip_prev, clip_next, trans, duration=transition_duration)
-                composed_clips[-1] = clip_prev_out
-                composed_clips.append(clip_next_in)
-                transition_overlaps[idx] = overlap
-
-                if overlap > 0:
-                    logger.info(f"Slide {idx}: applying '{trans}' transition (overlap={overlap}s)")
-                else:
-                    logger.info(f"Slide {idx}: applying '{trans}' transition")
-
-            final_clips = composed_clips
-        # ─────────────────────────────────────────────────────────────────
-
-        # ── 임시 연결 (BGM 문제 없음) ─────────────────────────────────
-        # 클립 연결
-        combined = concatenate_videoclips(final_clips, method="compose")
+        # ── 전환 효과 + 명시적 타임라인 배치 ─────────────────────────────
+        # transition은 '해당 슬라이드가 시작될 때' 적용되는 효과.
+        # concatenate_videoclips(compose)는 겹침을 표현하지 못하므로 각 클립을 set_start 로 직접 배치
+        # (overlap 규칙: presets.compute_slide_starts — 비트 스냅/BGM 덕킹/미리보기와 동일).
+        combined, slide_starts, _overlaps = compose_timeline(
+            final_clips, transitions, transition_duration, canvas_size)
 
         # ── 워터마크 오버레이 ──────────────────────────────────────
         if watermark_text:
@@ -1109,12 +1410,9 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
                     .audio_fadeout(min(2.0, total_duration * 0.05)))
 
                 # ── BGM 덕킹 (8-7): TTS 나레이션 구간에서 BGM 볼륨 자동 감소 ──
-                # 슬라이드별 상대 구간 + 전환 overlap을 반영해 글로벌 타임라인으로 환산
+                # 슬라이드별 상대 구간을 compose_timeline 의 실제 시작 시각으로 환산
                 global_narr_segs = []
-                _t = 0.0
-                for _idx, _clip in enumerate(final_clips):
-                    if _idx > 0:
-                        _t += final_clips[_idx - 1].duration - transition_overlaps[_idx]
+                for _idx, _t in enumerate(slide_starts):
                     for (_s, _e) in slide_narration_segments[_idx]:
                         global_narr_segs.append((_t + _s, _t + _e))
 
