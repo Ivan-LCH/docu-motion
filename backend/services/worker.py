@@ -44,6 +44,7 @@ def run_render(project_id: str):
         slides_data = [
             {
                 "image_filename": s.image_filename,
+                "label": s.label or "",
                 "text": s.text,
                 "slide_type": s.slide_type or "image",
                 "video_filename": s.video_filename or "",
@@ -59,6 +60,7 @@ def run_render(project_id: str):
                 "image_fit": s.image_fit or "cover",
                 "ken_burns": s.ken_burns if s.ken_burns is not None else 0,
                 "meta": s.meta or "{}",
+                "text_style": s.text_style or "caption",
             }
             for s in slides
         ]

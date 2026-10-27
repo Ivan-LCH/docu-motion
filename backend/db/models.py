@@ -64,7 +64,8 @@ class Slide(Base):
     use_tts        = Column(Integer, default=1)             # 0 or 1 (SQLite has no BOOLEAN)
     trim_start     = Column(Float, default=0.0)             # Video trim start time (seconds)
     trim_end       = Column(Float, default=0.0)             # Video trim end time (seconds)
-    transition     = Column(String(50), default="crossfade")     # Scene transition: 'none'|'crossfade'|'fade_black'|'slide_left'|'slide_right'
+    transition     = Column(String(50), default="crossfade")     # Scene transition: presets.VALID_TRANSITIONS
+    text_style     = Column(String(20), default="caption")       # 텍스트 스타일: presets.VALID_TEXT_STYLES ('caption'|'hero'|'punch'|'none')
     tts_volume     = Column(Float, default=1.0)              # TTS audio volume (0.0 ~ 2.0), independent of video volume
     rotation       = Column(Integer, default=0)               # Image/Video rotation: 0, 90, 180, 270
     overlays       = Column(Text, default="[]")              # JSON array of overlay objects

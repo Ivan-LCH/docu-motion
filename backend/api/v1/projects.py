@@ -18,6 +18,7 @@ from backend.schema.project import ProjectCreate, ProjectRead, ProjectDetail
 from backend.core.config import OUTPUTS_DIR, GOOGLE_API_KEY, JAMENDO_CLIENT_ID, GEMINI_MODEL
 from backend.core.logger import get_logger
 from backend.services.color_grade import VALID_STYLE_PRESETS
+from backend.services.presets import VALID_TRANSITIONS
 
 
 # ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── #
@@ -124,6 +125,7 @@ def get_project(project_id: str, db: Session = Depends(get_db)):
             "image_fit"     : getattr(s, "image_fit", "cover"),
             "ken_burns"     : getattr(s, "ken_burns", 0),
             "meta"          : getattr(s, "meta", "{}"),
+            "text_style"    : getattr(s, "text_style", None) or "caption",
         }
         for s in project.slides
     ]
@@ -400,6 +402,8 @@ def update_project_settings(project_id: str, payload: ProjectSettingsUpdate, db:
     if payload.tts_voice is not None:
         project.tts_voice = payload.tts_voice
     if payload.default_transition is not None:
+        if payload.default_transition not in VALID_TRANSITIONS:
+            raise HTTPException(status_code=400, detail=f"Invalid default_transition. Allowed: {list(VALID_TRANSITIONS)}")
         project.default_transition = payload.default_transition
     if payload.default_slide_duration is not None:
         project.default_slide_duration = payload.default_slide_duration
