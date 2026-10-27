@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { api, Slide, ProjectDetail, BgmHit, PhotosSortOrder, parseSlideMeta, RouteMeta, SavedLocation, GeocodeResult, OrganizeSuggestions, RouteSuggestion, CurationSuggestion, SpellcheckResult, AutoVideoOptions, AutoVideoTask } from '../api/client'
+import { api, Slide, ProjectDetail, BgmHit, PhotosSortOrder, parseSlideMeta, RouteMeta, SavedLocation, GeocodeResult, OrganizeSuggestions, RouteSuggestion, CurationSuggestion, SpellcheckResult, AutoVideoOptions, AutoVideoTask, TRANSITION_PRESETS, TEXT_STYLE_PRESETS, PUNCH_MAX_CHARS, TextStyle, getStyleText, withStyleText } from '../api/client'
 import { useToast } from '../components/ToastContext'
 import GoogleAuthSection, { extractCodeFromUrl } from '../components/GoogleAuthSection'
 
@@ -1503,11 +1503,7 @@ function GlobalSettingsModal({ project, projectId, slides, onClose, onSave, onPr
           <label className="label">기본 장면 전환 효과</label>
           <select className="input" value={defaultTransition} onChange={e => setDefaultTransition(e.target.value)}
             style={{ width: '100%', marginBottom: '0.5rem' }}>
-            <option value="none">없음 (Hard Cut)</option>
-            <option value="crossfade">크로스페이드</option>
-            <option value="fade_black">페이드 투 블랙</option>
-            <option value="slide_left">슬라이드 왼쪽</option>
-            <option value="slide_right">슬라이드 오른쪽</option>
+            {TRANSITION_PRESETS.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
           </select>
           <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.82rem', color: 'var(--text-muted)', cursor: 'pointer' }}>
             <input type="checkbox" checked={applyTransition} onChange={e => setApplyTransition(e.target.checked)} />
@@ -2612,6 +2608,9 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
   const [overlays, setOverlays] = useState<Overlay[]>(() => parseOverlays(slide.overlays ?? '[]'))
   const [imageFit, setImageFit] = useState<'cover' | 'fit'>(slide.image_fit ?? 'cover')
   const [kenBurns, setKenBurns] = useState<number>(slide.ken_burns ?? 0)
+  const [textStyle, setTextStyle] = useState<TextStyle>(slide.text_style ?? 'caption')
+  const styleKey = textStyle === 'punch' ? 'punch_text' : 'hero_text'
+  const [styleText, setStyleText] = useState<string>(() => getStyleText(slide, styleKey))
   const [showOverlayModal, setShowOverlayModal] = useState(false)
   const [tab, setTab] = useState<'content' | 'visual'>('content')
   const { toast } = useToast()
@@ -2647,6 +2646,13 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
   useEffect(() => { setOverlays(parseOverlays(slide.overlays ?? '[]')) }, [slide.overlays])
   useEffect(() => { setImageFit(slide.image_fit ?? 'cover') }, [slide.image_fit])
   useEffect(() => { setKenBurns(slide.ken_burns ?? 0) }, [slide.ken_burns])
+  useEffect(() => { setTextStyle(slide.text_style ?? 'caption') }, [slide.text_style])
+  useEffect(() => { setStyleText(getStyleText(slide, styleKey)) }, [slide.meta, styleKey])
+
+  const commitStyleText = () => {
+    const v = textStyle === 'punch' ? styleText.slice(0, PUNCH_MAX_CHARS) : styleText
+    if (v !== getStyleText(slide, styleKey)) onUpdate({ meta: withStyleText(slide, styleKey, v) })
+  }
 
   const handleBlur = () => {
     if (text !== slide.text) onUpdate({ text })
@@ -2916,13 +2922,31 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                   <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>&#x1F3AC; 전환:</span>
                   <select className="input" value={transition} onChange={e => handleTransitionChange(e.target.value)} style={{ flex: 1, padding: '0.3rem 0.5rem', fontSize: '0.8rem' }}>
-                    <option value="none">없음 (Hard Cut)</option>
-                    <option value="crossfade">크로스페이드</option>
-                    <option value="fade_black">페이드 투 블랙</option>
-                    <option value="slide_left">슬라이드 왼쪽</option>
-                    <option value="slide_right">슬라이드 오른쪽</option>
+                    {TRANSITION_PRESETS.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
                   </select>
                 </div>
+              )}
+              {/* 텍스트 스타일 (CinemaFlow) */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>&#x1F524; 텍스트:</span>
+                <select className="input" value={textStyle} onChange={e => { const v = e.target.value as TextStyle; setTextStyle(v); onUpdate({ text_style: v }) }} style={{ flex: 1, padding: '0.3rem 0.5rem', fontSize: '0.8rem' }}>
+                  {TEXT_STYLE_PRESETS.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+                </select>
+              </div>
+              {(textStyle === 'hero' || textStyle === 'punch') && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{textStyle === 'hero' ? '히어로 문구' : '펀치 문구'}</span>
+                  <input className="input" value={styleText}
+                    maxLength={textStyle === 'punch' ? PUNCH_MAX_CHARS : 200}
+                    placeholder={textStyle === 'hero' ? '비우면 장소명/라벨/첫 문장 사용' : `최대 ${PUNCH_MAX_CHARS}자`}
+                    onChange={e => setStyleText(e.target.value)}
+                    onBlur={commitStyleText}
+                    style={{ flex: 1, padding: '0.3rem 0.5rem', fontSize: '0.8rem' }} />
+                  {textStyle === 'punch' && <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{styleText.length}/{PUNCH_MAX_CHARS}</span>}
+                </div>
+              )}
+              {(textStyle === 'hero' || textStyle === 'punch') && (
+                <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>이 스타일에서는 하단 자막이 표시되지 않습니다 (나레이션 음성은 유지).</span>
               )}
             </>
           )}
@@ -2953,10 +2977,8 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
 
 
 // ─── Storyboard Modal (8-12) ──────────────────
-const TRANSITION_LABELS: Record<string, string> = {
-  none: '없음', crossfade: '크로스페이드', fade_black: '페이드 투 블랙',
-  slide_left: '슬라이드 ←', slide_right: '슬라이드 →',
-}
+const TRANSITION_LABELS: Record<string, string> = Object.fromEntries(
+  TRANSITION_PRESETS.map(t => [t.value, t.short]))
 
 // EXIF 자동 구성 제안 배너 버튼 스타일 (F3)
 const orgBtnStyle: React.CSSProperties = {

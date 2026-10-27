@@ -31,12 +31,13 @@ from backend.services import narration as narration_svc
 from backend.services import worker as render_worker
 from backend.services.curation import curate_photos
 from backend.services.color_grade import VALID_STYLE_PRESETS
+from backend.services.presets import AUTO_TRANSITION_CYCLE, normalize_text_style
 
 logger = get_logger(__name__)
 
 TASK_KEY = "auto_video:{project_id}"
 
-TRANSITION_CYCLE = ["crossfade", "fade_black", "slide_left", "slide_right"]
+TRANSITION_CYCLE = list(AUTO_TRANSITION_CYCLE)
 
 
 def _set(task_id: str, phase: str, progress: float, message: str = "", **extra):
@@ -108,6 +109,7 @@ def run_auto_video(project_id: str, opts: dict):
         tone = opts.get("tone", "documentary")
         style_preset = opts.get("style_preset", "cinematic")
         auto_curate = opts.get("auto_curate", True)
+        text_style = normalize_text_style(opts.get("text_style", "caption"))
         if style_preset not in VALID_STYLE_PRESETS:
             style_preset = "cinematic"
 
@@ -150,6 +152,7 @@ def run_auto_video(project_id: str, opts: dict):
                 if text:
                     s.text = text
                     s.use_tts = 1
+                    s.text_style = text_style
                     done += 1
                 else:
                     s.text = ""

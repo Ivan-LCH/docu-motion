@@ -18,14 +18,12 @@ import os
 import threading
 from pathlib import Path
 
-from moviepy.editor import concatenate_videoclips
-
 from backend.core.config import OUTPUTS_DIR, TTS_SERVER_URL, TTS_VOICE_NAME
 from backend.core.logger import get_logger
 from backend.db.session import SessionLocal
 from backend.db.models import Project, Slide
 from backend.services.renderer import (
-    build_slide_clip, apply_transition, ASPECT_RATIO_MAP, split_sentences,
+    build_slide_clip, compose_timeline, ASPECT_RATIO_MAP, split_sentences,
 )
 from backend.services.color_grade import apply_cinematic
 
@@ -70,6 +68,7 @@ def slide_to_item(s: Slide) -> dict:
     """Slide ORM → renderer 가 읽는 item dict (worker.py 직렬화와 동일)"""
     return {
         "image_filename": s.image_filename,
+        "label": s.label or "",
         "text": s.text,
         "slide_type": s.slide_type or "image",
         "video_filename": s.video_filename or "",
@@ -85,6 +84,7 @@ def slide_to_item(s: Slide) -> dict:
         "image_fit": s.image_fit or "cover",
         "ken_burns": s.ken_burns if s.ken_burns is not None else 0,
         "meta": s.meta or "{}",
+        "text_style": s.text_style or "caption",
     }
 
 
@@ -117,6 +117,8 @@ def _HASHABLE_FIELDS(it: dict, project_id: str) -> dict:
         "trim_end": it.get("trim_end"),
         "volume": it.get("volume"),
         "meta": it.get("meta", "{}"),
+        "text_style": it.get("text_style", "caption"),
+        "label": it.get("label", ""),
         "image_filename": it.get("image_filename", ""),
         "video_filename": it.get("video_filename", ""),
     }
@@ -129,6 +131,7 @@ def compute_hash(items: list, project: Project, force_tts: bool, include_neighbo
         "font_size": getattr(project, "subtitle_font_size", 30),
         "font_color": getattr(project, "subtitle_font_color", "white"),
         "default_slide_duration": getattr(project, "default_slide_duration", 3.0),
+        "transition_duration": getattr(project, "transition_duration", 0.7),
         "style_preset": getattr(project, "style_preset", "none") or "none",
         "force_tts": bool(force_tts),
         "include_neighbors": bool(include_neighbors),
@@ -264,14 +267,10 @@ def render_slide_preview(project_id: str, slide_id: str,
             logger.warning(f"Preview: 생성된 클립 없음 {project_id}/{slide_id}")
             return None
 
-        # 인접 모드: 대상 슬라이드 진입 트랜지션 적용
-        if len(clips) == 2:
-            trans = items[-1].get("transition", "none")
-            a_out, b_in, _overlap = apply_transition(clips[0], clips[1], trans)
-            clips = [a_out, b_in]
-
-        combined = (concatenate_videoclips(clips, method="compose")
-                    if len(clips) > 1 else clips[0])
+        # 인접 모드: 대상 슬라이드 진입 트랜지션 — 풀 렌더와 동일한 타임라인/overlap 규칙
+        trans_dur = getattr(project, "transition_duration", 0.7) or 0.7
+        transitions = ["none"] + [it.get("transition", "none") for it in items[1:]]
+        combined, _starts, _overlaps = compose_timeline(clips, transitions, trans_dur, canvas)
 
         # 시네마틱 후반 — canvas 풀사이즈에서 grade 후 다운스케일 (그레인 다운샘플링이 필름감)
         if style_preset and style_preset != "none":

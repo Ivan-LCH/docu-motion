@@ -218,6 +218,36 @@ async def upload_slides(
     return new_slides
 
 
+_STYLE_META_KEYS = ("hero_text", "punch_text")
+
+
+def _merge_style_meta(existing: str, incoming: str) -> str:
+    """프론트가 보낸 meta 중 hero_text/punch_text 만 기존 meta 에 병합.
+    route frames 등 서버가 관리하는 키는 클라이언트 값으로 덮어쓰지 않는다. 빈 문자열 → 키 삭제."""
+    try:
+        inc = json.loads(incoming) if incoming else {}
+    except Exception:
+        inc = {}
+    if not isinstance(inc, dict) or not any(k in inc for k in _STYLE_META_KEYS):
+        return existing
+    try:
+        cur = json.loads(existing) if existing else {}
+    except Exception:
+        cur = {}
+    if not isinstance(cur, dict):
+        cur = {}
+    for k in _STYLE_META_KEYS:
+        if k not in inc:
+            continue
+        v = inc[k]
+        v = v.strip()[:200] if isinstance(v, str) else ""
+        if v:
+            cur[k] = v
+        else:
+            cur.pop(k, None)
+    return json.dumps(cur, ensure_ascii=False)
+
+
 @router.put("/{project_id}/slides")
 def save_slides(
     project_id: str,
@@ -258,6 +288,8 @@ def save_slides(
             slide.overlays       = getattr(s_data, 'overlays', '[]')
             slide.image_fit      = getattr(s_data, 'image_fit', 'cover')
             slide.ken_burns      = getattr(s_data, 'ken_burns', 0)
+            slide.text_style     = s_data.text_style
+            slide.meta           = _merge_style_meta(slide.meta, s_data.meta)
 
     # stage 계산
     all_slides = db.query(Slide).filter(Slide.project_id == project_id).all()

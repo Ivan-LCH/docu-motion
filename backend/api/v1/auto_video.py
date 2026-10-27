@@ -16,6 +16,7 @@ from backend.core.logger import get_logger
 from backend.services import task_status
 from backend.services.auto_video import TASK_KEY, run_auto_video
 from backend.services.color_grade import VALID_STYLE_PRESETS
+from backend.services.presets import VALID_TEXT_STYLES
 
 router = APIRouter(prefix="/projects", tags=["auto-video"])
 logger = get_logger(__name__)
@@ -31,6 +32,8 @@ class AutoVideoRequest(BaseModel):
                               description=f"자동 연출 스타일: {VALID_STYLE_PRESETS}")
     auto_curate: bool = Field(default=True,
                               description="흐림/어두움/중복 컷 자동 제거")
+    text_style: str = Field(default="caption",
+                            description=f"나레이션 슬라이드 텍스트 스타일: {list(VALID_TEXT_STYLES)}")
 
 
 @router.post("/{project_id}/auto-video", status_code=202)
@@ -58,6 +61,9 @@ def start_auto_video(project_id: str, req: AutoVideoRequest,
     if req.style_preset not in VALID_STYLE_PRESETS:
         raise HTTPException(status_code=400,
                             detail=f"Invalid style_preset. Allowed: {VALID_STYLE_PRESETS}")
+    if req.text_style not in VALID_TEXT_STYLES:
+        raise HTTPException(status_code=400,
+                            detail=f"Invalid text_style. Allowed: {list(VALID_TEXT_STYLES)}")
 
     task_status.set_status(task_id, status="running", phase="queued",
                            progress=0.0, message="대기 중...")

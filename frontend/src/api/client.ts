@@ -52,13 +52,55 @@ export interface Slide {
   use_tts: number   // 1=TTS on, 0=subtitle only
   trim_start?: number
   trim_end?: number
-  transition?: string  // 'none' | 'crossfade' | 'fade_black' | 'slide_left' | 'slide_right'
+  transition?: string  // TRANSITION_PRESETS 의 value (backend/services/presets.py)
   tts_volume?: number  // TTS 볼륨 (0.0 ~ 2.0)
   rotation?: number    // 0, 90, 180, 270
   overlays?: string    // JSON array of overlay objects
   image_fit?: 'cover' | 'fit'  // cover: 전체화면, fit: 이미지 위쪽+하단 자막 영역
   ken_burns?: number   // Ken Burns 강도 0~100 (0=정적, 100=최대 줌)
-  meta?: string        // 타입별 추가 데이터 JSON (route/place)
+  meta?: string        // 타입별 추가 데이터 JSON (route/place, hero_text/punch_text)
+  text_style?: TextStyle
+}
+
+// CinemaFlow 프리셋 — backend/services/presets.py 의 TRANSITIONS / TEXT_STYLES 와 동기화 유지
+export const TRANSITION_PRESETS: { value: string; label: string; short: string }[] = [
+  { value: 'none', label: '없음 (Hard Cut)', short: '없음' },
+  { value: 'crossfade', label: '크로스페이드', short: '크로스페이드' },
+  { value: 'fade_black', label: '페이드 투 블랙', short: '페이드 투 블랙' },
+  { value: 'slide_left', label: '슬라이드 왼쪽', short: '슬라이드 ←' },
+  { value: 'slide_right', label: '슬라이드 오른쪽', short: '슬라이드 →' },
+  { value: 'whip_left', label: '휩 팬 왼쪽 (0.35s, 모션 블러)', short: '휩 ←' },
+  { value: 'whip_right', label: '휩 팬 오른쪽 (0.35s, 모션 블러)', short: '휩 →' },
+  { value: 'zoom_through', label: '줌 스루 (0.45s)', short: '줌 스루' },
+  { value: 'light_leak', label: '라이트 릭 (0.4s)', short: '라이트 릭' },
+  { value: 'flash', label: '화이트 플래시 (0.3s)', short: '플래시' },
+]
+
+export type TextStyle = 'caption' | 'hero' | 'punch' | 'none'
+export const TEXT_STYLE_PRESETS: { value: TextStyle; label: string }[] = [
+  { value: 'caption', label: '자막 (하단, 문장별)' },
+  { value: 'hero', label: '히어로 (큰 제목)' },
+  { value: 'punch', label: '펀치 (중앙 한 단어, 8자)' },
+  { value: 'none', label: '텍스트 없음' },
+]
+export const PUNCH_MAX_CHARS = 8
+
+// meta JSON 에서 hero_text / punch_text 읽기 (파싱 실패 시 빈 문자열)
+export function getStyleText(s: Slide, key: 'hero_text' | 'punch_text'): string {
+  try {
+    const m = s.meta ? JSON.parse(s.meta) : {}
+    return typeof m?.[key] === 'string' ? m[key] : ''
+  } catch { return '' }
+}
+
+// meta JSON 에 hero_text / punch_text 병합한 새 meta 문자열 (빈 값도 키 유지 → 서버에서 삭제 처리)
+export function withStyleText(s: Slide, key: 'hero_text' | 'punch_text', value: string): string {
+  let m: Record<string, unknown> = {}
+  try {
+    const parsed = s.meta ? JSON.parse(s.meta) : {}
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) m = parsed
+  } catch { /* 손상된 meta 는 새로 작성 */ }
+  return JSON.stringify({ ...m, [key]: value })
 }
 
 // Route/Place 슬라이드 메타 파서
