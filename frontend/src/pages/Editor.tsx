@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { api, Slide, ProjectDetail, BgmHit, PhotosSortOrder, parseSlideMeta, RouteMeta, SavedLocation, GeocodeResult, OrganizeSuggestions, RouteSuggestion, CurationSuggestion, SpellcheckResult, AutoVideoOptions, AutoVideoTask, TRANSITION_PRESETS, TEXT_STYLE_PRESETS, PUNCH_MAX_CHARS, TextStyle, getStyleText, withStyleText } from '../api/client'
+import { api, Slide, ProjectDetail, BgmHit, PhotosSortOrder, parseSlideMeta, RouteMeta, SavedLocation, GeocodeResult, OrganizeSuggestions, RouteSuggestion, CurationSuggestion, SpellcheckResult, AutoVideoOptions, AutoVideoTask, TRANSITION_PRESETS, TEXT_STYLE_PRESETS, PUNCH_MAX_CHARS, TextStyle, getStyleText, withStyleText, PHOTO_EFFECT_PRESETS, PhotoEffect, DEFAULT_EFFECT_REVEAL } from '../api/client'
 import { useToast } from '../components/ToastContext'
 import GoogleAuthSection, { extractCodeFromUrl } from '../components/GoogleAuthSection'
 
@@ -1921,7 +1921,7 @@ function PreviewPlayerModal({ projectId, slide, onClose }: {
           )}
         </div>
         <p style={{ color: 'var(--text-muted)', fontSize: '0.78rem', textAlign: 'center', maxWidth: 600 }}>
-          트랜지션·Ken Burns·오버레이·자막 타이밍을 실제 렌더 결과로 확인합니다.
+          트랜지션·Ken Burns·사진 효과(스케치/만화)·오버레이·자막 타이밍을 실제 렌더 결과로 확인합니다.
           {!forceTts && ' 빠른 모드: 캐시된 TTS만 사용(없으면 무음). 음성을 들으려면 "정확히 듣기"를 켜세요.'}
         </p>
       </div>
@@ -2608,6 +2608,8 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
   const [overlays, setOverlays] = useState<Overlay[]>(() => parseOverlays(slide.overlays ?? '[]'))
   const [imageFit, setImageFit] = useState<'cover' | 'fit'>(slide.image_fit ?? 'cover')
   const [kenBurns, setKenBurns] = useState<number>(slide.ken_burns ?? 0)
+  const [photoEffect, setPhotoEffect] = useState<PhotoEffect>(slide.photo_effect ?? 'none')
+  const [effectReveal, setEffectReveal] = useState<number>(slide.effect_reveal ?? DEFAULT_EFFECT_REVEAL)
   const [textStyle, setTextStyle] = useState<TextStyle>(slide.text_style ?? 'caption')
   const styleKey = textStyle === 'punch' ? 'punch_text' : 'hero_text'
   const [styleText, setStyleText] = useState<string>(() => getStyleText(slide, styleKey))
@@ -2646,6 +2648,8 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
   useEffect(() => { setOverlays(parseOverlays(slide.overlays ?? '[]')) }, [slide.overlays])
   useEffect(() => { setImageFit(slide.image_fit ?? 'cover') }, [slide.image_fit])
   useEffect(() => { setKenBurns(slide.ken_burns ?? 0) }, [slide.ken_burns])
+  useEffect(() => { setPhotoEffect(slide.photo_effect ?? 'none') }, [slide.photo_effect])
+  useEffect(() => { setEffectReveal(slide.effect_reveal ?? DEFAULT_EFFECT_REVEAL) }, [slide.effect_reveal])
   useEffect(() => { setTextStyle(slide.text_style ?? 'caption') }, [slide.text_style])
   useEffect(() => { setStyleText(getStyleText(slide, styleKey)) }, [slide.meta, styleKey])
 
@@ -2906,6 +2910,22 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
                   <span style={{ fontSize: '0.8rem', color: kenBurns > 0 ? '#818cf8' : 'var(--text-muted)', minWidth: 44, textAlign: 'right' }}>{kenBurns === 0 ? '꺼짐' : `${kenBurns}%`}</span>
                 </div>
               )}
+              {/* 사진 → 스케치/만화 (이미지·장소). 경로 슬라이드는 프레임 시퀀스라 적용되지 않음 */}
+              {!isVideo && !isRoute && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>&#x1F58C;&#xFE0F; 사진 효과:</span>
+                  <select className="input" value={photoEffect} onChange={e => { const v = e.target.value as PhotoEffect; setPhotoEffect(v); onUpdate({ photo_effect: v, effect_reveal: effectReveal }) }} style={{ flex: 1, padding: '0.3rem 0.5rem', fontSize: '0.8rem' }}>
+                    {PHOTO_EFFECT_PRESETS.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+                  </select>
+                </div>
+              )}
+              {!isVideo && !isRoute && photoEffect !== 'none' && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }} title="슬라이드 시작은 원본, 이 비율만큼 지나며 스케치/만화로 바뀝니다">&#x2728; 드러내기:</span>
+                  <input type="range" min={0} max={100} step={5} value={Math.round(effectReveal * 100)} onChange={e => setEffectReveal(parseInt(e.target.value) / 100)} onMouseUp={() => onUpdate({ effect_reveal: effectReveal })} onTouchEnd={() => onUpdate({ effect_reveal: effectReveal })} style={{ flex: 1, accentColor: '#818cf8' }} />
+                  <span style={{ fontSize: '0.8rem', color: '#818cf8', minWidth: 64, textAlign: 'right' }}>{effectReveal <= 0 ? '바로 적용' : `${Math.round(effectReveal * 100)}%`}</span>
+                </div>
+              )}
               {/* 오버레이 */}
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                 <button onClick={() => setShowOverlayModal(true)}
@@ -3032,6 +3052,7 @@ function StoryboardModal({ projectId, project, slides, onClose }: {
                 <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
                   {i > 0 ? `${TRANSITION_LABELS[s.transition || 'none'] || s.transition} · ` : ''}
                   {s.slide_type === 'video' ? '비디오' : '이미지'}
+                  {s.photo_effect === 'sketch' ? ' · 스케치' : s.photo_effect === 'cartoon' ? ' · 만화' : ''}
                   {(s.use_tts ?? 1) === 0 && ' · TTS 꺼짐'}
                 </div>
               </div>

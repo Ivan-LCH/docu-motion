@@ -83,6 +83,8 @@ def slide_to_item(s: Slide) -> dict:
         "overlays": s.overlays or "[]",
         "image_fit": s.image_fit or "cover",
         "ken_burns": s.ken_burns if s.ken_burns is not None else 0,
+        "photo_effect": getattr(s, "photo_effect", None) or "none",
+        "effect_reveal": s.effect_reveal if getattr(s, "effect_reveal", None) is not None else 0.45,
         "meta": s.meta or "{}",
         "text_style": s.text_style or "caption",
     }
@@ -108,6 +110,8 @@ def _HASHABLE_FIELDS(it: dict, project_id: str) -> dict:
         "rotation": it.get("rotation"),
         "overlays": it.get("overlays", "[]"),
         "ken_burns": it.get("ken_burns"),
+        "photo_effect": it.get("photo_effect") or "none",
+        "effect_reveal": it.get("effect_reveal", 0.45),
         "image_fit": it.get("image_fit"),
         "transition": it.get("transition"),
         "subtitles": it.get("subtitles", "[]"),

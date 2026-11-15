@@ -58,9 +58,20 @@ export interface Slide {
   overlays?: string    // JSON array of overlay objects
   image_fit?: 'cover' | 'fit'  // cover: 전체화면, fit: 이미지 위쪽+하단 자막 영역
   ken_burns?: number   // Ken Burns 강도 0~100 (0=정적, 100=최대 줌)
+  photo_effect?: PhotoEffect  // none | sketch | cartoon
+  effect_reveal?: number      // 0~1, 슬라이드 길이 중 원본→효과 크로스페이드 비율
   meta?: string        // 타입별 추가 데이터 JSON (route/place, hero_text/punch_text)
   text_style?: TextStyle
 }
+
+// 사진 효과 — backend/services/presets.py 의 PHOTO_EFFECTS 와 동기화 유지
+export type PhotoEffect = 'none' | 'sketch' | 'cartoon'
+export const PHOTO_EFFECT_PRESETS: { value: PhotoEffect; label: string }[] = [
+  { value: 'none', label: '없음 (원본)' },
+  { value: 'sketch', label: '스케치 (연필)' },
+  { value: 'cartoon', label: '만화' },
+]
+export const DEFAULT_EFFECT_REVEAL = 0.45
 
 // CinemaFlow 프리셋 — backend/services/presets.py 의 TRANSITIONS / TEXT_STYLES 와 동기화 유지
 export const TRANSITION_PRESETS: { value: string; label: string; short: string }[] = [

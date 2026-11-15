@@ -288,6 +288,8 @@ def save_slides(
             slide.overlays       = getattr(s_data, 'overlays', '[]')
             slide.image_fit      = getattr(s_data, 'image_fit', 'cover')
             slide.ken_burns      = getattr(s_data, 'ken_burns', 0)
+            slide.photo_effect   = getattr(s_data, 'photo_effect', None) or 'none'
+            slide.effect_reveal  = s_data.effect_reveal if getattr(s_data, 'effect_reveal', None) is not None else 0.45
             slide.text_style     = s_data.text_style
             slide.meta           = _merge_style_meta(slide.meta, s_data.meta)
 
