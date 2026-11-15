@@ -35,9 +35,11 @@ except ImportError:
 from backend.services.color_grade import apply_cinematic, _resolve_motion_cfg, _resolve_rhythm_cfg, MOTION_VARIETY
 from backend.services.face_detect import detect_face_center
 from backend.services.beat_detect import detect_beats, nearest_beat
+from backend.services.photo_fx import stylize_photo, reveal_weight, blend_rgb
 from backend.services.presets import (
     TEXT_STYLES, compute_slide_starts, slide_overlap, effect_duration,
     normalize_transition, normalize_text_style, resolve_style_text,
+    normalize_photo_effect, clamp_effect_reveal,
 )
 from backend.core.config import CANVAS_SIZE, FONT_PATH, FONT_BOLD_PATH, TTS_SERVER_URL, TTS_VOICE_NAME
 from backend.core.logger import get_logger
@@ -1022,14 +1024,21 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
             img_path = rotated_path
 
         # 오버레이 적용 (PIL로 이미지에 직접)
+        # 사진 효과가 있으면 리사이즈·스타일화 이후에 원본/스타일 양쪽에 올린다.
+        # (글자·이모지·모자이크가 스케치/만화 필터를 타지 않게)
         overlays = _json_mod.loads(item.get('overlays', '[]') or '[]')
-        if overlays:
+        photo_effect = normalize_photo_effect(item.get('photo_effect'))
+        effect_reveal = clamp_effect_reveal(item.get('effect_reveal'))
+        deferred_overlays = []
+        if overlays and photo_effect == "none":
             from PIL import Image as _PILImg
             ov_path = temp_dir / f"ov_{i}.png"
             pil_src = _PILImg.open(str(img_path))
             pil_src = _apply_overlays_to_pil(pil_src, overlays)
             pil_src.save(str(ov_path))
             img_path = ov_path
+        elif overlays:
+            deferred_overlays = overlays
 
         # 이미지 표시 방식 + Ken Burns 강도
         image_fit = item.get('image_fit', 'cover')  # 'cover' | 'fit'
@@ -1077,6 +1086,56 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
             kb_end = (1.0 + max_zoom) if (ken_burns > 0 and i % 2 == 0) else \
                      ((1.0 - max_zoom * 0.85) if ken_burns > 0 else 1.0)
 
+        # 스타일은 프레임마다가 아니라 리사이즈된 스틸에 한 번만. Ken Burns 는 그 두 장을 같이 크롭한다.
+        base_arr = np.ascontiguousarray(base_img.get_frame(0))
+        if base_arr.dtype != np.uint8:
+            if np.issubdtype(base_arr.dtype, np.floating) and float(np.nanmax(base_arr)) <= 1.5:
+                base_arr = np.clip(base_arr * 255.0, 0, 255).astype(np.uint8)
+            else:
+                base_arr = np.clip(base_arr, 0, 255).astype(np.uint8)
+            base_arr = np.ascontiguousarray(base_arr)
+        styled_arr = None
+        if photo_effect != "none":
+            try:
+                styled_arr = stylize_photo(base_arr, photo_effect)
+                logger.info(
+                    f"Slide {i}: photo effect '{photo_effect}' "
+                    f"(reveal={effect_reveal:.2f}, {base_arr.shape[1]}x{base_arr.shape[0]})"
+                )
+            except Exception as fx_err:
+                logger.warning(f"Slide {i}: photo effect '{photo_effect}' failed (skipping): {fx_err}")
+                styled_arr = None
+        if deferred_overlays:
+            base_arr = np.ascontiguousarray(
+                _apply_overlays_to_pil(Image.fromarray(base_arr), deferred_overlays))
+            if styled_arr is not None:
+                styled_arr = np.ascontiguousarray(
+                    _apply_overlays_to_pil(Image.fromarray(styled_arr), deferred_overlays))
+
+        def _crop_frame(frame, left, top, view_w, view_h, target_w, target_h):
+            cropped = Image.fromarray(frame).crop((left, top, left + view_w, top + view_h))
+            tw, th = int(target_w), int(target_h)
+            if cropped.size != (tw, th):
+                cropped = cropped.resize((tw, th), Image.LANCZOS)
+            return np.array(cropped)
+
+        def _frame_from_box(left, top, view_w, view_h, target_w, target_h, t, dur):
+            """같은 크롭 창으로 원본/스타일을 잘라 드러내기 가중치로 섞는다."""
+            if styled_arr is None:
+                return _crop_frame(base_arr, left, top, view_w, view_h, target_w, target_h)
+            weight = reveal_weight(t, dur, effect_reveal)
+            if weight >= 1.0:
+                return _crop_frame(styled_arr, left, top, view_w, view_h, target_w, target_h)
+            orig = _crop_frame(base_arr, left, top, view_w, view_h, target_w, target_h)
+            if weight <= 0.0:
+                return orig
+            styled_crop = _crop_frame(styled_arr, left, top, view_w, view_h, target_w, target_h)
+            if styled_crop.shape != orig.shape:
+                styled_crop = np.array(
+                    Image.fromarray(styled_crop).resize((orig.shape[1], orig.shape[0]), Image.LANCZOS)
+                )
+            return blend_rgb(orig, styled_crop, weight)
+
         def _biased_center(w, h, view_w, view_h):
             """얼굴 바이어스 크롭 중심 (px). face_center 없으면 정중앙."""
             cx, cy = w * 0.5, h * 0.5
@@ -1091,29 +1150,26 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
 
         def _make_kb(clip, start_scale, end_scale, dur, area):
             # 백호환 선형 줌 (preset none + ken_burns>0). 정중앙 크롭, 이징 無.
+            # clip 인자는 호출부 호환용. 픽셀은 미리 뽑아 둔 base_arr 를 쓴다.
+            del clip
+
             def make_frame(t):
-                from PIL import Image as PILImage
-                import numpy as np
                 progress = t / dur if dur > 0 else 0.0
                 scale = start_scale + (end_scale - start_scale) * progress
-                frame = clip.get_frame(0)
-                h, w = frame.shape[:2]
+                h, w = base_arr.shape[:2]
                 target_w, target_h = area
                 view_w = target_w / scale
                 view_h = target_h / scale
                 left = (w - view_w) / 2.0
                 top  = (h - view_h) / 2.0
-                cropped = PILImage.fromarray(frame).crop(
-                    (left, top, left + view_w, top + view_h)
-                )
-                return np.array(cropped.resize((target_w, target_h), PILImage.LANCZOS))
+                return _frame_from_box(left, top, view_w, view_h, target_w, target_h, t, dur)
             from moviepy.editor import VideoClip
             return VideoClip(make_frame, duration=dur).set_fps(24)
 
         def _make_motion_clip(clip, mt, dur, area, max_z):
             # Phase B 모션 프리셋: smoothstep 이징 + 얼굴 바이어스 + 다축 팬/줌.
-            from PIL import Image as PILImage
-            import numpy as np
+            # clip 인자는 호출부 호환용. 픽셀은 미리 뽑아 둔 base_arr 를 쓴다.
+            del clip
             from moviepy.editor import VideoClip
             target_w, target_h = area
             pan_delta = 0.06   # 팬 이동폭 (프레임 대비 6%)
@@ -1121,8 +1177,7 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
             def make_frame(t):
                 p = t / dur if dur > 0 else 0.0
                 e = p * p * (3 - 2 * p)   # smoothstep
-                frame = clip.get_frame(0)
-                h, w = frame.shape[:2]
+                h, w = base_arr.shape[:2]
 
                 if mt == "zoom_in":
                     scale = 1.0 + max_z * e
@@ -1149,26 +1204,36 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
                     elif mt == "pan_up":
                         top = min(max(top + (pan_delta * h) * (0.5 - e), 0.0), max(h - view_h, 0.0))
 
-                cropped = PILImage.fromarray(frame).crop(
-                    (left, top, left + view_w, top + view_h)
-                )
-                return np.array(cropped.resize((target_w, target_h), PILImage.LANCZOS))
+                return _frame_from_box(left, top, view_w, view_h, target_w, target_h, t, dur)
             return VideoClip(make_frame, duration=dur).set_fps(24)
 
         if ken_burns <= 0:
-            # 정적 이미지: 한 번만 처리해서 ImageClip으로 (성능 최적화)
-            # motion_cfg 있으면 얼굴 바이어스 중앙 크롭, 없으면 정중앙 (백호환).
-            import numpy as _np2
+            # 정적 이미지: 크롭은 한 번. 드러내기가 있으면 두 스틸만 섞는다 (필터는 이미 1회).
             target_w, target_h = kb_area
-            src_frame = base_img.get_frame(0)
-            sh, sw = src_frame.shape[:2]
+            sh, sw = base_arr.shape[:2]
             crop_left, crop_top = _biased_center(sw, sh, target_w, target_h)
-            static_pil = Image.fromarray(src_frame).crop(
-                (crop_left, crop_top, crop_left + target_w, crop_top + target_h)
-            )
-            if static_pil.size != (target_w, target_h):
-                static_pil = static_pil.resize((target_w, target_h), Image.LANCZOS)
-            img_clip = ImageClip(_np2.array(static_pil)).set_duration(total_duration)
+            if styled_arr is None or effect_reveal <= 0.0:
+                still = _frame_from_box(
+                    crop_left, crop_top, target_w, target_h, target_w, target_h,
+                    total_duration, total_duration,
+                )
+                img_clip = ImageClip(np.ascontiguousarray(still)).set_duration(total_duration)
+            else:
+                still_orig = _crop_frame(
+                    base_arr, crop_left, crop_top, target_w, target_h, target_w, target_h)
+                still_styled = _crop_frame(
+                    styled_arr, crop_left, crop_top, target_w, target_h, target_w, target_h)
+
+                def make_still(t, _o=still_orig, _s=still_styled, _d=total_duration):
+                    weight = reveal_weight(t, _d, effect_reveal)
+                    if weight <= 0.0:
+                        return _o.copy()
+                    if weight >= 1.0:
+                        return _s.copy()
+                    return blend_rgb(_o, _s, weight)
+
+                from moviepy.editor import VideoClip
+                img_clip = VideoClip(make_still, duration=total_duration).set_fps(24)
         elif motion_active:
             img_clip = _make_motion_clip(base_img, motion_type, total_duration, kb_area, max_zoom)
         else:

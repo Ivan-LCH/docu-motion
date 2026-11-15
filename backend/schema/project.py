@@ -15,6 +15,7 @@ from pydantic import BaseModel, field_validator
 
 from backend.services.presets import (
     VALID_TRANSITIONS, DEFAULT_TRANSITION, VALID_TEXT_STYLES, DEFAULT_TEXT_STYLE,
+    VALID_PHOTO_EFFECTS, DEFAULT_PHOTO_EFFECT, DEFAULT_EFFECT_REVEAL,
 )
 
 
@@ -40,6 +41,29 @@ def validate_text_style(v) -> str:
     return v
 
 
+def validate_photo_effect(v) -> str:
+    """None/빈 값 → 기본값, 그 외 presets.VALID_PHOTO_EFFECTS 이외 값은 거부."""
+    if v is None or (isinstance(v, str) and not v.strip()):
+        return DEFAULT_PHOTO_EFFECT
+    v = str(v).strip().lower()
+    if v not in VALID_PHOTO_EFFECTS:
+        raise ValueError(f"Invalid photo_effect '{v}'. Allowed: {list(VALID_PHOTO_EFFECTS)}")
+    return v
+
+
+def validate_effect_reveal(v) -> float:
+    """슬라이드 길이 대비 원본→효과 비율. 범위 밖은 0~1 로 클램프, 숫자가 아니면 거부."""
+    if v is None or v == "":
+        return DEFAULT_EFFECT_REVEAL
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        raise ValueError("effect_reveal must be a number between 0 and 1")
+    if f != f or f == float("inf") or f == float("-inf"):
+        raise ValueError("effect_reveal must be a number between 0 and 1")
+    return max(0.0, min(1.0, f))
+
+
 class _SlidePresetValidators(BaseModel):
     @field_validator("transition", mode="before", check_fields=False)
     @classmethod
@@ -50,6 +74,16 @@ class _SlidePresetValidators(BaseModel):
     @classmethod
     def _check_text_style(cls, v):
         return validate_text_style(v)
+
+    @field_validator("photo_effect", mode="before", check_fields=False)
+    @classmethod
+    def _check_photo_effect(cls, v):
+        return validate_photo_effect(v)
+
+    @field_validator("effect_reveal", mode="before", check_fields=False)
+    @classmethod
+    def _check_effect_reveal(cls, v):
+        return validate_effect_reveal(v)
 
 
 # ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── #
@@ -74,6 +108,8 @@ class SlideBase(BaseModel):
     overlays: str = "[]"     # JSON array of overlay objects
     image_fit: str = "cover" # 'cover' | 'fit'
     ken_burns: int = 0       # Ken Burns 줌 강도 0~100
+    photo_effect: str = "none"   # presets.VALID_PHOTO_EFFECTS ('none'|'sketch'|'cartoon')
+    effect_reveal: float = 0.45  # 0~1, 원본→효과 크로스페이드가 차지하는 슬라이드 길이 비율
     meta: str = "{}"         # 타입별 추가 데이터 JSON (route/place, hero_text/punch_text)
     text_style: str = "caption"  # presets.VALID_TEXT_STYLES
 
@@ -110,6 +146,8 @@ class SlideUpdate(_SlidePresetValidators):
     overlays: str = "[]"
     image_fit: str = "cover" # 'cover' | 'fit'
     ken_burns: int = 0       # Ken Burns 줌 강도 0~100
+    photo_effect: str = "none"
+    effect_reveal: float = 0.45
     meta: str = "{}"         # 메타 JSON — 저장 시 hero_text/punch_text 키만 병합 (route 프레임 등 보존)
     text_style: str = "caption"
 
@@ -135,6 +173,8 @@ class SlideRead(SlideBase):
     overlays: str = "[]"
     image_fit: str = "cover"
     ken_burns: int = 0
+    photo_effect: str = "none"
+    effect_reveal: float = 0.45
     meta: str = "{}"
     text_style: str = "caption"
 

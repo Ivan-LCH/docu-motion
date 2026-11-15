@@ -56,6 +56,8 @@ def _migrate_columns():
     ("projects", "tts_voice", "TEXT DEFAULT ''"),
             ("slides", "exif", "TEXT DEFAULT '{}'"),
             ("slides", "text_style", "TEXT DEFAULT 'caption'"),
+            ("slides", "photo_effect", "TEXT DEFAULT 'none'"),
+            ("slides", "effect_reveal", "FLOAT DEFAULT 0.45"),
         ]
         for table, column, col_type in migrations:
             try:
