@@ -39,8 +39,9 @@ from backend.services.photo_fx import stylize_photo, reveal_weight, blend_rgb
 from backend.services.presets import (
     TEXT_STYLES, compute_slide_starts, slide_overlap, effect_duration,
     normalize_transition, normalize_text_style, resolve_style_text,
-    normalize_photo_effect, clamp_effect_reveal,
+    normalize_photo_effect, clamp_effect_reveal, _parse_meta,
 )
+from backend.core import config as _config
 from backend.core.config import CANVAS_SIZE, FONT_PATH, FONT_BOLD_PATH, TTS_SERVER_URL, TTS_VOICE_NAME
 from backend.core.logger import get_logger
 
@@ -429,6 +430,331 @@ def render_text_layer(text: str, style: str, size: tuple, duration: float,
 
 
 # ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── #
+# Kinetic Typography (자동 편집) — 단어/글자별 등장, 노랑 강조 1개
+# ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── #
+
+def _kinetic_units(text: str, highlight: str = "") -> list[tuple[str, bool, bool]]:
+    """문구 → [(단위, 강조여부, 앞에 공백 여부)].
+    띄어쓰기 없는 짧은 한 단어(≤6자)는 글자 단위, 그 외는 단어 단위.
+    강조 구간: highlight 가 문구 안에 있으면 그 부분, 없으면 마지막 단어."""
+    text = " ".join((text or "").split())
+    if not text:
+        return []
+    words = text.split(" ")
+    hl = (highlight or "").strip()
+    pos = text.rfind(hl) if hl else -1
+    if pos >= 0:
+        span = (pos, pos + len(hl))
+    else:
+        span = (len(text) - len(words[-1]), len(text))
+
+    units, off = [], 0
+    char_mode = len(words) == 1 and len(text) <= 6
+    for wi, w in enumerate(words):
+        if char_mode:
+            for ci, ch in enumerate(w):
+                a = off + ci
+                units.append((ch, span[0] <= a < span[1], False))
+        else:
+            a, b = off, off + len(w)
+            units.append((w, a < span[1] and b > span[0], wi > 0))
+        off += len(w) + 1
+    return units
+
+
+def render_kinetic_layer(text: str, size: tuple, duration: float, start: float = 0.0,
+                         highlight: str = "", font_color: str = "white") -> list:
+    """키네틱 타이포 클립(1개) — 캔버스 중앙 약간 아래(y≈0.62).
+    각 단위가 stagger 간격으로 떠오르며(rise) 페이드 + ease_out_back 스케일 오버슈트로 등장,
+    슬라이드 끝 직전에 전체가 빠르게 페이드 아웃. 흰 글씨 + 두꺼운 검정 외곽선, 강조는 #FFD400."""
+    spec = TEXT_STYLES["kinetic"]
+    units = _kinetic_units(text, highlight)
+    if not units or duration <= 0.3:
+        return []
+    cw, ch = size
+    base = min(cw, ch)
+    px = max(18, int(base * spec["font_scale"]))
+    hl_rgb = _parse_color(spec.get("highlight", "#FFD400"), (255, 212, 0))
+    fg_rgb = _parse_color(font_color, (255, 255, 255))
+    max_w = int(cw * 0.88)
+    probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+
+    # 줄 배치: 폭을 넘으면 줄바꿈, max_lines 넘으면 폰트 축소
+    while True:
+        font = _load_font(FONT_BOLD_PATH, px)
+        stroke = max(3, px // 9)
+        space = probe.textlength(" ", font=font)
+        lines, cur, cur_w = [], [], 0.0
+        for u, hl, sp in units:
+            uw = probe.textlength(u, font=font)
+            add = uw + (space if (sp and cur) else 0)
+            if cur and cur_w + add > max_w - 2 * stroke:
+                lines.append((cur, cur_w))
+                cur, cur_w, add = [], 0.0, uw
+            cur.append((u, hl, sp, uw))
+            cur_w += add
+        if cur:
+            lines.append((cur, cur_w))
+        if len(lines) <= spec.get("max_lines", 2) or px <= 18:
+            break
+        px = int(px * 0.9)
+
+    ascent, descent = font.getmetrics()
+    line_h = ascent + descent
+    gap = max(4, px // 10)
+    pad = stroke + max(4, px // 6)              # 외곽선 + 그림자 여유
+    over = 1.18                                  # ease_out_back 오버슈트 여유
+    rise = 0.35 * px
+    block_w = int(max(w for _, w in lines) * over + 2 * pad) + 2
+    block_h = int((len(lines) * line_h + (len(lines) - 1) * gap) + 2 * pad + rise) + 2
+
+    # 단위별 타일(외곽선 + 부드러운 그림자) 미리 렌더 → 프레임마다 스케일/알파만
+    tiles = []   # (RGBA PIL, 중심 x, 중심 y)
+    y_top = pad
+    for li, (items, lw) in enumerate(lines):
+        x = (block_w - lw) / 2.0
+        cy = y_top + li * (line_h + gap) + line_h / 2.0
+        first = True
+        for u, hl, sp, uw in items:
+            if sp and not first:
+                x += probe.textlength(" ", font=font)
+            first = False
+            tw, th = int(uw + 2 * pad), int(line_h + 2 * pad)
+            tile = Image.new("RGBA", (tw, th), (0, 0, 0, 0))
+            sh = Image.new("RGBA", (tw, th), (0, 0, 0, 0))
+            off = max(2, px // 22)
+            ImageDraw.Draw(sh).text((pad + off, pad + off), u, font=font, fill=(0, 0, 0, 150),
+                                    stroke_width=stroke, stroke_fill=(0, 0, 0, 150))
+            tile = Image.alpha_composite(tile, sh.filter(ImageFilter.GaussianBlur(max(2, px // 16))))
+            ImageDraw.Draw(tile).text((pad, pad), u, font=font,
+                                      fill=(*(hl_rgb if hl else fg_rgb), 255),
+                                      stroke_width=stroke, stroke_fill=(0, 0, 0, 255))
+            tiles.append((tile, x + uw / 2.0, cy))
+            x += uw
+
+    # 타이밍: 슬라이드가 짧으면 stagger 를 줄여 등장+유지+퇴장이 들어가게
+    n = len(tiles)
+    char_mode = all(not sp for _, _, sp in units) and n > 1
+    stagger = spec["char_stagger"] if char_mode else spec["stagger"]
+    anim = spec["anim_dur"]
+    delay = min(0.2, duration * 0.08)
+    exit_dur = min(spec["exit_dur"], duration * 0.15)
+    exit_end = max(0.0, duration - 0.08)
+    exit_start = exit_end - exit_dur
+    budget = exit_start - delay - anim - 0.4     # 최소 0.4s 는 전체가 정지 상태로 보이게
+    if n > 1 and (n - 1) * stagger > budget:
+        stagger = max(0.03, budget / (n - 1)) if budget > 0 else 0.03
+    settled = delay + (n - 1) * stagger + anim
+
+    def unit_params(t, i):
+        p = (t - delay - i * stagger) / anim if anim > 0 else 1.0
+        if p <= 0:
+            return None
+        p = min(1.0, p)
+        scale = 0.55 + 0.45 * _ease_out_back(p, c1=1.9)
+        alpha = min(1.0, p * 2.2)
+        dy = (1.0 - _ease_out_cubic(p)) * rise
+        return scale, alpha, dy
+
+    def compose(t):
+        canvas = Image.new("RGBA", (block_w, block_h), (0, 0, 0, 0))
+        for i, (tile, cx, cy) in enumerate(tiles):
+            pr = unit_params(t, i)
+            if pr is None:
+                continue
+            s, a, dy = pr
+            im = tile
+            if abs(s - 1.0) > 0.004:
+                im = tile.resize((max(1, int(tile.width * s)), max(1, int(tile.height * s))),
+                                 Image.BILINEAR)
+            if a < 1.0:
+                al = im.getchannel("A").point(lambda v, a=a: int(v * a))
+                im = im.copy()
+                im.putalpha(al)
+            x0 = int(round(cx - im.width / 2.0))
+            y0 = int(round(cy - im.height / 2.0 + dy))
+            canvas.alpha_composite(im, dest=(max(0, x0), max(0, y0)),
+                                   source=(max(0, -x0), max(0, -y0)))
+        arr = np.array(canvas)
+        return arr[:, :, :3], arr[:, :, 3].astype(np.float32) / 255.0
+
+    state: dict = {"t": None, "val": None, "static": None}
+
+    def at(t):
+        t = float(t)
+        if t >= settled:
+            if state["static"] is None:
+                state["static"] = compose(settled + 1e-3)
+            return state["static"]
+        if state["t"] != t:
+            state["t"], state["val"] = t, compose(t)
+        return state["val"]
+
+    def make_frame(t):
+        return at(t)[0]
+
+    def make_mask(t):
+        m = at(t)[1]
+        if t > exit_start and exit_dur > 0:
+            return m * max(0.0, 1.0 - (t - exit_start) / exit_dur)
+        return m
+
+    x0 = int(round(cw / 2.0 - block_w / 2.0))
+    y0 = int(round(ch * spec["y"] - (block_h - rise) / 2.0))
+    mask = VideoClip(make_mask, ismask=True, duration=duration)
+    clip = VideoClip(make_frame, duration=duration).set_mask(mask)
+    return [clip.set_position((x0, y0)).set_start(start)]
+
+
+# ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── #
+# Location Card (자동 편집) — 좌측 상단 📍 지명 카드
+# ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── #
+
+LOCATION_CARD_MAX_VISIBLE = 3.5   # 초
+LOCATION_CARD_FADE = 0.4
+
+
+def _draw_pin(size_px: int, color=(255, 92, 72)) -> Image.Image:
+    """지도 핀 글리프 (폰트에 이모지가 없으므로 도형으로). 4배 슈퍼샘플 후 축소."""
+    ss = 4
+    w, h = int(size_px * 0.78) * ss, size_px * ss
+    im = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    r = w / 2.0
+    cx, cy = w / 2.0, r
+    d.polygon([(cx - r * 0.78, cy + r * 0.45), (cx + r * 0.78, cy + r * 0.45), (cx, h - 1)],
+              fill=(*color, 255))
+    d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(*color, 255))
+    ir = r * 0.42
+    d.ellipse([cx - ir, cy - ir, cx + ir, cy + ir], fill=(255, 255, 255, 255))
+    return im.resize((w // ss, h // ss), Image.LANCZOS)
+
+
+def _fit_text(draw, text: str, font, max_w: int) -> str:
+    if draw.textlength(text, font=font) <= max_w:
+        return text
+    while text and draw.textlength(text + "…", font=font) > max_w:
+        text = text[:-1]
+    return (text.rstrip() + "…") if text else ""
+
+
+def render_location_card_rgba(title: str, sub: str, size: tuple) -> np.ndarray:
+    """위치 카드 RGBA: 반투명 라운드 알약 + 핀 + 제목(굵게) + 보조줄. 크기는 min(캔버스) 비례."""
+    cw, ch = size
+    base = min(cw, ch)
+    title_px = max(14, int(base * 0.042))
+    sub_px = max(10, int(title_px * 0.62))
+    f_title = _load_font(FONT_BOLD_PATH, title_px)
+    f_sub = _load_font(FONT_PATH, sub_px)
+    probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+    max_text_w = int(cw * 0.62)
+    title = _fit_text(probe, (title or "").strip(), f_title, max_text_w)
+    sub = _fit_text(probe, (sub or "").strip(), f_sub, max_text_w)
+
+    pin = _draw_pin(int(title_px * 1.25))
+    pad_x, pad_y = int(title_px * 0.6), int(title_px * 0.42)
+    gap = int(title_px * 0.42)
+    ta, td = f_title.getmetrics()
+    sa, sd = f_sub.getmetrics()
+    line_gap = int(title_px * 0.12) if sub else 0
+    text_h = ta + td + ((sa + sd + line_gap) if sub else 0)
+    text_w = int(max(probe.textlength(title, font=f_title),
+                     probe.textlength(sub, font=f_sub) if sub else 0))
+    inner_h = max(text_h, pin.height)
+    pill_w = pad_x + pin.width + gap + text_w + pad_x
+    pill_h = inner_h + 2 * pad_y
+    sh_pad = max(6, title_px // 3)                 # 그림자 여백
+    W, H = pill_w + 2 * sh_pad, pill_h + 2 * sh_pad
+    radius = min(pill_h // 2, int(title_px * 0.9))
+
+    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    shadow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    ImageDraw.Draw(shadow).rounded_rectangle(
+        [sh_pad, sh_pad + 2, sh_pad + pill_w, sh_pad + pill_h + 2], radius=radius, fill=(0, 0, 0, 90))
+    img = Image.alpha_composite(img, shadow.filter(ImageFilter.GaussianBlur(sh_pad / 2)))
+    d = ImageDraw.Draw(img)
+    d.rounded_rectangle([sh_pad, sh_pad, sh_pad + pill_w, sh_pad + pill_h],
+                        radius=radius, fill=(12, 14, 18, 125))
+
+    px0, py0 = sh_pad + pad_x, sh_pad + pad_y
+    img.alpha_composite(pin, dest=(px0, py0 + (inner_h - pin.height) // 2))
+    tx = px0 + pin.width + gap
+    ty = py0 + (inner_h - text_h) // 2
+    sw = max(1, title_px // 18)
+    d.text((tx, ty), title, font=f_title, fill=(255, 255, 255, 255),
+           stroke_width=sw, stroke_fill=(0, 0, 0, 120))
+    if sub:
+        d.text((tx, ty + ta + td + line_gap), sub, font=f_sub, fill=(235, 235, 235, 235),
+               stroke_width=max(1, sw - 1), stroke_fill=(0, 0, 0, 100))
+    return np.array(img)
+
+
+def render_location_card_layer(card: dict, size: tuple, duration: float, start: float = 0.0) -> list:
+    """meta.location_card → 좌측 상단 오버레이 클립.
+    0.35s 후 왼쪽에서 밀려오며 페이드 인(0.4s) → 유지 → 슬라이드 끝 전에 페이드 아웃(0.4s).
+    최대 LOCATION_CARD_MAX_VISIBLE 초만 보인다."""
+    if not isinstance(card, dict):
+        return []
+    title = str(card.get("title") or "").strip()
+    if not title or duration <= 0.6:
+        return []
+    cw, ch = size
+    rgba = render_location_card_rgba(title, str(card.get("sub") or ""), size)
+    base = min(cw, ch)
+    margin_x = int(base * 0.04)
+    margin_y = int(max(base * 0.04, ch * 0.045))
+
+    t_in = min(0.35, duration * 0.1)
+    t_end = min(duration - 0.12, t_in + LOCATION_CARD_MAX_VISIBLE)
+    vis = t_end - t_in
+    if vis <= 0.3:
+        return []
+    fade = min(LOCATION_CARD_FADE, vis / 3.0)
+    slide_px = 0.04 * cw
+    rgb = rgba[:, :, :3]
+    alpha = rgba[:, :, 3].astype(np.float32) / 255.0
+
+    def a_of(t):
+        if t < fade:
+            return _ease_out_cubic(t / fade)
+        if t > vis - fade:
+            return max(0.0, (vis - t) / fade)
+        return 1.0
+
+    def make_mask(t):
+        a = a_of(t)
+        return alpha if a >= 1.0 else alpha * a
+
+    def pos(t):
+        p = _ease_out_cubic(t / fade) if fade > 0 else 1.0
+        return (int(round(margin_x - slide_px * (1.0 - p))), margin_y)
+
+    mask = VideoClip(make_mask, ismask=True, duration=vis)
+    clip = VideoClip(lambda t: rgb, duration=vis).set_mask(mask)
+    return [clip.set_position(pos).set_start(start + t_in)]
+
+
+def compose_layers_rgba(clips: list, size: tuple, t: float) -> np.ndarray:
+    """오버레이 클립들을 시각 t 에서 투명 캔버스(RGBA)에 합성 — 테스트/디버그용."""
+    cw, ch = size
+    canvas = Image.new("RGBA", (cw, ch), (0, 0, 0, 0))
+    for c in clips:
+        lt = t - (c.start or 0.0)
+        if lt < 0 or lt > c.duration:
+            continue
+        rgb = c.get_frame(lt).astype(np.uint8)
+        m = c.mask.get_frame(lt) if c.mask is not None else np.ones(rgb.shape[:2])
+        a = (np.clip(m, 0, 1) * 255).astype(np.uint8)
+        layer = Image.fromarray(np.dstack([rgb, a]), "RGBA")
+        x, y = c.pos(lt)
+        x, y = int(x), int(y)
+        tmp = Image.new("RGBA", (cw, ch), (0, 0, 0, 0))
+        tmp.paste(layer, (x, y))
+        canvas = Image.alpha_composite(canvas, tmp)
+    return np.array(canvas)
+
+
+# ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── #
 # Apply Transition
 # ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── #
 
@@ -742,11 +1068,28 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
                 s, 'caption', canvas_size, dur, start=start,
                 font_size=_font_size, font_color=_font_color))
 
+    _item_meta = _parse_meta(item.get('meta'))
+
     def _style_layer(duration: float) -> list:
-        if text_style not in ('hero', 'punch'):
-            return []
-        return render_text_layer(resolve_style_text(item, text_style), text_style,
-                                 canvas_size, duration, font_color=_font_color)
+        layers = []
+        if text_style in ('hero', 'punch'):
+            layers = render_text_layer(resolve_style_text(item, text_style), text_style,
+                                       canvas_size, duration, font_color=_font_color)
+        elif text_style == 'kinetic':
+            try:
+                layers = render_kinetic_layer(
+                    resolve_style_text(item, 'kinetic'), canvas_size, duration,
+                    highlight=str(_item_meta.get('kinetic_highlight') or ''))
+            except Exception as kin_err:
+                logger.warning(f"Slide {i}: kinetic text failed (skipping): {kin_err}")
+        # 자동 편집 위치 카드 (좌측 상단) — 텍스트 스타일과 독립
+        if _item_meta.get('location_card'):
+            try:
+                layers = layers + render_location_card_layer(
+                    _item_meta['location_card'], canvas_size, duration)
+            except Exception as card_err:
+                logger.warning(f"Slide {i}: location card failed (skipping): {card_err}")
+        return layers
 
     # ── Video Slide ──────────────────────────────────
     if slide_type == 'video':
@@ -1257,6 +1600,35 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
 # Render Project
 # ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── #
 
+def _video_codecs() -> list[str]:
+    """인코더 시도 순서. VIDEO_CODEC 환경변수 우선, 없으면 NVIDIA 장치 유무로 결정.
+    (GPU 없는 박스에서 h264_nvenc 를 먼저 시도하다 실패하는 낭비를 피한다)"""
+    pref = (_config.VIDEO_CODEC or "").strip()
+    if pref:
+        return [pref] if pref == "libx264" else [pref, "libx264"]
+    if Path("/dev/nvidia0").exists():
+        return ["h264_nvenc", "libx264"]
+    return ["libx264"]
+
+
+def _intro_options(slides: list) -> dict:
+    """첫 슬라이드 meta 의 자동 편집 인트로 옵션.
+    kinetic: 키네틱 인트로가 제목을 대신 표시 (기존 중앙 인트로 타이틀 생략)
+    bgm_fade_in: BGM 페이드 인 초 (0 = 기존과 동일하게 없음)"""
+    out = {"kinetic": False, "bgm_fade_in": 0.0}
+    if not slides:
+        return out
+    first = slides[0]
+    meta = _parse_meta(first.get("meta"))
+    out["kinetic"] = bool(meta.get("intro_kinetic")) and \
+        normalize_text_style(first.get("text_style")) == "kinetic"
+    try:
+        out["bgm_fade_in"] = max(0.0, min(5.0, float(meta.get("bgm_fade_in") or 0.0)))
+    except (TypeError, ValueError):
+        pass
+    return out
+
+
 def render_project(project_id: str, slides: list, assets_dir: Path, output_file: Path,
                    progress_callback, on_tts_done=None,
                    bgm_path: str = "", bgm_volume: float = 0.3,
@@ -1265,7 +1637,7 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
                    watermark_text: str = "", watermark_opacity: float = 0.3,
                    default_slide_duration: float = 3.0, title_text: str = "",
                    transition_duration: float = 0.7, style_preset: str = "none",
-                   tts_voice: str = ""):
+                   tts_voice: str = "", fps: int = 24):
     """
     영상 렌더링 메인 함수
     slides: [{"image_filename": ..., "text": ...}, ...]
@@ -1279,6 +1651,8 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
     watermark_opacity: 워터마크 불투명도 (0.0~1.0)
     default_slide_duration: 텍스트 없는 슬라이드 기본 시간(초)
     title_text: 인트로 타이틀 — 영상 시작 3초간 화면 중앙에 페이드 인/아웃 (빈 문자열이면 미적용)
+                첫 슬라이드가 키네틱 인트로(meta.intro_kinetic + text_style kinetic)면 중복 방지로 생략
+    fps: 출력 프레임레이트 (기본 24)
     """
     if canvas_size is None:
         canvas_size = CANVAS_SIZE
@@ -1419,6 +1793,10 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
                 logger.warning(f"Watermark failed (skipping): {wm_err}")
 
         # ── 인트로 타이틀 오버레이 (화면 중앙, 3초간 페이드 인/아웃) ──
+        intro = _intro_options(slides)
+        if title_text and intro["kinetic"]:
+            logger.info("Intro title skipped: 첫 슬라이드 키네틱 인트로가 제목을 표시")
+            title_text = ""
         if title_text:
             try:
                 TITLE_DURATION = 3.0
@@ -1473,6 +1851,8 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
                     .subclip(0, total_duration)
                     .volumex(bgm_volume)
                     .audio_fadeout(min(2.0, total_duration * 0.05)))
+                if intro["bgm_fade_in"] > 0:
+                    bgm_clip = bgm_clip.audio_fadein(min(intro["bgm_fade_in"], total_duration * 0.2))
 
                 # ── BGM 덕킹 (8-7): TTS 나레이션 구간에서 BGM 볼륨 자동 감소 ──
                 # 슬라이드별 상대 구간을 compose_timeline 의 실제 시작 시각으로 환산
@@ -1513,13 +1893,14 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
         # ffmpeg_params: -pix_fmt yuv420p 강제
         #   - h264_nvenc는 RGB 입력을 gbrp(GBR 플레이너)로 인코딩해 색왜곡(초록 우세) 발생
         #   - yuv420p 명시로 두 코덱 모두 표준 색공간 사용
-        for video_codec in ("h264_nvenc", "libx264"):
+        codecs = _video_codecs()
+        for video_codec in codecs:
             try:
                 logger.info(f"영상 인코딩 중... codec={video_codec}")
                 progress_callback(55, f"영상 인코딩 중... ({video_codec})")
                 combined.write_videofile(
                     str(output_file),
-                    fps            = 24,
+                    fps            = fps,
                     logger         = mp_logger,
                     temp_audiofile = str(temp_audio),
                     codec          = video_codec,
@@ -1530,7 +1911,7 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
                 break  # 성공이면 루프 탈출
             except Exception as enc_err:
                 logger.warning(f"{video_codec} 인코딩 실패 → 다음 코덱으로 전환: {enc_err}")
-                if video_codec == "libx264":
+                if video_codec == codecs[-1]:
                     raise  # 마지막 폴백도 실패 → 상위로 에러 전파
 
         # ── 음량 정규화 (loudnorm) ──────────────────────────────────────────

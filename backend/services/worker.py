@@ -2,6 +2,7 @@
 DocuMotion - Background Rendering Worker
 FastAPI BackgroundTasks로 호출되는 렌더링 워커
 """
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -13,6 +14,17 @@ from backend.services import renderer
 from backend.services.tts_manager import TTSEngine
 
 logger = get_logger(__name__)
+
+
+def _slide_needs_tts(d: dict) -> bool:
+    """이 슬라이드 렌더에 TTS 음성이 필요한가 (이미지 나레이션 또는 비디오 자막 TTS)."""
+    if d.get("slide_type") == "video":
+        try:
+            return any(e.get("use_tts") and (e.get("text") or "").strip()
+                       for e in json.loads(d.get("subtitles") or "[]"))
+        except Exception:
+            return True
+    return bool(d.get("use_tts", 1)) and bool((d.get("text") or "").strip())
 
 
 def run_render(project_id: str):
@@ -106,10 +118,15 @@ def run_render(project_id: str):
                 logger.warning(f"Progress callback failed: {e}")
 
         # TTS 모델 사전 로드 (최대 3회 재시도, 실패 시 edge-tts 전용 모드)
+        # 나레이션이 하나도 없는 프로젝트(자동 편집 음악 전용 등)는 로드 생략
         tts = TTSEngine(voice_name=(getattr(project, 'tts_voice', '') or ''))
         tts_loaded = False
-        progress_callback(5, "TTS AI 모델을 GPU 메모리에 불러오는 중...")
-        for attempt in range(1, 4):
+        needs_tts = any(_slide_needs_tts(d) for d in slides_data)
+        if needs_tts:
+            progress_callback(5, "TTS AI 모델을 GPU 메모리에 불러오는 중...")
+        else:
+            logger.info(f"[{project_id}] TTS 대상 슬라이드 없음 — TTS 모델 로드 생략")
+        for attempt in range(1, 4 if needs_tts else 1):
             if tts.load_model():
                 tts_loaded = True
                 break
@@ -117,7 +134,7 @@ def run_render(project_id: str):
             if attempt < 3:
                 import time; time.sleep(2)
 
-        if not tts_loaded:
+        if needs_tts and not tts_loaded:
             logger.warning("TTS 서버 로드 실패 → edge-tts 전용 모드로 렌더링 진행")
             progress_callback(8, "TTS 서버 미응답 — edge-tts 폴백 모드로 진행...")
 
