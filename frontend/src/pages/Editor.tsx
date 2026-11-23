@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { api, Slide, ProjectDetail, BgmHit, PhotosSortOrder, parseSlideMeta, RouteMeta, SavedLocation, GeocodeResult, OrganizeSuggestions, RouteSuggestion, CurationSuggestion, SpellcheckResult, AutoVideoOptions, AutoVideoTask, AutoEditOptions, AutoEditTask, TRANSITION_PRESETS, TEXT_STYLE_PRESETS, PUNCH_MAX_CHARS, KINETIC_MAX_CHARS, TextStyle, StyleTextKey, getStyleText, withStyleText, getLocationCard, withLocationCard, PHOTO_EFFECT_PRESETS, PhotoEffect, DEFAULT_EFFECT_REVEAL } from '../api/client'
+import { api, Slide, ProjectDetail, BgmHit, PhotosSortOrder, parseSlideMeta, RouteMeta, SavedLocation, GeocodeResult, OrganizeSuggestions, RouteSuggestion, CurationSuggestion, SpellcheckResult, AutoVideoOptions, AutoVideoTask, AutoEditOptions, AutoEditTask, TRANSITION_PRESETS, TEXT_STYLE_PRESETS, PUNCH_MAX_CHARS, KINETIC_MAX_CHARS, TextStyle, StyleTextKey, getStyleText, withStyleText, getLocationCard, withLocationCard, PHOTO_EFFECT_PRESETS, PhotoEffect, DEFAULT_EFFECT_REVEAL, TO_REAL_PRESETS, ToRealStyle, getToReal, withToReal } from '../api/client'
 import { useToast } from '../components/ToastContext'
 import GoogleAuthSection, { extractCodeFromUrl } from '../components/GoogleAuthSection'
 
@@ -1150,6 +1150,11 @@ function AutoEditModal({ opts, setOpts, hasBgm, running, phase, progress, msg, t
         {check('music_intro', `🎵 음악 인트로 (첫 ${opts.intro_seconds}초 무나레이션 + 제목)`)}
         {check('location_cards', '📍 위치 카드')}
         {check('kinetic', '🔤 키네틱 타이포')}
+        <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', margin: '0.25rem 0' }}>
+          <input type="checkbox" checked={(opts.stylize_ratio ?? 0) > 0} disabled={running}
+            onChange={e => setOpts({ ...opts, stylize_ratio: e.target.checked ? 0.25 : 0 })} />
+          🖌️ 그림 → 실사 전환 (사진 일부, 스케치/만화로 시작)
+        </label>
 
         <div style={{ display: 'flex', gap: '0.5rem', margin: '0.5rem 0 0.75rem' }}>
           <div style={{ flex: 1 }}>
@@ -1192,6 +1197,7 @@ function AutoEditModal({ opts, setOpts, hasBgm, running, phase, progress, msg, t
               <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '0.35rem', lineHeight: 1.6 }}>
                 {summary.cards.map(c => <div key={`c${c.order_index}`}>📍 #{c.order_index + 1} {c.title}{c.sub ? ` · ${c.sub}` : ''} ({c.source === 'gps' ? 'GPS' : '폴백'})</div>)}
                 {summary.kinetic.length > 0 && <div>🔤 {summary.kinetic.map(k => `#${k.order_index + 1} ${k.text}`).join(' · ')}</div>}
+                {(summary.stylized?.length ?? 0) > 0 && <div>🖌️ {summary.stylized!.map(s => `#${s.order_index + 1} ${s.effect}→실사(${s.to_real})`).join(' · ')}</div>}
               </div>
             )}
           </div>
@@ -2709,6 +2715,7 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
   const [kenBurns, setKenBurns] = useState<number>(slide.ken_burns ?? 0)
   const [photoEffect, setPhotoEffect] = useState<PhotoEffect>(slide.photo_effect ?? 'none')
   const [effectReveal, setEffectReveal] = useState<number>(slide.effect_reveal ?? DEFAULT_EFFECT_REVEAL)
+  const [toReal, setToReal] = useState<ToRealStyle>(() => getToReal(slide))
   const [textStyle, setTextStyle] = useState<TextStyle>(slide.text_style ?? 'caption')
   const styleKey: StyleTextKey = textStyle === 'punch' ? 'punch_text' : textStyle === 'kinetic' ? 'kinetic_text' : 'hero_text'
   const [styleText, setStyleText] = useState<string>(() => getStyleText(slide, styleKey))
@@ -2754,6 +2761,7 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
   useEffect(() => { setKenBurns(slide.ken_burns ?? 0) }, [slide.ken_burns])
   useEffect(() => { setPhotoEffect(slide.photo_effect ?? 'none') }, [slide.photo_effect])
   useEffect(() => { setEffectReveal(slide.effect_reveal ?? DEFAULT_EFFECT_REVEAL) }, [slide.effect_reveal])
+  useEffect(() => { setToReal(getToReal(slide)) }, [slide.meta])
   useEffect(() => { setTextStyle(slide.text_style ?? 'caption') }, [slide.text_style])
   useEffect(() => { setStyleText(getStyleText(slide, styleKey)) }, [slide.meta, styleKey])
   useEffect(() => {
@@ -3035,7 +3043,15 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
               )}
               {!isVideo && !isRoute && photoEffect !== 'none' && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }} title="슬라이드 시작은 원본, 이 비율만큼 지나며 스케치/만화로 바뀝니다">&#x2728; 드러내기:</span>
+                  <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>&#x1F501; 방향:</span>
+                  <select className="input" value={toReal} onChange={e => { const v = e.target.value as ToRealStyle; setToReal(v); onUpdate({ meta: withToReal(slide, v) }) }} style={{ flex: 1, padding: '0.3rem 0.5rem', fontSize: '0.8rem' }}>
+                    {TO_REAL_PRESETS.map(t => <option key={t.value || 'legacy'} value={t.value}>{t.label}</option>)}
+                  </select>
+                </div>
+              )}
+              {!isVideo && !isRoute && photoEffect !== 'none' && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }} title="기존: 원본→그림 전환 길이 / 그림→실사: 30% 지점부터 이 비율 동안 실사로">&#x2728; 드러내기:</span>
                   <input type="range" min={0} max={100} step={5} value={Math.round(effectReveal * 100)} onChange={e => setEffectReveal(parseInt(e.target.value) / 100)} onMouseUp={() => onUpdate({ effect_reveal: effectReveal })} onTouchEnd={() => onUpdate({ effect_reveal: effectReveal })} style={{ flex: 1, accentColor: '#818cf8' }} />
                   <span style={{ fontSize: '0.8rem', color: '#818cf8', minWidth: 64, textAlign: 'right' }}>{effectReveal <= 0 ? '바로 적용' : `${Math.round(effectReveal * 100)}%`}</span>
                 </div>

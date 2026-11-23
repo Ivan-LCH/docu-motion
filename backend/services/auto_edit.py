@@ -10,11 +10,14 @@ DocuMotion - 자동 편집 1단계 (시칠리안 브이로그 감성 하이라�
   3. 중간 키네틱 문구 — 중간 구간의 2~3장(서로 인접하지 않게)에 짧은 한글 문구.
      기본은 EXIF 시각·계절·장소 기반 템플릿, 선택적으로 Gemini (opts.use_ai).
   4. 나머지 — 텍스트 없음 + 무나레이션 (음악 전용). opts.narration=True 일 때만 일부 나레이션.
+  6. (2단계) 그림→실사 — opts.stylize_ratio > 0 이면 사진 일부를 스케치/만화 스틸로 시작해
+     brush/wipe/dissolve 마스크로 실사가 드러나게 (photo_effect + meta.effect_to_real).
+     장소가 바뀌는 첫 컷(위치 카드)을 우선, 서로 인접하지 않게 고른다. 로컬 필터만 사용.
   5. 전환 — 인트로 직후 zoom_through, 장소(클러스터)가 바뀔 때 whip_left/right 교대,
      그 외 기존 AUTO_TRANSITION_CYCLE 순환. Ken Burns 유지.
 
 모든 정보성 단계(역지오코딩, Gemini)는 실패해도 생략만 하고 계속 진행한다.
-Stage 2(그림화 전환) 훅: opts.stylize_ratio 는 받기만 하고 1단계에서는 사용하지 않는다.
+Stage 2: opts.stylize_ratio (0~0.5, 기본 0) / stylize_effect ('auto'|'sketch'|'cartoon').
 """
 from __future__ import annotations
 
@@ -55,14 +58,18 @@ DEFAULT_OPTS: dict = {
     "bgm_fade_in": 1.0,
     "use_geocode": True,
     "cluster_km": GROUP_RADIUS_KM,
-    "stylize_ratio": 0.0,      # Stage 2 훅 — 1단계에서는 무시
+    "stylize_ratio": 0.0,      # 2단계: 그림→실사 전환을 넣을 사진 비율 (0 = 끔, 최대 0.5)
+    "stylize_effect": "auto",  # 'auto'(스케치/만화 교대) | 'sketch' | 'cartoon'
+    "stylize_reveal": 0.5,     # 전환 창 (슬라이드 길이 비율)
 }
 
 KINETIC_MAX_CHARS = 8
 _INTRO_MAX_SLIDES = 4
 # 자동 편집이 관리하는 meta 키 (재실행 시 초기화)
 _MANAGED_META_KEYS = ("location_card", "kinetic_text", "kinetic_sub", "kinetic_highlight",
-                      "intro_kinetic", "bgm_fade_in")
+                      "intro_kinetic", "bgm_fade_in", "effect_to_real", "auto_stylized")
+_TO_REAL_CYCLE = ("brush", "wipe", "brush", "dissolve")
+_STYLIZE_MAX = 6
 _NATURE_WORDS = ("수목원", "공원", "숲", "산", "둘레길", "정원", "식물원", "호수", "계곡", "올레")
 
 
@@ -358,6 +365,32 @@ def pick_kinetic_slides(slides: list, exclude_ids: set, blocked_idx: set) -> lis
     return sorted(chosen)
 
 
+def pick_stylize_slides(slides: list, ratio: float, blocked_idx: set,
+                        prefer_ids: set = frozenset()) -> list[int]:
+    """그림→실사 전환을 넣을 사진 인덱스. 위치 카드 컷 우선, 서로 인접 금지, 마지막 컷 제외."""
+    n = len(slides)
+    cand = [i for i, s in enumerate(slides)
+            if is_photo(s) and i < n - 1 and i not in blocked_idx]
+    if not cand or ratio <= 0:
+        return []
+    k = max(1, min(_STYLIZE_MAX, round(len(cand) * min(ratio, 0.5))))
+    chosen: list[int] = []
+    for i in cand:                                  # 1) 장소 첫 컷
+        if len(chosen) >= k:
+            break
+        if slides[i].id in prefer_ids and all(abs(i - c) > 1 for c in chosen):
+            chosen.append(i)
+    for j in range(k):                              # 2) 나머지는 고르게
+        if len(chosen) >= k:
+            break
+        target = cand[0] + (cand[-1] - cand[0]) * (j + 0.5) / k
+        for i in sorted(cand, key=lambda c: (abs(c - target), c)):
+            if i not in chosen and all(abs(i - c) > 1 for c in chosen):
+                chosen.append(i)
+                break
+    return sorted(chosen)
+
+
 # ────────────────────────────────────────────────────────────────────────── #
 # 계획 (DB 반영)
 # ────────────────────────────────────────────────────────────────────────── #
@@ -411,6 +444,9 @@ def plan_auto_edit(db, project_id: str, opts: Optional[dict] = None) -> dict:
     # 0) 초기화: 자동 편집 meta 제거, 전부 무자막·무나레이션 (이전 나레이션 텍스트는 meta 에 백업)
     for s in slides:
         m = _meta(s)
+        if m.get("auto_stylized"):                  # 이전 자동 편집이 넣은 그림 효과만 되돌린다
+            s.photo_effect = "none"
+            s.effect_reveal = 0.45
         for k in _MANAGED_META_KEYS:
             m.pop(k, None)
         if s.slide_type != "video":     # 영상 클립의 자막(JSON)·원본 오디오는 그대로 둔다
@@ -479,6 +515,26 @@ def plan_auto_edit(db, project_id: str, opts: Optional[dict] = None) -> dict:
                                  {k["slide_id"] for k in kinetic} | ({slides[0].id} if kinetic_intro else set()),
                                  float(o["narration_ratio"]), o["tone"])
 
+    # 4.5) 2단계: 그림 → 실사
+    stylized = []
+    ratio = max(0.0, min(0.5, float(o.get("stylize_ratio") or 0.0)))
+    if ratio > 0:
+        eff = str(o.get("stylize_effect") or "auto").lower()
+        reveal = max(0.2, min(0.7, float(o.get("stylize_reveal") or 0.5)))
+        idxs = pick_stylize_slides(slides, ratio, set(range(n_intro)), card_ids)
+        for j, i in enumerate(idxs):
+            s = slides[i]
+            fx = eff if eff in ("sketch", "cartoon") else ("cartoon", "sketch")[j % 2]
+            style = _TO_REAL_CYCLE[j % len(_TO_REAL_CYCLE)]
+            s.photo_effect = fx
+            s.effect_reveal = reveal
+            m = _meta(s)
+            m["effect_to_real"] = style
+            m["auto_stylized"] = True
+            _set_meta(s, m)
+            stylized.append({"slide_id": s.id, "order_index": s.order_index,
+                             "effect": fx, "to_real": style})
+
     # 5) 전환 + Ken Burns
     cluster_start_ids = {c["cluster_start_id"] for c in cards if c["source"] == "gps"}
     first_card = cards[0]["cluster_start_id"] if cards else None
@@ -521,7 +577,8 @@ def plan_auto_edit(db, project_id: str, opts: Optional[dict] = None) -> dict:
         "kinetic": kinetic,
         "narrated": narrated,
         "transitions": transitions,
-        "stylize_ratio": float(o.get("stylize_ratio") or 0.0),   # Stage 2 훅 (미사용)
+        "stylize_ratio": ratio,
+        "stylized": stylized,
     }
     logger.info(f"[auto-edit] plan {project_id}: intro={n_intro} cards={len(cards)} "
                 f"kinetic={len(kinetic)} narrated={narrated}")

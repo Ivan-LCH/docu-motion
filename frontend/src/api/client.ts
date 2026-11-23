@@ -135,6 +135,29 @@ export function withLocationCard(s: Slide, card: LocationCard): string {
   return JSON.stringify({ ...m, location_card: card })
 }
 
+// 2단계: 그림/만화 → 실사 전환 (meta.effect_to_real). '' = 기존 (실사 → 그림 크로스페이드)
+export type ToRealStyle = '' | 'brush' | 'wipe' | 'dissolve'
+export const TO_REAL_PRESETS: { value: ToRealStyle; label: string }[] = [
+  { value: '', label: '실사 → 그림 (기존)' },
+  { value: 'brush', label: '그림 → 실사 · 붓결' },
+  { value: 'wipe', label: '그림 → 실사 · 와이프' },
+  { value: 'dissolve', label: '그림 → 실사 · 디졸브' },
+]
+export function getToReal(s: Slide): ToRealStyle {
+  try {
+    const v = s.meta ? JSON.parse(s.meta)?.effect_to_real : ''
+    return v === 'brush' || v === 'wipe' || v === 'dissolve' ? v : ''
+  } catch { return '' }
+}
+export function withToReal(s: Slide, v: ToRealStyle): string {
+  let m: Record<string, unknown> = {}
+  try {
+    const parsed = s.meta ? JSON.parse(s.meta) : {}
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) m = parsed
+  } catch { /* 손상된 meta 는 새로 작성 */ }
+  return JSON.stringify({ ...m, effect_to_real: v })
+}
+
 // Route/Place 슬라이드 메타 파서
 export interface RouteMeta {
   type: 'route'
@@ -229,11 +252,14 @@ export interface AutoEditOptions {
   kinetic: boolean
   narration: boolean
   style_preset: string
+  stylize_ratio?: number          // 2단계: 그림→실사 사진 비율 (0 = 끔)
+  stylize_effect?: 'auto' | 'sketch' | 'cartoon'
 }
 export interface AutoEditSummary {
   intro_seconds: number
   cards: { order_index: number; title: string; sub: string; source: 'gps' | 'fallback' }[]
   kinetic: { order_index: number; text: string }[]
+  stylized?: { order_index: number; effect: string; to_real: string }[]
 }
 export interface AutoEditTask {
   status?: string

@@ -220,6 +220,8 @@ async def upload_slides(
 
 _STYLE_META_KEYS = ("hero_text", "punch_text", "kinetic_text", "kinetic_highlight")
 _CARD_META_KEY = "location_card"   # 자동 편집 위치 카드 {title, sub, source}
+_TO_REAL_META_KEY = "effect_to_real"   # 2단계: 그림→실사 마스크 (brush|wipe|dissolve, 빈 값 = 기존)
+_TO_REAL_VALUES = ("brush", "wipe", "dissolve")
 
 
 def _merge_style_meta(existing: str, incoming: str) -> str:
@@ -229,7 +231,7 @@ def _merge_style_meta(existing: str, incoming: str) -> str:
         inc = json.loads(incoming) if incoming else {}
     except Exception:
         inc = {}
-    if not isinstance(inc, dict) or not any(k in inc for k in (*_STYLE_META_KEYS, _CARD_META_KEY)):
+    if not isinstance(inc, dict) or not any(k in inc for k in (*_STYLE_META_KEYS, _CARD_META_KEY, _TO_REAL_META_KEY)):
         return existing
     try:
         cur = json.loads(existing) if existing else {}
@@ -256,6 +258,13 @@ def _merge_style_meta(existing: str, incoming: str) -> str:
                                    "source": prev.get("source") or "manual"}
         else:
             cur.pop(_CARD_META_KEY, None)
+    if _TO_REAL_META_KEY in inc:
+        v = inc[_TO_REAL_META_KEY]
+        v = v.strip().lower() if isinstance(v, str) else ""
+        if v in _TO_REAL_VALUES:
+            cur[_TO_REAL_META_KEY] = v
+        else:
+            cur.pop(_TO_REAL_META_KEY, None)
     return json.dumps(cur, ensure_ascii=False)
 
 

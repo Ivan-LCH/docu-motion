@@ -32,10 +32,11 @@ try:
 except ImportError:
     TTSEngine = None
 
-from backend.services.color_grade import apply_cinematic, _resolve_motion_cfg, _resolve_rhythm_cfg, MOTION_VARIETY
+from backend.services.color_grade import apply_cinematic, _build_processor, _resolve_motion_cfg, _resolve_rhythm_cfg, MOTION_VARIETY
 from backend.services.face_detect import detect_face_center
 from backend.services.beat_detect import detect_beats, nearest_beat
-from backend.services.photo_fx import stylize_photo, reveal_weight, blend_rgb
+from backend.services.photo_fx import (stylize_photo, reveal_weight, blend_rgb,
+                                       normalize_to_real, to_real_progress, RevealMask, blend_mask)
 from backend.services.presets import (
     TEXT_STYLES, compute_slide_starts, slide_overlap, effect_duration,
     normalize_transition, normalize_text_style, resolve_style_text,
@@ -1077,6 +1078,17 @@ def load_tts_engine(voice_name: str = ""):
 # ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── #
 # Build Single Slide Clip (슬라이드 1개 → MoviePy 클립)
 # ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── #
+def _grade_slide_clip(clip, style_preset: str, canvas_size: tuple):
+    """슬라이드 클립에 시네마틱 색보정을 입힌다. 그림 구간은 프레임 함수에서 실사만 그레이딩한다."""
+    if not style_preset or style_preset == "none" or clip is None:
+        return clip
+    try:
+        return apply_cinematic(clip, style_preset, canvas_size)
+    except Exception as style_err:
+        logger.warning(f"Style preset '{style_preset}' failed (skipping): {style_err}")
+        return clip
+
+
 def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: Path,
                      canvas_size: tuple, tts_engine=None,
                      font_size: int = FONT_SIZE, font_color: str = TEXT_COLOR,
@@ -1256,7 +1268,7 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
         if audio_clips:
             final_clip = final_clip.set_audio(CompositeAudioClip(audio_clips))
 
-        return final_clip
+        return _grade_slide_clip(final_clip, style_preset, canvas_size)
 
     # ── Image Slide ──────────────────────────────────
     use_tts_flag = bool(item.get('use_tts', 1))
@@ -1412,12 +1424,13 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
         final_clip = CompositeVideoClip([bg_clip, img_clip] + route_overlays)
         if a_clip is not None:
             final_clip = final_clip.set_audio(a_clip)
-        return final_clip
+        return _grade_slide_clip(final_clip, style_preset, canvas_size)
 
     # Image clip with Ken Burns effect
     img_filename = item.get('image_filename', '')
     img_path = Path(img_filename) if Path(img_filename).is_absolute() else assets_dir / img_filename
 
+    grade_proc = None  # 파일 없음 분기에서도 최종 return 이 참조한다
     if img_path.exists():
         # 회전 적용 (PIL로 이미지 전처리)
         rotation = item.get('rotation', 0)
@@ -1520,6 +1533,21 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
                 styled_arr = np.ascontiguousarray(
                     _apply_overlays_to_pil(Image.fromarray(styled_arr), deferred_overlays))
 
+        # 시네마틱 색보정은 크롭 후(화면 좌표) 실사 프레임에만 적용.
+        # 그림/만화 구간은 그레이딩을 생략해 색면·외곽선·채도가 죽지 않게 한다. (11/23 Ivan)
+        grade_proc = None
+        if style_preset and style_preset != "none":
+            try:
+                grade_proc = _build_processor(style_preset, (int(kb_area[0]), int(kb_area[1])))
+            except Exception as grade_err:
+                logger.warning(f"Slide {i}: grade processor failed (skipping): {grade_err}")
+                grade_proc = None
+
+        def _grade_real(frame):
+            if grade_proc is None or frame is None:
+                return frame
+            return grade_proc(frame)
+
         def _crop_frame(frame, left, top, view_w, view_h, target_w, target_h):
             cropped = Image.fromarray(frame).crop((left, top, left + view_w, top + view_h))
             tw, th = int(target_w), int(target_h)
@@ -1527,14 +1555,32 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
                 cropped = cropped.resize((tw, th), Image.LANCZOS)
             return np.array(cropped)
 
+        # 2단계: 그림/만화 → 실사 (meta.effect_to_real = brush|wipe|dissolve)
+        to_real = normalize_to_real(_item_meta.get('effect_to_real')) if styled_arr is not None else ""
+        reveal_mask = RevealMask(int(kb_area[1]), int(kb_area[0]), to_real, seed=i) if to_real else None
+        if to_real:
+            logger.info(f"Slide {i}: {photo_effect} → real reveal '{to_real}' (window={effect_reveal:.2f})")
+
         def _frame_from_box(left, top, view_w, view_h, target_w, target_h, t, dur):
-            """같은 크롭 창으로 원본/스타일을 잘라 드러내기 가중치로 섞는다."""
+            """같은 크롭 창으로 원본/스타일을 잘라 드러내기 가중치로 섞는다.
+            실사만 시네마틱 그레이딩하고, 스타일 프레임은 그대로 둔다."""
             if styled_arr is None:
-                return _crop_frame(base_arr, left, top, view_w, view_h, target_w, target_h)
+                return _grade_real(_crop_frame(base_arr, left, top, view_w, view_h, target_w, target_h))
+            if reveal_mask is not None:
+                p = to_real_progress(t, dur, effect_reveal)
+                if p <= 0.0:
+                    return _crop_frame(styled_arr, left, top, view_w, view_h, target_w, target_h)
+                if p >= 1.0:
+                    return _grade_real(_crop_frame(base_arr, left, top, view_w, view_h, target_w, target_h))
+                real = _grade_real(_crop_frame(base_arr, left, top, view_w, view_h, target_w, target_h))
+                sty = _crop_frame(styled_arr, left, top, view_w, view_h, target_w, target_h)
+                if sty.shape != real.shape:
+                    sty = np.array(Image.fromarray(sty).resize((real.shape[1], real.shape[0]), Image.LANCZOS))
+                return blend_mask(real, sty, reveal_mask.at(p))
             weight = reveal_weight(t, dur, effect_reveal)
             if weight >= 1.0:
                 return _crop_frame(styled_arr, left, top, view_w, view_h, target_w, target_h)
-            orig = _crop_frame(base_arr, left, top, view_w, view_h, target_w, target_h)
+            orig = _grade_real(_crop_frame(base_arr, left, top, view_w, view_h, target_w, target_h))
             if weight <= 0.0:
                 return orig
             styled_crop = _crop_frame(styled_arr, left, top, view_w, view_h, target_w, target_h)
@@ -1620,7 +1666,7 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
             target_w, target_h = kb_area
             sh, sw = base_arr.shape[:2]
             crop_left, crop_top = _biased_center(sw, sh, target_w, target_h)
-            if styled_arr is None or effect_reveal <= 0.0:
+            if styled_arr is None or (effect_reveal <= 0.0 and reveal_mask is None):
                 still = _frame_from_box(
                     crop_left, crop_top, target_w, target_h, target_w, target_h,
                     total_duration, total_duration,
@@ -1633,12 +1679,19 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
                     styled_arr, crop_left, crop_top, target_w, target_h, target_w, target_h)
 
                 def make_still(t, _o=still_orig, _s=still_styled, _d=total_duration):
+                    if reveal_mask is not None:
+                        p = to_real_progress(t, _d, effect_reveal)
+                        if p <= 0.0:
+                            return _s.copy()
+                        if p >= 1.0:
+                            return _grade_real(_o)
+                        return blend_mask(_grade_real(_o), _s, reveal_mask.at(p))
                     weight = reveal_weight(t, _d, effect_reveal)
                     if weight <= 0.0:
-                        return _o.copy()
+                        return _grade_real(_o)
                     if weight >= 1.0:
                         return _s.copy()
-                    return blend_rgb(_o, _s, weight)
+                    return blend_rgb(_grade_real(_o), _s, weight)
 
                 from moviepy.editor import VideoClip
                 img_clip = VideoClip(make_still, duration=total_duration).set_fps(24)
@@ -1662,6 +1715,9 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
     final_clip = CompositeVideoClip([bg_clip, img_clip] + subtitle_clips + _ed)
     if a_clip is not None:
         final_clip = final_clip.set_audio(a_clip)
+    # 사진 슬라이드는 프레임 함수에서 이미 실사만 그레이딩했다.
+    if grade_proc is None:
+        final_clip = _grade_slide_clip(final_clip, style_preset, canvas_size)
     return final_clip
 
 
@@ -1903,13 +1959,11 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
             except Exception as title_err:
                 logger.warning(f"Intro title failed (skipping): {title_err}")
 
-        # ── 시네마틱 후반 (자동 색보정/질감, Phase A) ──────────────
+        # ── 시네마틱 후반 ──────────────
+        # 색보정은 build_slide_clip 에서 슬라이드별로 적용한다.
+        # 그림/만화 구간은 실사만 그레이딩해 만화 느낌(색면·외곽선·채도)을 유지한다.
         if style_preset and style_preset != "none":
-            try:
-                combined = apply_cinematic(combined, style_preset, canvas_size)
-                logger.info(f"Style preset applied: {style_preset}")
-            except Exception as style_err:
-                logger.warning(f"Style preset failed (skipping): {style_err}")
+            logger.info(f"Style preset applied per-slide: {style_preset}")
 
         # ── 잡지식 타이포·위치 카드 합성 (비네트/색보정 위에 선명한 화이트 유지) ──
         post_layers = []
