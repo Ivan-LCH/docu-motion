@@ -87,31 +87,52 @@ export const TRANSITION_PRESETS: { value: string; label: string; short: string }
   { value: 'flash', label: '화이트 플래시 (0.3s)', short: '플래시' },
 ]
 
-export type TextStyle = 'caption' | 'hero' | 'punch' | 'none'
+export type TextStyle = 'caption' | 'hero' | 'punch' | 'kinetic' | 'none'
 export const TEXT_STYLE_PRESETS: { value: TextStyle; label: string }[] = [
   { value: 'caption', label: '자막 (하단, 문장별)' },
   { value: 'hero', label: '히어로 (큰 제목)' },
   { value: 'punch', label: '펀치 (중앙 한 단어, 8자)' },
+  { value: 'kinetic', label: '잡지식 타이포 (좌/우 하단, 차분한 화이트)' },
   { value: 'none', label: '텍스트 없음' },
 ]
 export const PUNCH_MAX_CHARS = 8
+export const KINETIC_MAX_CHARS = 20
 
-// meta JSON 에서 hero_text / punch_text 읽기 (파싱 실패 시 빈 문자열)
-export function getStyleText(s: Slide, key: 'hero_text' | 'punch_text'): string {
+export type StyleTextKey = 'hero_text' | 'punch_text' | 'kinetic_text'
+
+// meta JSON 에서 hero_text / punch_text / kinetic_text 읽기 (파싱 실패 시 빈 문자열)
+export function getStyleText(s: Slide, key: StyleTextKey): string {
   try {
     const m = s.meta ? JSON.parse(s.meta) : {}
     return typeof m?.[key] === 'string' ? m[key] : ''
   } catch { return '' }
 }
 
-// meta JSON 에 hero_text / punch_text 병합한 새 meta 문자열 (빈 값도 키 유지 → 서버에서 삭제 처리)
-export function withStyleText(s: Slide, key: 'hero_text' | 'punch_text', value: string): string {
+// meta JSON 에 hero_text / punch_text / kinetic_text 병합한 새 meta 문자열 (빈 값도 키 유지 → 서버에서 삭제 처리)
+export function withStyleText(s: Slide, key: StyleTextKey, value: string): string {
   let m: Record<string, unknown> = {}
   try {
     const parsed = s.meta ? JSON.parse(s.meta) : {}
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) m = parsed
   } catch { /* 손상된 meta 는 새로 작성 */ }
   return JSON.stringify({ ...m, [key]: value })
+}
+
+// 자동 편집 위치 카드 (meta.location_card) — 제목을 비우면 서버에서 카드 삭제
+export interface LocationCard { title: string; sub?: string; source?: string }
+export function getLocationCard(s: Slide): LocationCard | null {
+  try {
+    const c = s.meta ? JSON.parse(s.meta)?.location_card : null
+    return c && typeof c === 'object' && typeof c.title === 'string' ? c : null
+  } catch { return null }
+}
+export function withLocationCard(s: Slide, card: LocationCard): string {
+  let m: Record<string, unknown> = {}
+  try {
+    const parsed = s.meta ? JSON.parse(s.meta) : {}
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) m = parsed
+  } catch { /* 손상된 meta 는 새로 작성 */ }
+  return JSON.stringify({ ...m, location_card: card })
 }
 
 // Route/Place 슬라이드 메타 파서
@@ -195,6 +216,34 @@ export interface AutoVideoTask {
 }
 export interface AutoVideoStatus {
   task: AutoVideoTask
+  render: { status?: string; progress?: number; message?: string }
+}
+
+// 자동 편집 1단계 (12): 음악 인트로 + 위치 카드 + 키네틱 타이포
+export interface AutoEditOptions {
+  render: boolean
+  resolution?: '720p' | '1080p'
+  intro_seconds: number
+  music_intro: boolean
+  location_cards: boolean
+  kinetic: boolean
+  narration: boolean
+  style_preset: string
+}
+export interface AutoEditSummary {
+  intro_seconds: number
+  cards: { order_index: number; title: string; sub: string; source: 'gps' | 'fallback' }[]
+  kinetic: { order_index: number; text: string }[]
+}
+export interface AutoEditTask {
+  status?: string
+  phase?: string
+  progress?: number
+  message?: string
+  summary?: AutoEditSummary | null
+}
+export interface AutoEditStatus {
+  task: AutoEditTask
   render: { status?: string; progress?: number; message?: string }
 }
 
@@ -322,6 +371,12 @@ export const api = {
     request<{ ok: boolean }>('POST', `/projects/${projectId}/auto-video`, opts),
   getAutoVideoStatus: (projectId: string) =>
     request<AutoVideoStatus>('GET', `/projects/${projectId}/auto-video/status`),
+
+  // 자동 편집 1단계 (12): 음악 인트로 + 위치 카드 + 키네틱 → 렌더
+  startAutoEdit: (projectId: string, opts: AutoEditOptions) =>
+    request<{ ok: boolean }>('POST', `/projects/${projectId}/auto-edit`, opts),
+  getAutoEditStatus: (projectId: string) =>
+    request<AutoEditStatus>('GET', `/projects/${projectId}/auto-edit/status`),
 
   // 슬라이드 미리보기 (구간 렌더) — 6-19/6-20
   requestPreview: (projectId: string, slideId: string,

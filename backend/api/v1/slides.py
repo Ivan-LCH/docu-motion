@@ -218,17 +218,18 @@ async def upload_slides(
     return new_slides
 
 
-_STYLE_META_KEYS = ("hero_text", "punch_text")
+_STYLE_META_KEYS = ("hero_text", "punch_text", "kinetic_text", "kinetic_highlight")
+_CARD_META_KEY = "location_card"   # 자동 편집 위치 카드 {title, sub, source}
 
 
 def _merge_style_meta(existing: str, incoming: str) -> str:
-    """프론트가 보낸 meta 중 hero_text/punch_text 만 기존 meta 에 병합.
+    """프론트가 보낸 meta 중 hero/punch/kinetic 문구와 location_card 만 기존 meta 에 병합.
     route frames 등 서버가 관리하는 키는 클라이언트 값으로 덮어쓰지 않는다. 빈 문자열 → 키 삭제."""
     try:
         inc = json.loads(incoming) if incoming else {}
     except Exception:
         inc = {}
-    if not isinstance(inc, dict) or not any(k in inc for k in _STYLE_META_KEYS):
+    if not isinstance(inc, dict) or not any(k in inc for k in (*_STYLE_META_KEYS, _CARD_META_KEY)):
         return existing
     try:
         cur = json.loads(existing) if existing else {}
@@ -245,6 +246,16 @@ def _merge_style_meta(existing: str, incoming: str) -> str:
             cur[k] = v
         else:
             cur.pop(k, None)
+    if _CARD_META_KEY in inc:
+        card = inc[_CARD_META_KEY]
+        title = str(card.get("title") or "").strip()[:60] if isinstance(card, dict) else ""
+        if title:
+            prev = cur.get(_CARD_META_KEY) if isinstance(cur.get(_CARD_META_KEY), dict) else {}
+            cur[_CARD_META_KEY] = {"title": title,
+                                   "sub": str(card.get("sub") or "").strip()[:80],
+                                   "source": prev.get("source") or "manual"}
+        else:
+            cur.pop(_CARD_META_KEY, None)
     return json.dumps(cur, ensure_ascii=False)
 
 

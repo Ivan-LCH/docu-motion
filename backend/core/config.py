@@ -63,3 +63,7 @@ FONT_PATH   = str(RESOURCES_DIR / "font.ttf")
 _bold = RESOURCES_DIR / "NanumGothic-ExtraBold.ttf"
 FONT_BOLD_PATH = str(_bold) if _bold.exists() else FONT_PATH
 FONT_SIZE   = 30
+
+# 영상 인코더. 비우면 자동: NVIDIA 장치(/dev/nvidia0)가 있으면 h264_nvenc → libx264 폴백,
+# 없으면(CPU 박스) 바로 libx264. 예: VIDEO_CODEC=h264_nvenc | libx264
+VIDEO_CODEC = os.getenv("VIDEO_CODEC", "").strip()

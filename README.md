@@ -12,6 +12,8 @@ AI 기반 기술 문서 영상 제작 자동화 솔루션 (v3.1.0)
 * **유튜브 쇼츠 연동**: 제작 완료 후 즉시 YouTube Shorts 업로드 기능 (자동/수동 선택 가능)
 * **파일 관리 시스템**: 프로젝트 초기화 및 임시 파일 삭제(Cleansing) 기능 탑재
 * **사진 효과**: 슬라이드마다 사진을 연필 스케치(`sketch`) 또는 만화(`cartoon`)로 바꿀 수 있다. 기본은 슬라이드 길이의 45% 동안 원본에서 효과로 크로스페이드(`effect_reveal`, 0=바로 적용 ~ 1=전체 구간)하며, Ken Burns·장면 전환과 함께 쓴다. 필터는 슬라이드당 한 번만 계산한다.
+* **자동 편집 (1단계)**: 에디터 「🎬 자동 편집」 또는 `POST /api/v1/projects/{id}/auto-edit`. BGM 위 음악 전용 하이라이트로 자동 연출한다 — 첫 ~5초 무나레이션 음악 인트로 + 제목 키네틱 타이포, 장소가 바뀔 때 좌측 상단 📍 위치 카드(EXIF GPS 역지오코딩: 카카오 → Nominatim, GPS 없으면 장소 슬라이드 주소 폴백), 중간 2~3컷 짧은 키네틱 문구(흰 글씨 + 노랑 강조), 인트로 뒤 zoom_through·장소 전환 시 whip. BGM 필수. 샘플(원본 보존, 복제본 렌더): `/workspace/venvs/docu/bin/python scripts/render_auto_edit_sample.py --project <id> --clone-name "<이름>" --bgm <파일> --resolution 720p --out-dir <폴더>`
+* **인코더 선택**: `VIDEO_CODEC` 환경변수(예: `h264_nvenc`, `libx264`)를 우선 사용. 비우면 NVIDIA 장치가 있을 때만 NVENC를 시도하고, CPU 박스는 바로 libx264로 인코딩한다.
 
 ---
 

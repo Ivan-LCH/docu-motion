@@ -158,6 +158,12 @@ TEXT_STYLES: dict[str, dict] = {
     "punch":   {"description": "짧은 한 단어 — 화면 중앙 팝",
                 "anim": "pop", "anim_dur": 0.15, "font_scale": 0.18, "y": 0.5,
                 "max_chars": 8, "max_lines": 1},
+    # 잡지식 에디토리얼 타이포 (자동 편집): 좌/우 하단 한쪽 정렬, 외곽선 없는 차분한 흰색/오프화이트.
+    # 문구는 meta.kinetic_text, 보조줄(날짜 등)은 meta.kinetic_sub.
+    "kinetic": {"description": "잡지식 타이포 — 좌/우 하단 정렬, 차분한 화이트 (자동 편집)",
+                "anim": "editorial_fade", "anim_dur": 0.4, "font_scale": 0.046,
+                "title_font_scale": 0.056, "margin_x": 0.055, "margin_y": 0.085,
+                "max_chars": 24, "max_lines": 2, "exit_dur": 0.35, "highlight": "#F7F7F2"},
     "none":    {"description": "텍스트 없음 (나레이션 음성은 유지)"},
 }
 VALID_TEXT_STYLES: tuple[str, ...] = tuple(TEXT_STYLES.keys())
@@ -184,11 +190,11 @@ def _parse_meta(meta) -> dict:
 
 
 def resolve_style_text(item: dict, style: str) -> str:
-    """hero/punch 문구 결정.
+    """hero/punch/kinetic 문구 결정.
     우선순위: meta.{style}_text → meta.title → label(파일명 아님) → meta.caption
-             → meta.name(장소) → 나레이션 첫 문장. punch 는 max_chars 로 자름."""
+             → meta.name(장소) → 나레이션 첫 문장. punch/kinetic 은 max_chars 로 자름."""
     style = normalize_text_style(style)
-    if style not in ("hero", "punch"):
+    if style not in ("hero", "punch", "kinetic"):
         return ""
     meta = _parse_meta(item.get("meta"))
     label = (item.get("label") or "").strip()
