@@ -35,7 +35,8 @@ except ImportError:
 from backend.services.color_grade import apply_cinematic, _resolve_motion_cfg, _resolve_rhythm_cfg, MOTION_VARIETY
 from backend.services.face_detect import detect_face_center
 from backend.services.beat_detect import detect_beats, nearest_beat
-from backend.services.photo_fx import stylize_photo, reveal_weight, blend_rgb
+from backend.services.photo_fx import (stylize_photo, reveal_weight, blend_rgb,
+                                       normalize_to_real, to_real_progress, RevealMask, blend_mask)
 from backend.services.presets import (
     TEXT_STYLES, compute_slide_starts, slide_overlap, effect_duration,
     normalize_transition, normalize_text_style, resolve_style_text,
@@ -1527,10 +1528,27 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
                 cropped = cropped.resize((tw, th), Image.LANCZOS)
             return np.array(cropped)
 
+        # 2단계: 그림/만화 → 실사 (meta.effect_to_real = brush|wipe|dissolve)
+        to_real = normalize_to_real(_item_meta.get('effect_to_real')) if styled_arr is not None else ""
+        reveal_mask = RevealMask(int(kb_area[1]), int(kb_area[0]), to_real, seed=i) if to_real else None
+        if to_real:
+            logger.info(f"Slide {i}: {photo_effect} → real reveal '{to_real}' (window={effect_reveal:.2f})")
+
         def _frame_from_box(left, top, view_w, view_h, target_w, target_h, t, dur):
             """같은 크롭 창으로 원본/스타일을 잘라 드러내기 가중치로 섞는다."""
             if styled_arr is None:
                 return _crop_frame(base_arr, left, top, view_w, view_h, target_w, target_h)
+            if reveal_mask is not None:
+                p = to_real_progress(t, dur, effect_reveal)
+                if p <= 0.0:
+                    return _crop_frame(styled_arr, left, top, view_w, view_h, target_w, target_h)
+                if p >= 1.0:
+                    return _crop_frame(base_arr, left, top, view_w, view_h, target_w, target_h)
+                real = _crop_frame(base_arr, left, top, view_w, view_h, target_w, target_h)
+                sty = _crop_frame(styled_arr, left, top, view_w, view_h, target_w, target_h)
+                if sty.shape != real.shape:
+                    sty = np.array(Image.fromarray(sty).resize((real.shape[1], real.shape[0]), Image.LANCZOS))
+                return blend_mask(real, sty, reveal_mask.at(p))
             weight = reveal_weight(t, dur, effect_reveal)
             if weight >= 1.0:
                 return _crop_frame(styled_arr, left, top, view_w, view_h, target_w, target_h)
@@ -1620,7 +1638,7 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
             target_w, target_h = kb_area
             sh, sw = base_arr.shape[:2]
             crop_left, crop_top = _biased_center(sw, sh, target_w, target_h)
-            if styled_arr is None or effect_reveal <= 0.0:
+            if styled_arr is None or (effect_reveal <= 0.0 and reveal_mask is None):
                 still = _frame_from_box(
                     crop_left, crop_top, target_w, target_h, target_w, target_h,
                     total_duration, total_duration,
@@ -1633,6 +1651,13 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
                     styled_arr, crop_left, crop_top, target_w, target_h, target_w, target_h)
 
                 def make_still(t, _o=still_orig, _s=still_styled, _d=total_duration):
+                    if reveal_mask is not None:
+                        p = to_real_progress(t, _d, effect_reveal)
+                        if p <= 0.0:
+                            return _s.copy()
+                        if p >= 1.0:
+                            return _o.copy()
+                        return blend_mask(_o, _s, reveal_mask.at(p))
                     weight = reveal_weight(t, _d, effect_reveal)
                     if weight <= 0.0:
                         return _o.copy()

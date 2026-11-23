@@ -165,3 +165,120 @@ def _cartoon_pil(rgb: np.ndarray) -> np.ndarray:
     thresh = max(12.0, float(np.percentile(mag, 88)))
     edges = np.where(mag >= thresh, np.uint8(0), np.uint8(255))
     return (smooth.astype(np.uint16) * edges[..., None].astype(np.uint16) // np.uint16(255)).astype(np.uint8)
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# 2단계: 그림/만화 → 실사 전환 (CF 느낌의 마스크 리빌)
+# ────────────────────────────────────────────────────────────────────────────
+# 슬라이드 앞부분은 스타일 스틸(스케치/만화)로 시작해 마스크가 번지며 실사가 드러난다.
+# 마스크 필드는 슬라이드당 한 번 만들고, 프레임마다 임계값만 바꾼다 (CPU 저렴).
+#   brush    : 가로로 길쭉한 붓결 + 저주파 얼룩 + 좌→우 바이어스 — 물감이 씻기듯
+#   wipe     : 살짝 기운 대각 와이프, 가장자리 흔들림 + 부드러운 페더
+#   dissolve : 전체 크로스페이드
+TO_REAL_STYLES: tuple[str, ...] = ("brush", "wipe", "dissolve")
+TO_REAL_HOLD = 0.3   # 슬라이드 길이 중 그림 상태로 머무는 비율 (전환 시작 시점)
+
+
+def normalize_to_real(value) -> str:
+    """meta.effect_to_real 정규화. 알 수 없는 값/빈 값 → '' (기존 실사→그림 크로스페이드)."""
+    if not isinstance(value, str):
+        return ""
+    v = value.strip().lower()
+    return v if v in TO_REAL_STYLES else ""
+
+
+def to_real_progress(t: float, duration: float, reveal: float, hold: float = TO_REAL_HOLD) -> float:
+    """0 = 그림(스타일) 그대로, 1 = 실사. hold 비율만큼 그림으로 머문 뒤 reveal 비율 동안 전환.
+    reveal<=0 이면 hold 시점에 즉시 컷. 전환은 슬라이드 끝 5% 전에 끝나도록 당긴다."""
+    try:
+        t_f, d_f, r_f = float(t), float(duration), float(reveal)
+    except (TypeError, ValueError):
+        return 1.0
+    if d_f != d_f or t_f != t_f or r_f != r_f or d_f <= 0:
+        return 1.0
+    r_f = max(0.0, min(1.0, r_f))
+    window = r_f * d_f
+    start = max(0.0, min(hold * d_f, d_f * 0.95 - window))
+    if window <= 1e-6:
+        return 0.0 if t_f < start else 1.0
+    p = (t_f - start) / window
+    if p <= 0.0:
+        return 0.0
+    if p >= 1.0:
+        return 1.0
+    return p * p * (3.0 - 2.0 * p)
+
+
+def _resize_field(arr: np.ndarray, w: int, h: int) -> np.ndarray:
+    try:
+        import cv2
+        return cv2.resize(arr.astype(np.float32), (w, h), interpolation=cv2.INTER_CUBIC)
+    except Exception:
+        from PIL import Image
+        return np.asarray(Image.fromarray(arr.astype(np.float32), mode="F").resize((w, h), Image.BICUBIC))
+
+
+def _rank_normalize(field: np.ndarray) -> np.ndarray:
+    """값 분포를 0~1 균등으로 — 임계값 p 가 '드러난 면적 비율 p' 에 대응하게."""
+    flat = field.ravel()
+    order = np.argsort(flat, kind="stable")
+    ranks = np.empty_like(order, dtype=np.float32)
+    ranks[order] = np.linspace(0.0, 1.0, flat.size, dtype=np.float32)
+    return ranks.reshape(field.shape)
+
+
+class RevealMask:
+    """(h, w) 크기 실사 마스크 생성기. at(p) → float32 HxW (1=실사) 또는 스칼라(dissolve)."""
+
+    def __init__(self, h: int, w: int, style: str, seed: int = 0):
+        self.h, self.w = max(1, int(h)), max(1, int(w))
+        self.style = normalize_to_real(style) or "dissolve"
+        rng = np.random.default_rng(1000 + int(seed))
+        ys = np.linspace(0.0, 1.0, self.h, dtype=np.float32)[:, None]
+        xs = np.linspace(0.0, 1.0, self.w, dtype=np.float32)[None, :]
+        if self.style == "brush":
+            # 붓결: 세로로 촘촘, 가로로 길게 늘린 노이즈 → 가로 스트로크
+            strokes = _resize_field(rng.random((max(4, self.h // 18), max(3, self.w // 160))), self.w, self.h)
+            blobs = _resize_field(rng.random((5, 8)), self.w, self.h)
+            fine = _resize_field(rng.random((max(8, self.h // 6), max(8, self.w // 6))), self.w, self.h)
+            direction = xs * 0.9 + ys * 0.2          # 좌상단 → 우하단으로 칠해 나감
+            field = 0.42 * strokes + 0.22 * blobs + 0.08 * fine + 0.55 * direction
+            self.field = _rank_normalize(field)
+            self.feather = 0.07
+        elif self.style == "wipe":
+            wobble = _resize_field(rng.random((max(4, self.h // 40), 2)), self.w, self.h)
+            field = xs * 0.86 + ys * 0.14 + (wobble - 0.5) * 0.06
+            self.field = _rank_normalize(field)
+            self.feather = 0.05
+        else:
+            self.field = None
+            self.feather = 0.0
+
+    def at(self, p: float):
+        p = max(0.0, min(1.0, float(p)))
+        if self.field is None:
+            return p
+        if p <= 0.0:
+            return np.zeros_like(self.field)
+        if p >= 1.0:
+            return np.ones_like(self.field)
+        f = self.feather
+        # p=0 → 전부 0, p=1 → 전부 1 (페더 포함)
+        m = (p * (1.0 + f) - self.field) / f
+        return np.clip(m, 0.0, 1.0)
+
+
+def blend_mask(real: np.ndarray, styled: np.ndarray, mask) -> np.ndarray:
+    """mask(1=실사) 로 합성. 스칼라면 blend_rgb, 배열이면 픽셀별."""
+    if np.isscalar(mask) or np.ndim(mask) == 0:
+        return blend_rgb(styled, real, float(mask))
+    m = np.asarray(mask, dtype=np.float32)
+    if m.shape != real.shape[:2]:
+        m = _resize_field(m, real.shape[1], real.shape[0])
+    if float(m.max()) <= 0.0:
+        return styled
+    if float(m.min()) >= 1.0:
+        return real
+    s = styled.astype(np.float32)
+    out = s + (real.astype(np.float32) - s) * m[..., None]
+    return np.clip(out + 0.5, 0, 255).astype(np.uint8)

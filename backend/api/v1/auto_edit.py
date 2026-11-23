@@ -37,6 +37,10 @@ class AutoEditRequest(BaseModel):
     style_preset: str = Field(default="cinematic",
                               description=f"자동 연출 스타일: {VALID_STYLE_PRESETS}")
     slide_duration: float = Field(default=3.0, ge=1.5, le=8.0)
+    stylize_ratio: float = Field(default=0.0, ge=0.0, le=0.5,
+                                 description="2단계: 그림→실사 전환 사진 비율 (0 = 끔)")
+    stylize_effect: Literal["auto", "sketch", "cartoon"] = Field(
+        default="auto", description="그림 스타일 (auto = 만화/스케치 교대)")
 
 
 @router.post("/{project_id}/auto-edit", status_code=202)

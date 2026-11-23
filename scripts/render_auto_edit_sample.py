@@ -85,6 +85,9 @@ def main():
     ap.add_argument("--no-kinetic", action="store_true", help="키네틱 타이포 끄기")
     ap.add_argument("--no-geocode", action="store_true", help="역지오코딩(네트워크) 끄기")
     ap.add_argument("--use-ai", action="store_true", help="키네틱 문구 Gemini 생성")
+    ap.add_argument("--stylize-ratio", type=float, default=0.0,
+                    help="2단계: 그림→실사 전환 사진 비율 (0 = 끔, 최대 0.5)")
+    ap.add_argument("--stylize-effect", choices=("auto", "sketch", "cartoon"), default="auto")
     ap.add_argument("--no-render", action="store_true", help="계획만 (렌더 생략)")
     args = ap.parse_args()
 
@@ -102,6 +105,8 @@ def main():
             "use_geocode": not args.no_geocode,
             "use_ai": args.use_ai,
             "narration": False,
+            "stylize_ratio": args.stylize_ratio,
+            "stylize_effect": args.stylize_effect,
             "bgm_path": str(Path(args.bgm).resolve()) if args.bgm else None,
         }
         try:
