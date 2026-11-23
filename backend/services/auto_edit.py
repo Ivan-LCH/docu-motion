@@ -201,6 +201,17 @@ def fallback_card(project: Project, slides: list) -> Optional[dict]:
     return {"title": title, "sub": date}
 
 
+def _avoid_title_slide(candidates: list, slides: list):
+    """위치 카드가 인트로 키네틱 제목(첫 사진)과 겹치지 않게, 후보가 첫 사진이면
+    같은 그룹의 다음 사진으로 옮긴다. 다음 사진이 없으면 그대로 둔다."""
+    first_photo = next((s for s in slides if is_photo(s)), None)
+    if candidates and candidates[0] is first_photo:
+        nxt = next((s for s in candidates[1:] if is_photo(s)), None)
+        if nxt is not None:
+            return nxt
+    return candidates[0]
+
+
 def plan_location_cards(project: Project, slides: list, use_geocode: bool = True,
                         radius_km: float = GROUP_RADIUS_KM) -> list[dict]:
     """각 GPS 클러스터 첫 컷 meta.location_card 설정. 반환: 카드 요약 리스트.
@@ -212,11 +223,13 @@ def plan_location_cards(project: Project, slides: list, use_geocode: bool = True
         card = card_from_geo(reverse_geocode(lat, lng), _date_label(_earliest(c["slides"])))
         if not card:
             continue
-        first = c["slides"][0]
-        cards.append({"slide": first, **card, "source": "gps"})
+        first = _avoid_title_slide(c["slides"], slides)
+        cards.append({"slide": first, **card, "source": "gps",
+                      "cluster_start_id": c["slides"][0].id})
 
     if not cards:
-        first_photo = next((s for s in slides if is_photo(s)), None)
+        photos = [s for s in slides if is_photo(s)]
+        first_photo = _avoid_title_slide(photos, slides) if photos else None
         card = fallback_card(project, slides) if first_photo is not None else None
         if card:
             cards.append({"slide": first_photo, **card, "source": "fallback"})
@@ -224,10 +237,12 @@ def plan_location_cards(project: Project, slides: list, use_geocode: bool = True
     out = []
     for c in cards:
         s = c.pop("slide")
+        start_id = c.pop("cluster_start_id", s.id)
         m = _meta(s)
         m["location_card"] = dict(c)
         _set_meta(s, m)
-        out.append({"slide_id": s.id, "order_index": s.order_index, **c})
+        out.append({"slide_id": s.id, "order_index": s.order_index,
+                    "cluster_start_id": start_id, **c})
     return out
 
 
@@ -461,8 +476,8 @@ def plan_auto_edit(db, project_id: str, opts: Optional[dict] = None) -> dict:
                                  float(o["narration_ratio"]), o["tone"])
 
     # 5) 전환 + Ken Burns
-    cluster_start_ids = {c["slide_id"] for c in cards if c["source"] == "gps"}
-    first_card = cards[0]["slide_id"] if cards else None
+    cluster_start_ids = {c["cluster_start_id"] for c in cards if c["source"] == "gps"}
+    first_card = cards[0]["cluster_start_id"] if cards else None
     transitions, whip, cyc = [], 0, 0
     for i, s in enumerate(slides):
         if i == 0 or i < n_intro:

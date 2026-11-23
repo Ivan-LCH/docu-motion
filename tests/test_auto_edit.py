@@ -268,12 +268,14 @@ def test_cluster_two_gps_groups_two_cards(db, outputs, monkeypatch):
     cards = auto_edit.plan_location_cards(p, slides)
     db.commit()
     assert [c["source"] for c in cards] == ["gps", "gps"]
-    assert [c["order_index"] for c in cards] == [0, 3]
+    # 첫 컷(0)은 인트로 키네틱 제목 자리라 같은 클러스터 다음 사진(1)으로 이동
+    assert [c["order_index"] for c in cards] == [1, 3]
     assert cards[0]["title"] == "수원 일월수목원"
     assert cards[1]["title"] == "수원 화성행궁"
     assert cards[0]["sub"] == "경기도 · 2026.10.25"
-    m0 = json.loads(_slides(db, p.id)[0].meta)
-    assert m0["location_card"]["source"] == "gps"
+    m1 = json.loads(_slides(db, p.id)[1].meta)
+    assert m1["location_card"]["source"] == "gps"
+    assert "location_card" not in json.loads(_slides(db, p.id)[0].meta or "{}")
 
 
 def test_fallback_card_uses_place_address(db, outputs, no_network):
@@ -285,8 +287,9 @@ def test_fallback_card_uses_place_address(db, outputs, no_network):
     assert c["title"] == "수원 일월수목원"
     assert c["sub"] == "경기도 · 2026.10.25"
     assert c["source"] == "fallback"
-    # place 슬라이드가 아니라 첫 사진 슬라이드에
-    assert c["order_index"] == 0 and slides[0].slide_type == "image"
+    # place 슬라이드도, 인트로 제목 컷(0)도 아닌 다음 사진 슬라이드에
+    assert c["order_index"] == 2 and slides[2].slide_type == "image"
+    assert "location_card" not in json.loads(slides[0].meta or "{}")
     assert "location_card" not in json.loads(slides[1].meta or "{}")
 
 
@@ -447,10 +450,11 @@ def test_plan_auto_edit_ilwol_like(db, outputs, no_network):
     assert metas[0]["kinetic_text"] == "일월수목원 산책"
     assert metas[0]["intro_kinetic"] is True and metas[0]["bgm_fade_in"] == 1.0
 
-    # 위치 카드: GPS 없음 → place 주소 폴백, 첫 사진 슬라이드
+    # 위치 카드: GPS 없음 → place 주소 폴백, 인트로 제목 다음 사진(place 뒤)
     assert [(c["order_index"], c["title"], c["source"]) for c in summary["cards"]] == \
-        [(0, "수원 일월수목원", "fallback")]
-    assert metas[0]["location_card"]["sub"] == "경기도 · 2026.10.25"
+        [(2, "수원 일월수목원", "fallback")]
+    assert metas[2]["location_card"]["sub"] == "경기도 · 2026.10.25"
+    assert "location_card" not in metas[0]
 
     # 중간 키네틱: 2~3장, 서로/인트로와 인접하지 않음, 카드 슬라이드 아님
     kin = [k["order_index"] for k in summary["kinetic"]]
@@ -493,13 +497,13 @@ def test_plan_whips_on_cluster_change(db, outputs, monkeypatch):
     gps = [SUWON] * 5 + [HWASEONG] * 5 + [SUWON] * 4
     p = make_project(db, outputs, n_photos=14, place_at=None, gps=gps)
     summary = auto_edit.plan_auto_edit(db, p.id, {})
-    assert [c["order_index"] for c in summary["cards"]] == [0, 5, 10]
+    assert [c["order_index"] for c in summary["cards"]] == [1, 5, 10]
     assert all(c["source"] == "gps" for c in summary["cards"])
     tr = summary["transitions"]
     assert tr[2] == "zoom_through"
     assert tr[5] == "whip_left" and tr[10] == "whip_right"
     kin = {k["order_index"] for k in summary["kinetic"]}
-    assert not kin & {0, 5, 10}
+    assert not kin & {1, 5, 10}
 
 
 def test_plan_requires_bgm(db, outputs, no_network):
