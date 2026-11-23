@@ -55,7 +55,7 @@ STYLE_PRESETS: dict = {
             "highlights_tint": (0.10, 0.06, 0.0),  # 오렌지 하이라이트
         },
         "texture": {
-            "vignette": 0.55,
+            "vignette": 0.12,      # 11/23 Ivan: 어두워짐 → 가장자리만 아주 약하게 (평균 밝기 -2% 이내)
             "grain": 0.12,
             "light_leak": {"type": "warm_radial", "intensity": 0.22, "pos": "top_left"},
         },
@@ -73,7 +73,7 @@ STYLE_PRESETS: dict = {
             "highlights_tint": (0.03, 0.02, 0.0),
         },
         "texture": {
-            "vignette": 0.18,
+            "vignette": 0.05,
             "grain": 0.05,
             "light_leak": {"type": "none", "intensity": 0.0},
         },
@@ -91,7 +91,7 @@ STYLE_PRESETS: dict = {
             "highlights_tint": (0.0, 0.0, 0.0),
         },
         "texture": {
-            "vignette": 0.25,
+            "vignette": 0.07,
             "grain": 0.08,
             "light_leak": {"type": "none", "intensity": 0.0},
         },
@@ -109,7 +109,7 @@ STYLE_PRESETS: dict = {
             "highlights_tint": (0.12, 0.06, 0.0),
         },
         "texture": {
-            "vignette": 0.40,
+            "vignette": 0.10,
             "grain": 0.10,
             "light_leak": {"type": "warm_radial", "intensity": 0.35, "pos": "bottom_right"},
         },
@@ -179,15 +179,27 @@ def _build_luts(color_cfg: dict) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     )
 
 
+VIGNETTE_MAX_MEAN_DROP = 0.02   # 비네트로 인한 화면 평균 밝기 저하 상한 (2%)
+VIGNETTE_INNER = 0.75           # 중심~이 반경까지는 전혀 어두워지지 않음 (가장자리만)
+
+
 def _build_vignette(size: Tuple[int, int], strength: float) -> np.ndarray:
-    """radial 비네트 가중치 (1=변화없음, 코너로 갈수록 감소). multiply 용."""
+    """radial 비네트 가중치 (1=변화없음). 가장자리 링에만 smoothstep 으로 얹고,
+    화면 평균 밝기 저하가 VIGNETTE_MAX_MEAN_DROP 를 넘지 않도록 강도를 자동으로 줄인다.
+    (11/23 Ivan 피드백: 비네트 때문에 전체가 어두워짐 → 눈에 안 띄는 수준으로)"""
     w, h = size
-    ys = (np.arange(h, dtype=np.float32) - (h - 1) / 2.0) / ((h - 1) / 2.0)
-    xs = (np.arange(w, dtype=np.float32) - (w - 1) / 2.0) / ((w - 1) / 2.0)
+    ys = (np.arange(h, dtype=np.float32) - (h - 1) / 2.0) / max((h - 1) / 2.0, 1.0)
+    xs = (np.arange(w, dtype=np.float32) - (w - 1) / 2.0) / max((w - 1) / 2.0, 1.0)
     yy, xx = np.meshgrid(ys, xs, indexing="ij")
     dist = np.sqrt(xx * xx + yy * yy)            # 0(중심) ~ ~1.41(코너)
-    weight = 1.0 - strength * (dist ** 2.2)
-    return np.clip(weight, 0.15, 1.0).astype(np.float32)   # 코너 완전 흑 방지
+    e = np.clip((dist - VIGNETTE_INNER) / (1.42 - VIGNETTE_INNER), 0.0, 1.0)
+    ring = e * e * (3.0 - 2.0 * e)
+    s = max(0.0, float(strength))
+    mean_ring = float(ring.mean())
+    if mean_ring > 0 and s * mean_ring > VIGNETTE_MAX_MEAN_DROP:
+        s = VIGNETTE_MAX_MEAN_DROP / mean_ring
+    weight = 1.0 - s * ring
+    return np.clip(weight, 0.6, 1.0).astype(np.float32)
 
 
 def _build_light_leak(size: Tuple[int, int], leak_cfg: dict) -> Optional[np.ndarray]:
@@ -284,6 +296,16 @@ def _build_processor(preset_name: str, canvas_size: Tuple[int, int]) -> Callable
         # 6) light leak (screen blend: 255 - (255-a)(255-b)/255)
         if leak is not None:
             f = 255.0 - (255.0 - f) * (255.0 - leak * 255.0) / 255.0
+
+        # 7) 노출 보정: 색보정(대비·톤·라이트릭)으로 바뀐 평균 밝기를 원본 수준으로 맞춘다
+        #    (게인 0.85~1.25). 룩(색·대비·질감)은 유지, 화면 전체 밝기만 원본 유지.
+        #    11/23 Ivan: 전체가 어두워 보임
+        y_in = float((0.299 * frame[::8, ::8, 0] + 0.587 * frame[::8, ::8, 1]
+                      + 0.114 * frame[::8, ::8, 2]).mean())
+        fs = f[::8, ::8]
+        y_out = float((0.299 * fs[..., 0] + 0.587 * fs[..., 1] + 0.114 * fs[..., 2]).mean())
+        if y_out > 1.0 and y_in > 1.0:
+            f *= min(1.25, max(0.85, y_in / y_out))
 
         return np.clip(f, 0, 255).astype(np.uint8)
 
