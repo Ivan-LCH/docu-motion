@@ -59,6 +59,8 @@ def run_render(project_id: str):
                 "overlays": s.overlays or "[]",
                 "image_fit": s.image_fit or "cover",
                 "ken_burns": s.ken_burns if s.ken_burns is not None else 0,
+                "photo_effect": getattr(s, "photo_effect", None) or "none",
+                "effect_reveal": s.effect_reveal if getattr(s, "effect_reveal", None) is not None else 0.45,
                 "meta": s.meta or "{}",
                 "text_style": s.text_style or "caption",
             }

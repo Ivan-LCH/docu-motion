@@ -124,6 +124,8 @@ def get_project(project_id: str, db: Session = Depends(get_db)):
             "overlays"      : getattr(s, "overlays", "[]"),
             "image_fit"     : getattr(s, "image_fit", "cover"),
             "ken_burns"     : getattr(s, "ken_burns", 0),
+            "photo_effect"  : getattr(s, "photo_effect", None) or "none",
+            "effect_reveal" : getattr(s, "effect_reveal", None) if getattr(s, "effect_reveal", None) is not None else 0.45,
             "meta"          : getattr(s, "meta", "{}"),
             "text_style"    : getattr(s, "text_style", None) or "caption",
         }

@@ -110,6 +110,40 @@ def timeline_duration(durations: list[float], transitions: list,
 
 
 # ────────────────────────────────────────────────────────────────────────────
+# 사진 효과 (슬라이드 단위, 원본 → 스케치/만화)
+# ────────────────────────────────────────────────────────────────────────────
+# effect_reveal: 슬라이드 길이 중 원본→스타일 크로스페이드가 차지하는 비율.
+#                0 = 처음부터 스타일, 1 = 슬라이드 전체가 전환.
+PHOTO_EFFECTS: dict[str, dict] = {
+    "none":    {"description": "원본 사진"},
+    "sketch":  {"description": "연필 스케치 (gray → invert → blur → color-dodge)"},
+    "cartoon": {"description": "만화 (cv2.stylization, 슬라이드당 1회)"},
+}
+VALID_PHOTO_EFFECTS: tuple[str, ...] = tuple(PHOTO_EFFECTS.keys())
+DEFAULT_PHOTO_EFFECT = "none"
+DEFAULT_EFFECT_REVEAL = 0.45
+
+
+def normalize_photo_effect(name) -> str:
+    """알 수 없는 값/None → 'none' (렌더 경로용 관대한 정규화)."""
+    name = (name or DEFAULT_PHOTO_EFFECT).strip().lower() if isinstance(name, str) else DEFAULT_PHOTO_EFFECT
+    return name if name in PHOTO_EFFECTS else DEFAULT_PHOTO_EFFECT
+
+
+def clamp_effect_reveal(value, default: float = DEFAULT_EFFECT_REVEAL) -> float:
+    """0~1 로 클램프. 비어 있거나 숫자가 아니면 default (렌더 경로)."""
+    if value is None or value == "":
+        return default
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return default
+    if f != f or f == float("inf") or f == float("-inf"):
+        return default
+    return max(0.0, min(1.0, f))
+
+
+# ────────────────────────────────────────────────────────────────────────────
 # 텍스트 스타일
 # ────────────────────────────────────────────────────────────────────────────
 # font_scale: min(캔버스 폭, 높이) 대비 폰트 크기 (caption 은 프로젝트 자막 폰트 크기 사용)
