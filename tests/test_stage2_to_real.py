@@ -122,3 +122,82 @@ def test_meta_merge_effect_to_real():
     assert m == {"frames": ["f.png"], "effect_to_real": "wipe"}
     m2 = json.loads(_merge_style_meta(json.dumps(m), json.dumps({"effect_to_real": "evil"})))
     assert "effect_to_real" not in m2
+
+
+def _sat(frame):
+    return float(np.abs(frame[..., 0].astype(np.int16) - frame[..., 1].astype(np.int16)).mean())
+
+
+def _uniq16(frame):
+    q = (frame.astype(np.uint16) // 16 * 16).astype(np.uint8)
+    return int(len(np.unique(q.reshape(-1, 3), axis=0)))
+
+
+def test_cartoon_flatter_and_more_saturated():
+    """강화된 만화: 사진보다 채도가 높고, 색면이 단순하며 외곽선이 있다."""
+    from backend.services.photo_fx import stylize_photo
+    rng = np.random.default_rng(1)
+    yy, xx = np.mgrid[0:180, 0:280]
+    src = np.stack([
+        np.clip(80 + 0.4 * xx + 0.2 * yy, 0, 255),
+        np.clip(120 + 0.15 * (180 - yy) + rng.normal(0, 18, xx.shape), 0, 255),
+        np.clip(90 + 0.25 * yy + rng.normal(0, 18, xx.shape), 0, 255),
+    ], axis=-1).astype(np.uint8)
+    # 간단한 도형으로 외곽선이 생기게
+    src[40:120, 60:140] = (200, 60, 50)
+    src[70:160, 160:240] = (40, 90, 200)
+    cartoon = stylize_photo(src, "cartoon")
+    assert _sat(cartoon) > _sat(src) * 1.05
+    assert _uniq16(cartoon) < _uniq16(src) * 0.7
+    ink = float((cartoon.min(axis=2) < 40).mean())
+    assert ink > 0.01
+
+
+def test_cinematic_skips_styled_hold(tmp_path):
+    """그림 홀드 구간은 cinematic 을 입혀도 스타일 픽셀이 거의 그대로다. 실사 구간은 그레이딩된다."""
+    from backend.services.photo_fx import stylize_photo
+    from backend.services.renderer import build_slide_clip
+    from tests.test_photo_effects import _sample_photo
+    from PIL import Image
+
+    photo = _sample_photo(900, 600)
+    Image.fromarray(photo).save(tmp_path / "photo.png")
+    temp = tmp_path / "temp"
+    temp.mkdir()
+    canvas = (640, 360)
+    item = {
+        "image_filename": "photo.png",
+        "label": "",
+        "text": "",
+        "slide_type": "image",
+        "use_tts": 0,
+        "photo_effect": "cartoon",
+        "effect_reveal": 0.5,
+        "ken_burns": 0,
+        "image_fit": "cover",
+        "transition": "none",
+        "overlays": "[]",
+        "rotation": 0,
+        "text_style": "none",
+        "meta": '{"effect_to_real": "dissolve"}',
+    }
+    none_clip = build_slide_clip(item, 0, tmp_path, temp, canvas, tts_engine=None,
+                                 default_slide_duration=2.0, style_preset="none")
+    cine_clip = build_slide_clip(item, 0, tmp_path, temp, canvas, tts_engine=None,
+                                 default_slide_duration=2.0, style_preset="cinematic")
+    # hold = 0.3 * 2s = 0.6s
+    hold_none = none_clip.get_frame(0.2)
+    hold_cine = cine_clip.get_frame(0.2)
+    real_none = none_clip.get_frame(1.85)
+    real_cine = cine_clip.get_frame(1.85)
+    # 그림 구간: 그레이딩 생략 → 두 프리셋이 거의 같음
+    hold_mae = float(np.abs(hold_none.astype(np.int16) - hold_cine.astype(np.int16)).mean())
+    assert hold_mae < 3.0
+    # 실사 구간: cinematic 이 적용되어 차이가 난다
+    real_mae = float(np.abs(real_none.astype(np.int16) - real_cine.astype(np.int16)).mean())
+    assert real_mae > 8.0
+    # 홀드 프레임은 실사와 분명히 다르고, 채도는 유지된다
+    assert float(np.abs(hold_cine.astype(np.int16) - real_cine.astype(np.int16)).mean()) > 8.0
+    assert _sat(hold_cine) > 8
+    none_clip.close()
+    cine_clip.close()

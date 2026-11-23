@@ -6,7 +6,8 @@
 ML 모델 없음. CPU only.
 
 스케치: grayscale → invert → Gaussian blur → color-dodge.
-만화:   cv2.stylization (가장 긴 변 1280 으로 제한 후 원 해상도로 복원).
+만화:   색면 평탄화(bilateral+stylization) + 양자화 + 채도 강화 + 잉크 외곽선
+        (가장 긴 변 1280 으로 제한 후 원 해상도로 복원). 그림 구간은 시네마틱 색보정을 건너뛴다.
 
 opencv-python-headless 는 얼굴 감지용으로 이미 의존성이다.
 필터는 그걸 쓰고, cv2 를 못 읽는 환경에서는 PIL 근사로 렌더가 죽지 않게 한다.
@@ -110,8 +111,8 @@ def _sketch(rgb: np.ndarray) -> np.ndarray:
     blur16 = blur.astype(np.uint16)
     denom = np.maximum(np.uint16(256) - blur16, np.uint16(1))
     sketch = np.minimum((gray16 * np.uint16(256)) // denom, np.uint16(255)).astype(np.uint8)
-    # dodge 결과는 종이가 하얗고 선이 옅다. 잔차를 키워 영상에서 연필선이 읽히게 한다.
-    residual = np.minimum((np.uint16(255) - sketch.astype(np.uint16)) * np.uint16(2), np.uint16(255))
+    # dodge 결과는 종이가 하얗고 선이 옅다. 잔차를 키워 연필선이 분명하게 읽히게 한다.
+    residual = np.minimum((np.uint16(255) - sketch.astype(np.uint16)) * np.uint16(3), np.uint16(255))
     sketch = (np.uint16(255) - residual).astype(np.uint8)
     return np.stack([sketch, sketch, sketch], axis=-1)
 
@@ -124,8 +125,39 @@ def _cartoon(rgb: np.ndarray) -> np.ndarray:
         return _cartoon_pil(rgb)
 
 
+def _match_luma(src: np.ndarray, out: np.ndarray) -> np.ndarray:
+    """스타일 결과의 평균 휘도를 원본에 맞춰, 그림 구간이 갑자기 어두워지지 않게 한다."""
+    s = src.astype(np.float32)
+    o = out.astype(np.float32)
+    ys = float((0.299 * s[..., 0] + 0.587 * s[..., 1] + 0.114 * s[..., 2]).mean())
+    yo = float((0.299 * o[..., 0] + 0.587 * o[..., 1] + 0.114 * o[..., 2]).mean())
+    if yo > 1.0 and ys > 0:
+        o = np.clip(o * (ys / yo), 0, 255)
+    return o.astype(np.uint8)
+
+
+def _ink_edges(gray_u8: np.ndarray, cv2) -> np.ndarray:
+    """구조적 외곽선만 남긴 잉크 마스크 (1=유지, 낮을수록 선). 잔디처럼 잔 텍스처는 줄인다."""
+    blur = cv2.medianBlur(gray_u8, 7)
+    edges = cv2.Canny(blur, 80, 160)
+    edges = cv2.dilate(edges, np.ones((2, 2), np.uint8), iterations=1)
+    wgt = np.where(edges > 0, 0.16, 1.0).astype(np.float32)
+    return cv2.GaussianBlur(wgt, (3, 3), 0)
+
+
+def _boost_sat(rgb: np.ndarray, cv2, amount: float = 1.4) -> np.ndarray:
+    hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV).astype(np.float32)
+    hsv[..., 1] = np.clip(hsv[..., 1] * amount, 0, 255)
+    return cv2.cvtColor(np.clip(hsv, 0, 255).astype(np.uint8), cv2.COLOR_HSV2RGB)
+
+
+def _posterize(rgb: np.ndarray, step: int = 28) -> np.ndarray:
+    step = max(2, int(step))
+    return ((rgb.astype(np.uint16) // np.uint16(step)) * np.uint16(step)).clip(0, 255).astype(np.uint8)
+
+
 def _cartoon_cv(rgb: np.ndarray, cv2) -> np.ndarray:
-    """cv2.stylization. 긴 변을 1280 으로 제한해 슬라이드당 버퍼를 고정한다."""
+    """색면 평탄화 + 양자화 + 채도 강화 + 잉크 외곽선. 긴 변 1280 제한."""
     h, w = rgb.shape[:2]
     work = rgb
     long_side = max(h, w)
@@ -139,32 +171,43 @@ def _cartoon_cv(rgb: np.ndarray, cv2) -> np.ndarray:
         )
     if not hasattr(cv2, "stylization"):
         raise RuntimeError("cv2.stylization unavailable")
-    styled = cv2.stylization(work, sigma_s=60, sigma_r=0.45)
-    if styled.shape[0] != h or styled.shape[1] != w:
-        styled = cv2.resize(styled, (w, h), interpolation=cv2.INTER_LINEAR)
-    return np.ascontiguousarray(styled)
+    flat = work
+    for _ in range(2):
+        flat = cv2.bilateralFilter(flat, d=9, sigmaColor=80, sigmaSpace=80)
+    styled = cv2.stylization(flat, sigma_s=60, sigma_r=0.45)
+    mix = cv2.addWeighted(styled, 0.7, flat, 0.3, 0)
+    poster = _boost_sat(_posterize(mix, 28), cv2, 1.4)
+    ink = _ink_edges(cv2.cvtColor(work, cv2.COLOR_RGB2GRAY), cv2)
+    out = np.clip(poster.astype(np.float32) * ink[..., None], 0, 255).astype(np.uint8)
+    out = _match_luma(work, out)
+    if out.shape[0] != h or out.shape[1] != w:
+        out = cv2.resize(out, (w, h), interpolation=cv2.INTER_LINEAR)
+    return np.ascontiguousarray(out)
 
 
 def _cartoon_pil(rgb: np.ndarray) -> np.ndarray:
-    """cv2 가 없을 때의 근사. 다운스케일 블러 + 양자화 + 기울기 외곽선."""
-    from PIL import Image, ImageFilter
+    """cv2 가 없을 때의 근사. 다운스케일 블러 + 양자화 + 채도 + 기울기 외곽선."""
+    from PIL import Image, ImageEnhance, ImageFilter
 
     h, w = rgb.shape[:2]
     im = Image.fromarray(rgb, mode="RGB")
     small = im.resize((max(1, w // 2), max(1, h // 2)), Image.BILINEAR)
     small = small.filter(ImageFilter.SMOOTH_MORE).filter(ImageFilter.SMOOTH_MORE)
+    small = small.filter(ImageFilter.SMOOTH_MORE)
     smooth = np.asarray(small.resize((w, h), Image.BILINEAR)).astype(np.uint8)
-    q = np.uint8(28)
-    smooth = (smooth // q) * q
+    smooth = _posterize(smooth, 28)
+    smooth = np.asarray(ImageEnhance.Color(Image.fromarray(smooth, mode="RGB")).enhance(1.4))
 
     gray = (
         0.299 * rgb[..., 0] + 0.587 * rgb[..., 1] + 0.114 * rgb[..., 2]
     ).astype(np.float32)
     gy, gx = np.gradient(gray)
     mag = np.sqrt(gx * gx + gy * gy)
-    thresh = max(12.0, float(np.percentile(mag, 88)))
-    edges = np.where(mag >= thresh, np.uint8(0), np.uint8(255))
-    return (smooth.astype(np.uint16) * edges[..., None].astype(np.uint16) // np.uint16(255)).astype(np.uint8)
+    thresh = max(18.0, float(np.percentile(mag, 90)))
+    # 1=유지, 0.16=잉크
+    wgt = np.where(mag >= thresh, 0.16, 1.0).astype(np.float32)
+    out = np.clip(smooth.astype(np.float32) * wgt[..., None], 0, 255).astype(np.uint8)
+    return _match_luma(rgb, out)
 
 
 # ────────────────────────────────────────────────────────────────────────────

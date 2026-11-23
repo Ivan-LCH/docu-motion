@@ -117,7 +117,7 @@ def timeline_duration(durations: list[float], transitions: list,
 PHOTO_EFFECTS: dict[str, dict] = {
     "none":    {"description": "원본 사진"},
     "sketch":  {"description": "연필 스케치 (gray → invert → blur → color-dodge)"},
-    "cartoon": {"description": "만화 (cv2.stylization, 슬라이드당 1회)"},
+    "cartoon": {"description": "만화 (색면 평탄화·외곽선·채도 강화, 슬라이드당 1회)"},
 }
 VALID_PHOTO_EFFECTS: tuple[str, ...] = tuple(PHOTO_EFFECTS.keys())
 DEFAULT_PHOTO_EFFECT = "none"

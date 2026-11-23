@@ -25,7 +25,6 @@ from backend.db.models import Project, Slide
 from backend.services.renderer import (
     build_slide_clip, compose_timeline, ASPECT_RATIO_MAP, split_sentences,
 )
-from backend.services.color_grade import apply_cinematic
 
 logger = get_logger(__name__)
 
@@ -276,13 +275,8 @@ def render_slide_preview(project_id: str, slide_id: str,
         transitions = ["none"] + [it.get("transition", "none") for it in items[1:]]
         combined, _starts, _overlaps = compose_timeline(clips, transitions, trans_dur, canvas)
 
-        # 시네마틱 후반 — canvas 풀사이즈에서 grade 후 다운스케일 (그레인 다운샘플링이 필름감)
-        if style_preset and style_preset != "none":
-            try:
-                combined = apply_cinematic(combined, style_preset, canvas)
-            except Exception as style_err:
-                logger.warning(f"Preview style failed (skipping): {style_err}")
-
+        # 시네마틱 색보정은 build_slide_clip 에서 이미 적용됨
+        # (그림 구간은 그레이딩 생략). 여기서 한 번 더 입히면 만화가 죽는다.
         combined = combined.resize(PREVIEW_SCALE)
 
         tmp_out = cache.with_suffix(".tmp.mp4")
