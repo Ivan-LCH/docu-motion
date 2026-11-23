@@ -430,13 +430,63 @@ def render_text_layer(text: str, style: str, size: tuple, duration: float,
 
 
 # ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── #
-# Kinetic Typography (자동 편집) — 단어/글자별 등장, 노랑 강조 1개
+# Editorial Magazine Typography & Location Card (자동 편집 — 시칠리안 실측 기반 잡지식 레이아웃)
 # ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── #
 
+_EDITORIAL_REG_FONTS = (
+    "/usr/share/fonts/truetype/sand-box/google/Gothic A1/GothicA1-Regular.ttf",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
+)
+_EDITORIAL_MED_FONTS = (
+    "/usr/share/fonts/truetype/sand-box/google/Gothic A1/GothicA1-Medium.ttf",
+    "/usr/share/fonts/truetype/sand-box/google/Gothic A1/GothicA1-SemiBold.ttf",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+)
+
+
+def _editorial_font_path(medium: bool = False) -> str:
+    """잡지식 타이포용 산세리프 폰트 (ExtraBold 배제, Regular/Medium 위주, 폴백 FONT_PATH)."""
+    candidates = _EDITORIAL_MED_FONTS if medium else _EDITORIAL_REG_FONTS
+    for fp in candidates:
+        if Path(fp).exists():
+            return fp
+    return FONT_PATH
+
+
+def _choose_magazine_side(face_center: tuple | None, align: str = "auto") -> str:
+    """좌/우 정렬 결정. 기본 left; 얼굴/주체가 좌측 하단·중단(fx<0.45, fy>0.28)에 있으면 right."""
+    if align in ("left", "right"):
+        return align
+    if face_center is not None:
+        try:
+            fx, fy = float(face_center[0]), float(face_center[1])
+            if fx < 0.45 and fy > 0.28:
+                return "right"
+        except (TypeError, ValueError, IndexError):
+            pass
+    return "left"
+
+
+def _draw_soft_text(canvas: Image.Image, xy: tuple[int, int], text: str, font,
+                    fill_rgba: tuple[int, int, int, int], shadow_alpha: int = 92,
+                    px_ref: int = 32) -> Image.Image:
+    """테두리(stroke=0) 없이 아주 옅은 소프트 드롭 섀도우만 얹어 가독성을 확보한다."""
+    if not text:
+        return canvas
+    if shadow_alpha > 0:
+        sh = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+        off = max(1, px_ref // 24)
+        ImageDraw.Draw(sh).text((xy[0] + off, xy[1] + off), text, font=font,
+                                fill=(0, 0, 0, shadow_alpha))
+        blur = max(2, px_ref // 14)
+        canvas = Image.alpha_composite(canvas, sh.filter(ImageFilter.GaussianBlur(blur)))
+    ImageDraw.Draw(canvas).text(xy, text, font=font, fill=fill_rgba)
+    return canvas
+
+
 def _kinetic_units(text: str, highlight: str = "") -> list[tuple[str, bool, bool]]:
-    """문구 → [(단위, 강조여부, 앞에 공백 여부)].
-    띄어쓰기 없는 짧은 한 단어(≤6자)는 글자 단위, 그 외는 단어 단위.
-    강조 구간: highlight 가 문구 안에 있으면 그 부분, 없으면 마지막 단어."""
+    """문구 → [(단위, 강조여부, 앞에 공백 여부)] (하위 호환 헬퍼)."""
     text = " ".join((text or "").split())
     if not text:
         return []
@@ -462,162 +512,154 @@ def _kinetic_units(text: str, highlight: str = "") -> list[tuple[str, bool, bool
     return units
 
 
+def _wrap_editorial_lines(draw: ImageDraw.ImageDraw, text: str, font, max_w: int,
+                          max_lines: int) -> list[str]:
+    words = " ".join((text or "").split()).split(" ")
+    if not words or words == [""]:
+        return []
+    lines: list[str] = []
+    cur = ""
+    for w in words:
+        cand = f"{cur} {w}".strip() if cur else w
+        if cur and draw.textlength(cand, font=font) > max_w:
+            lines.append(cur)
+            cur = w
+        else:
+            cur = cand
+    if cur:
+        lines.append(cur)
+    if max_lines > 0 and len(lines) > max_lines:
+        lines = lines[:max_lines]
+    return lines
+
+
 def render_kinetic_layer(text: str, size: tuple, duration: float, start: float = 0.0,
-                         highlight: str = "", font_color: str = "white") -> list:
-    """키네틱 타이포 클립(1개) — 캔버스 중앙 약간 아래(y≈0.62).
-    각 단위가 stagger 간격으로 떠오르며(rise) 페이드 + ease_out_back 스케일 오버슈트로 등장,
-    슬라이드 끝 직전에 전체가 빠르게 페이드 아웃. 흰 글씨 + 두꺼운 검정 외곽선, 강조는 #FFD400."""
+                         highlight: str = "", font_color: str = "#F8F8F4",
+                         align: str = "auto", subtitle: str = "",
+                         is_intro: bool = False, face_center: tuple | None = None) -> list:
+    """잡지식 에디토리얼 타이포 클립(1개) — 좌/우 하단 정렬, 테두리 없음, 차분한 흰색/오프화이트.
+    얼굴이 좌측에 있으면 우측 하단으로 이동. 잔잔한 페이드 인/아웃과 미세 정착 모션만 사용."""
+    del highlight  # 튀는 노랑 강조 제거 — 차분한 단일 화이트/오프화이트 톤 유지
     spec = TEXT_STYLES["kinetic"]
-    units = _kinetic_units(text, highlight)
-    if not units or duration <= 0.3:
+    clean_text = " ".join((text or "").split())
+    if not clean_text or duration <= 0.3:
         return []
     cw, ch = size
     base = min(cw, ch)
-    px = max(18, int(base * spec["font_scale"]))
-    hl_rgb = _parse_color(spec.get("highlight", "#FFD400"), (255, 212, 0))
-    fg_rgb = _parse_color(font_color, (255, 255, 255))
-    max_w = int(cw * 0.88)
+    side = _choose_magazine_side(face_center, align)
+
+    scale = spec.get("title_font_scale", 0.056) if (is_intro or subtitle) else spec.get("font_scale", 0.046)
+    px = max(15, int(base * scale))
+    fg_rgb = _parse_color(font_color, (248, 248, 244))
+    if fg_rgb == (255, 255, 255):
+        fg_rgb = (248, 248, 244)
+    sub_rgb = (232, 232, 226)
+    max_w = int(cw * 0.56)
     probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
 
-    # 줄 배치: 폭을 넘으면 줄바꿈, max_lines 넘으면 폰트 축소
     while True:
-        font = _load_font(FONT_BOLD_PATH, px)
-        stroke = max(3, px // 9)
-        space = probe.textlength(" ", font=font)
-        lines, cur, cur_w = [], [], 0.0
-        for u, hl, sp in units:
-            uw = probe.textlength(u, font=font)
-            add = uw + (space if (sp and cur) else 0)
-            if cur and cur_w + add > max_w - 2 * stroke:
-                lines.append((cur, cur_w))
-                cur, cur_w, add = [], 0.0, uw
-            cur.append((u, hl, sp, uw))
-            cur_w += add
-        if cur:
-            lines.append((cur, cur_w))
-        if len(lines) <= spec.get("max_lines", 2) or px <= 18:
+        font = _load_font(_editorial_font_path(medium=True), px)
+        lines = _wrap_editorial_lines(probe, clean_text, font, max_w, 0)
+        if len(lines) <= spec.get("max_lines", 2) or px <= 15:
+            lines = lines[:spec.get("max_lines", 2)]
             break
-        px = int(px * 0.9)
+        px = max(15, int(px * 0.9))
+
+    sub_clean = " ".join((subtitle or "").split())
+    sub_px = max(11, int(px * 0.48))
+    f_sub = _load_font(_editorial_font_path(medium=False), sub_px) if sub_clean else None
+    if sub_clean and f_sub is not None:
+        sub_clean = _fit_text(probe, sub_clean, f_sub, max_w)
 
     ascent, descent = font.getmetrics()
     line_h = ascent + descent
-    gap = max(4, px // 10)
-    pad = stroke + max(4, px // 6)              # 외곽선 + 그림자 여유
-    over = 1.18                                  # ease_out_back 오버슈트 여유
-    rise = 0.35 * px
-    block_w = int(max(w for _, w in lines) * over + 2 * pad) + 2
-    block_h = int((len(lines) * line_h + (len(lines) - 1) * gap) + 2 * pad + rise) + 2
+    line_gap = max(4, px // 6)
+    line_widths = [probe.textlength(ln, font=font) for ln in lines]
+    sub_w = probe.textlength(sub_clean, font=f_sub) if (sub_clean and f_sub) else 0.0
+    sub_gap = max(6, px // 4) if sub_clean else 0
+    sub_h = sum(f_sub.getmetrics()) if (sub_clean and f_sub) else 0
+    rule_h = 2 if (is_intro and sub_clean) else 0
+    rule_gap = max(6, px // 4) if rule_h else 0
 
-    # 단위별 타일(외곽선 + 부드러운 그림자) 미리 렌더 → 프레임마다 스케일/알파만
-    tiles = []   # (RGBA PIL, 중심 x, 중심 y)
-    y_top = pad
-    for li, (items, lw) in enumerate(lines):
-        x = (block_w - lw) / 2.0
-        cy = y_top + li * (line_h + gap) + line_h / 2.0
-        first = True
-        for u, hl, sp, uw in items:
-            if sp and not first:
-                x += probe.textlength(" ", font=font)
-            first = False
-            tw, th = int(uw + 2 * pad), int(line_h + 2 * pad)
-            tile = Image.new("RGBA", (tw, th), (0, 0, 0, 0))
-            sh = Image.new("RGBA", (tw, th), (0, 0, 0, 0))
-            off = max(2, px // 22)
-            ImageDraw.Draw(sh).text((pad + off, pad + off), u, font=font, fill=(0, 0, 0, 150),
-                                    stroke_width=stroke, stroke_fill=(0, 0, 0, 150))
-            tile = Image.alpha_composite(tile, sh.filter(ImageFilter.GaussianBlur(max(2, px // 16))))
-            ImageDraw.Draw(tile).text((pad, pad), u, font=font,
-                                      fill=(*(hl_rgb if hl else fg_rgb), 255),
-                                      stroke_width=stroke, stroke_fill=(0, 0, 0, 255))
-            tiles.append((tile, x + uw / 2.0, cy))
-            x += uw
+    pad = max(6, px // 4)
+    content_w = int(max(max(line_widths, default=0), sub_w)) + 2
+    content_h = (len(lines) * line_h + max(0, len(lines) - 1) * line_gap
+                 + (rule_gap + rule_h if rule_h else 0)
+                 + (sub_gap + sub_h if sub_clean else 0))
+    W, H = content_w + 2 * pad, content_h + 2 * pad
+    canvas = Image.new("RGBA", (W, H), (0, 0, 0, 0))
 
-    # 타이밍: 슬라이드가 짧으면 stagger 를 줄여 등장+유지+퇴장이 들어가게
-    n = len(tiles)
-    char_mode = all(not sp for _, _, sp in units) and n > 1
-    stagger = spec["char_stagger"] if char_mode else spec["stagger"]
-    anim = spec["anim_dur"]
-    delay = min(0.2, duration * 0.08)
-    exit_dur = min(spec["exit_dur"], duration * 0.15)
-    exit_end = max(0.0, duration - 0.08)
-    exit_start = exit_end - exit_dur
-    budget = exit_start - delay - anim - 0.4     # 최소 0.4s 는 전체가 정지 상태로 보이게
-    if n > 1 and (n - 1) * stagger > budget:
-        stagger = max(0.03, budget / (n - 1)) if budget > 0 else 0.03
-    settled = delay + (n - 1) * stagger + anim
+    y = pad
+    # 인트로 제목 카드: 얇은 에디토리얼 헤어라인 → 제목 → 날짜/부제
+    if rule_h:
+        rx0 = pad if side == "left" else (W - pad - max(24, int(px * 0.85)))
+        rx1 = rx0 + max(24, int(px * 0.85))
+        ImageDraw.Draw(canvas).line([(rx0, y + 1), (rx1, y + 1)],
+                                    fill=(*fg_rgb, 175), width=max(1, px // 24))
+        y += rule_h + rule_gap
 
-    def unit_params(t, i):
-        p = (t - delay - i * stagger) / anim if anim > 0 else 1.0
-        if p <= 0:
-            return None
-        p = min(1.0, p)
-        scale = 0.55 + 0.45 * _ease_out_back(p, c1=1.9)
-        alpha = min(1.0, p * 2.2)
-        dy = (1.0 - _ease_out_cubic(p)) * rise
-        return scale, alpha, dy
+    for ln, lw in zip(lines, line_widths):
+        x = pad if side == "left" else int(round(W - pad - lw))
+        canvas = _draw_soft_text(canvas, (x, y), ln, font, (*fg_rgb, 250),
+                                 shadow_alpha=120, px_ref=px)
+        y += line_h + line_gap
 
-    def compose(t):
-        canvas = Image.new("RGBA", (block_w, block_h), (0, 0, 0, 0))
-        for i, (tile, cx, cy) in enumerate(tiles):
-            pr = unit_params(t, i)
-            if pr is None:
-                continue
-            s, a, dy = pr
-            im = tile
-            if abs(s - 1.0) > 0.004:
-                im = tile.resize((max(1, int(tile.width * s)), max(1, int(tile.height * s))),
-                                 Image.BILINEAR)
-            if a < 1.0:
-                al = im.getchannel("A").point(lambda v, a=a: int(v * a))
-                im = im.copy()
-                im.putalpha(al)
-            x0 = int(round(cx - im.width / 2.0))
-            y0 = int(round(cy - im.height / 2.0 + dy))
-            canvas.alpha_composite(im, dest=(max(0, x0), max(0, y0)),
-                                   source=(max(0, -x0), max(0, -y0)))
-        arr = np.array(canvas)
-        return arr[:, :, :3], arr[:, :, 3].astype(np.float32) / 255.0
+    if sub_clean and f_sub is not None:
+        y += sub_gap - line_gap
+        sx = pad if side == "left" else int(round(W - pad - sub_w))
+        canvas = _draw_soft_text(canvas, (sx, y), sub_clean, f_sub, (*sub_rgb, 232),
+                                 shadow_alpha=110, px_ref=sub_px)
 
-    state: dict = {"t": None, "val": None, "static": None}
+    arr = np.array(canvas)
+    rgb = arr[:, :, :3]
+    alpha = arr[:, :, 3].astype(np.float32) / 255.0
 
-    def at(t):
-        t = float(t)
-        if t >= settled:
-            if state["static"] is None:
-                state["static"] = compose(settled + 1e-3)
-            return state["static"]
-        if state["t"] != t:
-            state["t"], state["val"] = t, compose(t)
-        return state["val"]
+    margin_x = int(cw * spec.get("margin_x", 0.055))
+    margin_y = int(ch * spec.get("margin_y", 0.085))
+    x0 = (margin_x - pad) if side == "left" else (cw - margin_x - W + pad)
+    y_base = ch - margin_y - H + pad
 
-    def make_frame(t):
-        return at(t)[0]
+    delay = min(0.22, duration * 0.08)
+    vis = duration - delay
+    if vis <= 0.25:
+        return []
+    fade_in = min(float(spec.get("anim_dur", 0.4)), vis * 0.35)
+    fade_out = min(float(spec.get("exit_dur", 0.35)), vis * 0.3)
+    settle_px = max(3.0, min(8.0, px * 0.16))
+
+    def a_of(t):
+        if t < fade_in and fade_in > 0:
+            return _ease_out_cubic(t / fade_in)
+        if t > vis - fade_out and fade_out > 0:
+            return max(0.0, (vis - t) / fade_out)
+        return 1.0
 
     def make_mask(t):
-        m = at(t)[1]
-        if t > exit_start and exit_dur > 0:
-            return m * max(0.0, 1.0 - (t - exit_start) / exit_dur)
-        return m
+        a = a_of(t)
+        return alpha if a >= 1.0 else alpha * a
 
-    x0 = int(round(cw / 2.0 - block_w / 2.0))
-    y0 = int(round(ch * spec["y"] - (block_h - rise) / 2.0))
-    mask = VideoClip(make_mask, ismask=True, duration=duration)
-    clip = VideoClip(make_frame, duration=duration).set_mask(mask)
-    return [clip.set_position((x0, y0)).set_start(start)]
+    def pos(t):
+        p = _ease_out_cubic(min(1.0, t / fade_in)) if fade_in > 0 else 1.0
+        dy = settle_px * (1.0 - p)
+        return (int(round(x0)), int(round(y_base + dy)))
+
+    mask = VideoClip(make_mask, ismask=True, duration=vis)
+    clip = VideoClip(lambda t: rgb, duration=vis).set_mask(mask)
+    return [clip.set_position(pos).set_start(start + delay)]
 
 
 # ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── #
-# Location Card (자동 편집) — 좌측 상단 📍 지명 카드
+# Location Card (자동 편집) — 잡지식 📍 위치 캡션 (박스·외곽선 없음)
 # ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── #
 
 LOCATION_CARD_MAX_VISIBLE = 3.5   # 초
-LOCATION_CARD_FADE = 0.4
+LOCATION_CARD_FADE = 0.35
 
 
-def _draw_pin(size_px: int, color=(255, 92, 72)) -> Image.Image:
+def _draw_pin(size_px: int, color=(228, 72, 62)) -> Image.Image:
     """지도 핀 글리프 (폰트에 이모지가 없으므로 도형으로). 4배 슈퍼샘플 후 축소."""
     ss = 4
-    w, h = int(size_px * 0.78) * ss, size_px * ss
+    w, h = max(8, int(size_px * 0.78)) * ss, max(10, size_px) * ss
     im = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     d = ImageDraw.Draw(im)
     r = w / 2.0
@@ -625,7 +667,7 @@ def _draw_pin(size_px: int, color=(255, 92, 72)) -> Image.Image:
     d.polygon([(cx - r * 0.78, cy + r * 0.45), (cx + r * 0.78, cy + r * 0.45), (cx, h - 1)],
               fill=(*color, 255))
     d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(*color, 255))
-    ir = r * 0.42
+    ir = r * 0.40
     d.ellipse([cx - ir, cy - ir, cx + ir, cy + ir], fill=(255, 255, 255, 255))
     return im.resize((w // ss, h // ss), Image.LANCZOS)
 
@@ -638,86 +680,94 @@ def _fit_text(draw, text: str, font, max_w: int) -> str:
     return (text.rstrip() + "…") if text else ""
 
 
-def render_location_card_rgba(title: str, sub: str, size: tuple) -> np.ndarray:
-    """위치 카드 RGBA: 반투명 라운드 알약 + 핀 + 제목(굵게) + 보조줄. 크기는 min(캔버스) 비례."""
+def render_location_card_rgba(title: str, sub: str, size: tuple, align: str = "left") -> np.ndarray:
+    """잡지식 위치 캡션 RGBA: 박스/외곽선 없이 레드 핀 + 흰색/오프화이트 산세리프 + 소프트 그림자."""
     cw, ch = size
     base = min(cw, ch)
-    title_px = max(14, int(base * 0.042))
-    sub_px = max(10, int(title_px * 0.62))
-    f_title = _load_font(FONT_BOLD_PATH, title_px)
-    f_sub = _load_font(FONT_PATH, sub_px)
+    title_px = max(14, int(base * 0.040))
+    sub_px = max(11, int(title_px * 0.58))
+    f_title = _load_font(_editorial_font_path(medium=True), title_px)
+    f_sub = _load_font(_editorial_font_path(medium=False), sub_px)
     probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
-    max_text_w = int(cw * 0.62)
+    max_text_w = int(cw * 0.56)
     title = _fit_text(probe, (title or "").strip(), f_title, max_text_w)
     sub = _fit_text(probe, (sub or "").strip(), f_sub, max_text_w)
 
-    pin = _draw_pin(int(title_px * 1.25))
-    pad_x, pad_y = int(title_px * 0.6), int(title_px * 0.42)
-    gap = int(title_px * 0.42)
+    pin = _draw_pin(int(title_px * 0.98))
+    pin_gap = max(5, int(title_px * 0.28))
     ta, td = f_title.getmetrics()
     sa, sd = f_sub.getmetrics()
-    line_gap = int(title_px * 0.12) if sub else 0
-    text_h = ta + td + ((sa + sd + line_gap) if sub else 0)
-    text_w = int(max(probe.textlength(title, font=f_title),
-                     probe.textlength(sub, font=f_sub) if sub else 0))
-    inner_h = max(text_h, pin.height)
-    pill_w = pad_x + pin.width + gap + text_w + pad_x
-    pill_h = inner_h + 2 * pad_y
-    sh_pad = max(6, title_px // 3)                 # 그림자 여백
-    W, H = pill_w + 2 * sh_pad, pill_h + 2 * sh_pad
-    radius = min(pill_h // 2, int(title_px * 0.9))
+    title_line_h = max(ta + td, pin.height)
+    line_gap = max(3, int(title_px * 0.16)) if sub else 0
+    title_w = probe.textlength(title, font=f_title)
+    sub_w = probe.textlength(sub, font=f_sub) if sub else 0.0
+
+    row1_w = pin.width + pin_gap + title_w
+    content_w = int(max(row1_w, sub_w)) + 2
+    content_h = title_line_h + ((sa + sd + line_gap) if sub else 0)
+    pad = max(6, title_px // 3)
+    W, H = content_w + 2 * pad, content_h + 2 * pad
 
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    shadow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    ImageDraw.Draw(shadow).rounded_rectangle(
-        [sh_pad, sh_pad + 2, sh_pad + pill_w, sh_pad + pill_h + 2], radius=radius, fill=(0, 0, 0, 90))
-    img = Image.alpha_composite(img, shadow.filter(ImageFilter.GaussianBlur(sh_pad / 2)))
-    d = ImageDraw.Draw(img)
-    d.rounded_rectangle([sh_pad, sh_pad, sh_pad + pill_w, sh_pad + pill_h],
-                        radius=radius, fill=(12, 14, 18, 125))
+    # 핀에도 아주 옅은 그림자만
+    pin_x = pad if align == "left" else int(round(W - pad - row1_w))
+    pin_y = pad + (title_line_h - pin.height) // 2
+    pin_sh = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    pin_alpha = pin.getchannel("A").point(lambda v: int(v * 0.35))
+    pin_black = Image.new("RGBA", pin.size, (0, 0, 0, 255))
+    pin_black.putalpha(pin_alpha)
+    pin_sh.alpha_composite(pin_black, dest=(pin_x + 1, pin_y + 1))
+    img = Image.alpha_composite(img, pin_sh.filter(ImageFilter.GaussianBlur(2)))
+    img.alpha_composite(pin, dest=(pin_x, pin_y))
 
-    px0, py0 = sh_pad + pad_x, sh_pad + pad_y
-    img.alpha_composite(pin, dest=(px0, py0 + (inner_h - pin.height) // 2))
-    tx = px0 + pin.width + gap
-    ty = py0 + (inner_h - text_h) // 2
-    sw = max(1, title_px // 18)
-    d.text((tx, ty), title, font=f_title, fill=(255, 255, 255, 255),
-           stroke_width=sw, stroke_fill=(0, 0, 0, 120))
+    tx = pin_x + pin.width + pin_gap
+    ty = pad + (title_line_h - (ta + td)) // 2
+    img = _draw_soft_text(img, (tx, ty), title, f_title, (248, 248, 244, 252),
+                          shadow_alpha=125, px_ref=title_px)
     if sub:
-        d.text((tx, ty + ta + td + line_gap), sub, font=f_sub, fill=(235, 235, 235, 235),
-               stroke_width=max(1, sw - 1), stroke_fill=(0, 0, 0, 100))
+        sx = tx if align == "left" else int(round(W - pad - sub_w))
+        sy = pad + title_line_h + line_gap
+        img = _draw_soft_text(img, (sx, sy), sub, f_sub, (232, 232, 226, 230),
+                              shadow_alpha=110, px_ref=sub_px)
     return np.array(img)
 
 
-def render_location_card_layer(card: dict, size: tuple, duration: float, start: float = 0.0) -> list:
-    """meta.location_card → 좌측 상단 오버레이 클립.
-    0.35s 후 왼쪽에서 밀려오며 페이드 인(0.4s) → 유지 → 슬라이드 끝 전에 페이드 아웃(0.4s).
-    최대 LOCATION_CARD_MAX_VISIBLE 초만 보인다."""
+def render_location_card_layer(card: dict, size: tuple, duration: float, start: float = 0.0,
+                               face_center: tuple | None = None, align: str = "auto",
+                               avoid_bottom: bool = False) -> list:
+    """meta.location_card → 좌/우 하단 잡지식 위치 캡션 (kinetic 과 동시 사용 시 상단 배치).
+    잔잔한 페이드 인(0.35s) + 미세 정착 → 유지 → 페이드 아웃(0.35s)."""
     if not isinstance(card, dict):
         return []
     title = str(card.get("title") or "").strip()
     if not title or duration <= 0.6:
         return []
     cw, ch = size
-    rgba = render_location_card_rgba(title, str(card.get("sub") or ""), size)
+    side = _choose_magazine_side(face_center, align)
+    rgba = render_location_card_rgba(title, str(card.get("sub") or ""), size, align=side)
+    H, W = rgba.shape[:2]
     base = min(cw, ch)
-    margin_x = int(base * 0.04)
-    margin_y = int(max(base * 0.04, ch * 0.045))
+    pad = max(6, max(14, int(base * 0.040)) // 3)
+    margin_x = int(cw * 0.055)
+    margin_y = int(ch * 0.085)
 
-    t_in = min(0.35, duration * 0.1)
+    t_in = min(0.28, duration * 0.1)
     t_end = min(duration - 0.12, t_in + LOCATION_CARD_MAX_VISIBLE)
     vis = t_end - t_in
     if vis <= 0.3:
         return []
     fade = min(LOCATION_CARD_FADE, vis / 3.0)
-    slide_px = 0.04 * cw
+    settle_px = max(3.0, min(7.0, base * 0.008))
     rgb = rgba[:, :, :3]
     alpha = rgba[:, :, 3].astype(np.float32) / 255.0
 
+    x0 = (margin_x - pad) if side == "left" else (cw - margin_x - W + pad)
+    y_base = (int(ch * 0.065) - pad) if avoid_bottom else (ch - margin_y - H + pad)
+
     def a_of(t):
-        if t < fade:
+        if t < fade and fade > 0:
             return _ease_out_cubic(t / fade)
-        if t > vis - fade:
+        if t > vis - fade and fade > 0:
             return max(0.0, (vis - t) / fade)
         return 1.0
 
@@ -727,12 +777,11 @@ def render_location_card_layer(card: dict, size: tuple, duration: float, start: 
 
     def pos(t):
         p = _ease_out_cubic(t / fade) if fade > 0 else 1.0
-        return (int(round(margin_x - slide_px * (1.0 - p))), margin_y)
+        return (int(round(x0)), int(round(y_base + settle_px * (1.0 - p))))
 
     mask = VideoClip(make_mask, ismask=True, duration=vis)
     clip = VideoClip(lambda t: rgb, duration=vis).set_mask(mask)
     return [clip.set_position(pos).set_start(start + t_in)]
-
 
 def compose_layers_rgba(clips: list, size: tuple, t: float) -> np.ndarray:
     """오버레이 클립들을 시각 t 에서 투명 캔버스(RGBA)에 합성 — 테스트/디버그용."""
@@ -1033,7 +1082,8 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
                      tts_master_volume: float = 1.0,
                      narration_segments: list = None,
                      style_preset: str = "none",
-                     free_slide_duration: float = None):
+                     free_slide_duration: float = None,
+                     editorial_layers_out: list = None):
     """
     단일 슬라이드 → MoviePy 클립 생성 (비디오 / 이미지 공용).
     render_project()의 슬라이드 루프 본문을 추출한 것으로, 풀 렌더와
@@ -1069,8 +1119,9 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
                 font_size=_font_size, font_color=_font_color))
 
     _item_meta = _parse_meta(item.get('meta'))
+    face_center = None
 
-    def _style_layer(duration: float) -> list:
+    def _style_layer(duration: float, face_center: tuple | None = None) -> list:
         layers = []
         if text_style in ('hero', 'punch'):
             layers = render_text_layer(resolve_style_text(item, text_style), text_style,
@@ -1079,14 +1130,18 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
             try:
                 layers = render_kinetic_layer(
                     resolve_style_text(item, 'kinetic'), canvas_size, duration,
-                    highlight=str(_item_meta.get('kinetic_highlight') or ''))
+                    highlight=str(_item_meta.get('kinetic_highlight') or ''),
+                    subtitle=str(_item_meta.get('kinetic_sub') or ''),
+                    is_intro=bool(_item_meta.get('intro_kinetic')),
+                    face_center=face_center)
             except Exception as kin_err:
                 logger.warning(f"Slide {i}: kinetic text failed (skipping): {kin_err}")
-        # 자동 편집 위치 카드 (좌측 상단) — 텍스트 스타일과 독립
+        # 자동 편집 위치 카드 (잡지식 좌/우 하단, 타이포와 동시 표시 시 상단 회피)
         if _item_meta.get('location_card'):
             try:
                 layers = layers + render_location_card_layer(
-                    _item_meta['location_card'], canvas_size, duration)
+                    _item_meta['location_card'], canvas_size, duration,
+                    face_center=face_center, avoid_bottom=(text_style == 'kinetic'))
             except Exception as card_err:
                 logger.warning(f"Slide {i}: location card failed (skipping): {card_err}")
         return layers
@@ -1191,8 +1246,11 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
         if overlays:
             video_clip = video_clip.fl_image(make_overlay_frame_fn(overlays))
 
-        final_clip = CompositeVideoClip([bg_clip, video_clip] + subtitle_clips
-                                        + _style_layer(total_duration))
+        _ed = _style_layer(total_duration)
+        if editorial_layers_out is not None:
+            editorial_layers_out.extend(_ed)
+            _ed = []
+        final_clip = CompositeVideoClip([bg_clip, video_clip] + subtitle_clips + _ed)
         if audio_clips:
             final_clip = final_clip.set_audio(CompositeAudioClip(audio_clips))
 
@@ -1331,7 +1389,11 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
 
         # 이동 정보 오버레이 (출발→도착) — 거리/시간/수단/진행률은 프레임 상단 알약에
         # 이미 구워져 있으므로 TextClip 중복 표시는 제거 (8-x 리디자인)
-        route_overlays = list(subtitle_clips) + _style_layer(total_duration)
+        _ed = _style_layer(total_duration)
+        if editorial_layers_out is not None:
+            editorial_layers_out.extend(_ed)
+            _ed = []
+        route_overlays = list(subtitle_clips) + _ed
         try:
             _o = (_meta.get('origin') or {}).get('name', '')
             _d = (_meta.get('destination') or {}).get('name', '')
@@ -1411,7 +1473,8 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
         # motion_cfg: 스타일 프리셋의 모션 설정 (preset none → None)
         # face_center: (fx, fy) ∈ [0,1]², motion_cfg 있을 때만 감지 (얼굴 없으면 None)
         motion_cfg = _resolve_motion_cfg(style_preset)
-        face_center = detect_face_center(str(img_path)) if motion_cfg else None
+        need_face = bool(motion_cfg) or text_style == 'kinetic' or bool(_item_meta.get('location_card'))
+        face_center = detect_face_center(str(img_path)) if need_face else None
         motion_active = (ken_burns > 0) and (motion_cfg is not None)
 
         # 줌 강도: 슬라이드 ken_burns × 프리셋 intensity 곱. preset none → 1.0 (기존 동일)
@@ -1590,7 +1653,11 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
     bg_clip = ColorClip(size=canvas_size, color=BG_COLOR).set_duration(total_duration)
 
     # Assemble
-    final_clip = CompositeVideoClip([bg_clip, img_clip] + subtitle_clips + _style_layer(total_duration))
+    _ed = _style_layer(total_duration, face_center=face_center)
+    if editorial_layers_out is not None:
+        editorial_layers_out.extend(_ed)
+        _ed = []
+    final_clip = CompositeVideoClip([bg_clip, img_clip] + subtitle_clips + _ed)
     if a_clip is not None:
         final_clip = final_clip.set_audio(a_clip)
     return final_clip
@@ -1670,6 +1737,7 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
     final_clips  = []
     clip_items   = []  # final_clips 와 1:1 대응하는 슬라이드 item (누락 슬라이드로 인덱스 어긋남 방지)
     slide_narration_segments = []  # 슬라이드별 TTS 구간 (BGM 덕킹용, 8-7)
+    slide_editorial_layers = []    # 색보정/비네트 이후에 올릴 잡지식 타이포·위치 카드
     tts_engine   = load_tts_engine(tts_voice)
 
     try:
@@ -1680,6 +1748,7 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
             progress_callback(current_progress, f"슬라이드 처리 중 {i+1}/{total_slides}")
 
             segs = []  # 이 슬라이드의 TTS 음성 구간 (클립 기준 상대 시간, BGM 덕킹용)
+            ed_layers = []
             clip = build_slide_clip(
                 item, i, assets_dir, temp_dir, canvas_size,
                 tts_engine=tts_engine,
@@ -1688,11 +1757,13 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
                 tts_master_volume=tts_master_volume,
                 narration_segments=segs,
                 style_preset=style_preset,
+                editorial_layers_out=ed_layers,
             )
             if clip is not None:
                 final_clips.append(clip)
                 clip_items.append((i, item))
                 slide_narration_segments.append(segs)
+                slide_editorial_layers.append(ed_layers)
 
         transitions = [it.get('transition', 'none') for _, it in clip_items]
 
@@ -1743,6 +1814,7 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
                     for idx, nd in free_durs.items():
                         segs = slide_narration_segments[idx] if idx < len(slide_narration_segments) else []
                         src_i, src_item = clip_items[idx]
+                        ed_layers_b = []
                         nb = build_slide_clip(
                             src_item, src_i, assets_dir, temp_dir, canvas_size,
                             tts_engine=tts_engine,
@@ -1752,9 +1824,11 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
                             narration_segments=segs,
                             style_preset=style_preset,
                             free_slide_duration=nd,
+                            editorial_layers_out=ed_layers_b,
                         )
                         if nb is not None:
                             final_clips[idx] = nb
+                            slide_editorial_layers[idx] = ed_layers_b
                     if free_durs:
                         logger.info(f"B2 beat-snap: {len(free_durs)}/{len(final_clips)} "
                                     f"free slides snapped to beats (clock end={clock:.2f}s)")
@@ -1834,6 +1908,24 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
                 logger.info(f"Style preset applied: {style_preset}")
             except Exception as style_err:
                 logger.warning(f"Style preset failed (skipping): {style_err}")
+
+        # ── 잡지식 타이포·위치 카드 합성 (비네트/색보정 위에 선명한 화이트 유지) ──
+        post_layers = []
+        for _idx, _t in enumerate(slide_starts):
+            if _idx >= len(slide_editorial_layers):
+                break
+            for _lay in slide_editorial_layers[_idx]:
+                _st = _t + (_lay.start or 0.0)
+                if _st < combined.duration:
+                    _clip = _lay.set_start(_st)
+                    if _st + _clip.duration > combined.duration:
+                        _clip = _clip.set_duration(max(0.05, combined.duration - _st))
+                    post_layers.append(_clip)
+        if post_layers:
+            _aud = combined.audio
+            combined = CompositeVideoClip([combined] + post_layers, size=canvas_size)
+            if _aud is not None:
+                combined = combined.set_audio(_aud)
 
         # ── BGM 믹싱 ───────────────────────────────────────────────
         if bgm_path and Path(bgm_path).exists():

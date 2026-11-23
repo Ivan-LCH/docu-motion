@@ -92,7 +92,7 @@ export const TEXT_STYLE_PRESETS: { value: TextStyle; label: string }[] = [
   { value: 'caption', label: '자막 (하단, 문장별)' },
   { value: 'hero', label: '히어로 (큰 제목)' },
   { value: 'punch', label: '펀치 (중앙 한 단어, 8자)' },
-  { value: 'kinetic', label: '키네틱 (단어별 등장, 노랑 강조)' },
+  { value: 'kinetic', label: '잡지식 타이포 (좌/우 하단, 차분한 화이트)' },
   { value: 'none', label: '텍스트 없음' },
 ]
 export const PUNCH_MAX_CHARS = 8

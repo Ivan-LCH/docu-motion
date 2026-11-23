@@ -3072,7 +3072,7 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
                   <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{textStyle === 'hero' ? '히어로 문구' : textStyle === 'punch' ? '펀치 문구' : '키네틱 문구'}</span>
                   <input className="input" value={styleText}
                     maxLength={styleMax}
-                    placeholder={textStyle === 'hero' ? '비우면 장소명/라벨/첫 문장 사용' : textStyle === 'kinetic' ? '예: 가을 숲길 (마지막 단어 노랑)' : `최대 ${PUNCH_MAX_CHARS}자`}
+                    placeholder={textStyle === 'hero' ? '비우면 장소명/라벨/첫 문장 사용' : textStyle === 'kinetic' ? '예: 가을 숲길 (좌/우 하단 잡지식)' : `최대 ${PUNCH_MAX_CHARS}자`}
                     onChange={e => setStyleText(e.target.value)}
                     onBlur={commitStyleText}
                     style={{ flex: 1, padding: '0.3rem 0.5rem', fontSize: '0.8rem' }} />

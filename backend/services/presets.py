@@ -158,13 +158,12 @@ TEXT_STYLES: dict[str, dict] = {
     "punch":   {"description": "짧은 한 단어 — 화면 중앙 팝",
                 "anim": "pop", "anim_dur": 0.15, "font_scale": 0.18, "y": 0.5,
                 "max_chars": 8, "max_lines": 1},
-    # 키네틱 타이포 (자동 편집): 단어(짧은 한 단어는 글자)별로 차례로 떠오르며 등장.
-    # 흰 글씨 + 굵은 검정 외곽선, 강조 단어 하나만 노랑. 문구는 meta.kinetic_text,
-    # 강조 단어는 meta.kinetic_highlight (없으면 마지막 단어).
-    "kinetic": {"description": "키네틱 타이포 — 단어별 등장, 노랑 강조 (자동 편집)",
-                "anim": "kinetic", "anim_dur": 0.45, "font_scale": 0.13, "y": 0.62,
-                "max_chars": 20, "max_lines": 2, "stagger": 0.14, "char_stagger": 0.08,
-                "exit_dur": 0.3, "highlight": "#FFD400"},
+    # 잡지식 에디토리얼 타이포 (자동 편집): 좌/우 하단 한쪽 정렬, 외곽선 없는 차분한 흰색/오프화이트.
+    # 문구는 meta.kinetic_text, 보조줄(날짜 등)은 meta.kinetic_sub.
+    "kinetic": {"description": "잡지식 타이포 — 좌/우 하단 정렬, 차분한 화이트 (자동 편집)",
+                "anim": "editorial_fade", "anim_dur": 0.4, "font_scale": 0.046,
+                "title_font_scale": 0.056, "margin_x": 0.055, "margin_y": 0.085,
+                "max_chars": 24, "max_lines": 2, "exit_dur": 0.35, "highlight": "#F7F7F2"},
     "none":    {"description": "텍스트 없음 (나레이션 음성은 유지)"},
 }
 VALID_TEXT_STYLES: tuple[str, ...] = tuple(TEXT_STYLES.keys())

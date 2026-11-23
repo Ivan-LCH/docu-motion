@@ -61,7 +61,7 @@ DEFAULT_OPTS: dict = {
 KINETIC_MAX_CHARS = 8
 _INTRO_MAX_SLIDES = 4
 # 자동 편집이 관리하는 meta 키 (재실행 시 초기화)
-_MANAGED_META_KEYS = ("location_card", "kinetic_text", "kinetic_highlight",
+_MANAGED_META_KEYS = ("location_card", "kinetic_text", "kinetic_sub", "kinetic_highlight",
                       "intro_kinetic", "bgm_fade_in")
 _NATURE_WORDS = ("수목원", "공원", "숲", "산", "둘레길", "정원", "식물원", "호수", "계곡", "올레")
 
@@ -435,7 +435,11 @@ def plan_auto_edit(db, project_id: str, opts: Optional[dict] = None) -> dict:
             slides[0].text_style = "kinetic"
             m0["kinetic_text"] = intro_title
             m0["intro_kinetic"] = True
-            kinetic_intro = {"order_index": slides[0].order_index, "text": intro_title}
+            first_dt = next((dt for dt in (_captured(s) for s in slides) if dt is not None), None)
+            if first_dt is not None:
+                m0["kinetic_sub"] = first_dt.strftime("%Y.%m.%d")
+            kinetic_intro = {"order_index": slides[0].order_index, "text": intro_title,
+                             **({"sub": m0["kinetic_sub"]} if m0.get("kinetic_sub") else {})}
         _set_meta(slides[0], m0)
 
     # 2) 위치 카드

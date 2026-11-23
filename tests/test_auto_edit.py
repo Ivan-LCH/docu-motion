@@ -315,44 +315,61 @@ def test_kinetic_and_card_layers_render_rgba(size):
     from backend.services.renderer import (
         compose_layers_rgba, render_kinetic_layer, render_location_card_layer)
     dur = 3.0
-    kin = render_kinetic_layer("일월수목원 산책", size, dur)
+    kin = render_kinetic_layer("일월수목원 산책", size, dur, subtitle="2026.10.25", is_intro=True)
     card = render_location_card_layer({"title": "수원 일월수목원", "sub": "경기도 · 2026.10.25"},
                                       size, dur)
+    card_top = render_location_card_layer({"title": "수원 일월수목원", "sub": "경기도 · 2026.10.25"},
+                                          size, dur, avoid_bottom=True)
     assert len(kin) == 1 and len(card) == 1
 
-    start = compose_layers_rgba(kin + card, size, 0.0)
-    mid = compose_layers_rgba(kin + card, size, 1.5)
-    end = compose_layers_rgba(kin + card, size, dur - 0.01)
+    start = compose_layers_rgba(kin + card_top, size, 0.0)
+    mid = compose_layers_rgba(kin + card_top, size, 1.5)
+    end = compose_layers_rgba(kin + card_top, size, dur - 0.01)
     for f in (start, mid, end):
         assert f.shape == (size[1], size[0], 4) and f.dtype == np.uint8
     assert start[..., 3].max() == 0            # 등장 전
     assert end[..., 3].max() < 40              # 퇴장 페이드
     alpha = mid[..., 3]
-    assert (alpha > 200).sum() > 500           # 글자/카드가 실제로 그려짐
+    assert (alpha > 180).sum() > 200           # 글자/카드가 실제로 그려짐
 
-    # 카드: 좌측 상단 사분면, 키네틱: 세로 중앙보다 아래
+    # 잡지식 기본 위치: 둘 다 좌측 하단 정렬, 동시 표시(avoid_bottom) 시 카드는 좌측 상단
     card_only = compose_layers_rgba(card, size, 1.5)[..., 3]
     ys, xs = np.nonzero(card_only > 128)
-    assert xs.mean() < size[0] / 2 and ys.mean() < size[1] / 3
+    assert xs.mean() < size[0] * 0.45 and ys.mean() > size[1] * 0.7
+    card_top_a = compose_layers_rgba(card_top, size, 1.5)[..., 3]
+    ys_t, xs_t = np.nonzero(card_top_a > 128)
+    assert xs_t.mean() < size[0] * 0.45 and ys_t.mean() < size[1] * 0.3
     kin_only = compose_layers_rgba(kin, size, 1.5)[..., 3]
-    ys, _ = np.nonzero(kin_only > 128)
-    assert size[1] * 0.45 < ys.mean() < size[1] * 0.8
+    ys_k, xs_k = np.nonzero(kin_only > 128)
+    assert xs_k.mean() < size[0] * 0.45 and ys_k.mean() > size[1] * 0.7
 
 
-def test_kinetic_highlight_is_yellow():
-    from backend.services.renderer import compose_layers_rgba, render_kinetic_layer, _kinetic_units
-    assert [u for u, _, _ in _kinetic_units("가을숲길")] == list("가을숲길")      # 짧은 한 단어 → 글자
-    assert [h for _, h, _ in _kinetic_units("가을숲길", "숲길")] == [False, False, True, True]
-    assert [h for _, h, _ in _kinetic_units("천천히 걷기")] == [False, True]    # 기본: 마지막 단어
-    assert [h for _, h, _ in _kinetic_units("오전 11시", "오전")] == [True, False]
+def test_kinetic_editorial_calm_white_no_outline_and_face_avoidance():
+    from backend.services.renderer import (
+        compose_layers_rgba, render_kinetic_layer, render_location_card_layer, _kinetic_units)
+    assert [u for u, _, _ in _kinetic_units("가을숲길")] == list("가을숲길")
+    assert [h for _, h, _ in _kinetic_units("천천히 걷기")] == [False, True]
 
     size = (640, 360)
-    f = compose_layers_rgba(render_kinetic_layer("가을 숲길", size, 3.0), size, 1.8)
+    f = compose_layers_rgba(render_kinetic_layer("가을 숲길", size, 3.0, highlight="숲길"), size, 1.8)
     rgb, a = f[..., :3].astype(int), f[..., 3]
-    solid = a > 250
+    solid = a > 200
     yellow = solid & (rgb[..., 0] > 220) & (rgb[..., 1] > 180) & (rgb[..., 2] < 80)
-    white = solid & (rgb.min(axis=2) > 225)
-    assert yellow.sum() > 100 and white.sum() > 100
+    dark_outline = (a > 240) & (rgb.max(axis=2) < 35)
+    calm_white = solid & (rgb.min(axis=2) > 215)
+    assert yellow.sum() == 0                   # 튀는 노랑 강조 없음
+    assert dark_outline.sum() == 0             # 검정 외곽선 없음
+    assert calm_white.sum() > 80               # 차분한 흰색/오프화이트 글자
+
+    # 얼굴이 좌측 하단에 있으면 타이포·위치 카드 모두 우측 하단으로 이동
+    face = (0.22, 0.65)
+    kin_r = compose_layers_rgba(render_kinetic_layer("가을 숲길", size, 3.0, face_center=face), size, 1.5)[..., 3]
+    card_r = compose_layers_rgba(
+        render_location_card_layer({"title": "수원 일월수목원"}, size, 3.0, face_center=face), size, 1.5)[..., 3]
+    _, xs_kr = np.nonzero(kin_r > 128)
+    _, xs_cr = np.nonzero(card_r > 128)
+    assert xs_kr.mean() > size[0] * 0.55
+    assert xs_cr.mean() > size[0] * 0.55
 
 
 def test_slide_clip_with_kinetic_card_and_photo_effect(tmp_path):
