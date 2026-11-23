@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { api, Slide, ProjectDetail, BgmHit, PhotosSortOrder, parseSlideMeta, RouteMeta, SavedLocation, GeocodeResult, OrganizeSuggestions, RouteSuggestion, CurationSuggestion, SpellcheckResult, AutoVideoOptions, AutoVideoTask, TRANSITION_PRESETS, TEXT_STYLE_PRESETS, PUNCH_MAX_CHARS, TextStyle, getStyleText, withStyleText, PHOTO_EFFECT_PRESETS, PhotoEffect, DEFAULT_EFFECT_REVEAL } from '../api/client'
+import { api, Slide, ProjectDetail, BgmHit, PhotosSortOrder, parseSlideMeta, RouteMeta, SavedLocation, GeocodeResult, OrganizeSuggestions, RouteSuggestion, CurationSuggestion, SpellcheckResult, AutoVideoOptions, AutoVideoTask, AutoEditOptions, AutoEditTask, TRANSITION_PRESETS, TEXT_STYLE_PRESETS, PUNCH_MAX_CHARS, KINETIC_MAX_CHARS, TextStyle, StyleTextKey, getStyleText, withStyleText, getLocationCard, withLocationCard, PHOTO_EFFECT_PRESETS, PhotoEffect, DEFAULT_EFFECT_REVEAL } from '../api/client'
 import { useToast } from '../components/ToastContext'
 import GoogleAuthSection, { extractCodeFromUrl } from '../components/GoogleAuthSection'
 
@@ -1093,6 +1093,105 @@ function AutoVideoModal({ opts, setOpts, running, phase, progress, msg, task, on
                   task.narrated ? `🎙️ ${task.narrated}장 나레이션` : '',
                   task.silent ? `🔇 ${task.silent}장 무자막 통과` : '']
                   .filter(Boolean).join(' · ')}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ─── Auto Edit Modal (자동 편집 1단계, 12) — 음악 인트로 + 위치 카드 + 키네틱 타이포 ──
+const AE_PHASE_LABEL: Record<string, string> = {
+  queued: '대기 중', planning: '자동 편집 계획 중', planned: '계획 완료',
+  rendering: '렌더링 중', done: '완료',
+}
+
+function AutoEditModal({ opts, setOpts, hasBgm, running, phase, progress, msg, task, onStart, onClose }: {
+  opts: AutoEditOptions
+  setOpts: (o: AutoEditOptions) => void
+  hasBgm: boolean
+  running: boolean
+  phase: string
+  progress: number
+  msg: string
+  task: AutoEditTask
+  onStart: () => void
+  onClose: () => void
+}) {
+  const phaseLabel = AE_PHASE_LABEL[phase] || phase
+  const check = (key: 'music_intro' | 'location_cards' | 'kinetic', label: string) => (
+    <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.8rem', marginBottom: '0.4rem', cursor: 'pointer' }}>
+      <input type="checkbox" checked={opts[key]} disabled={running}
+        onChange={e => setOpts({ ...opts, [key]: e.target.checked })} />
+      {label}
+    </label>
+  )
+  const summary = task.summary
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" style={{ maxWidth: 460 }} onClick={e => e.stopPropagation()}>
+        <div className="modal-header">
+          <span className="modal-title">&#x1F3AC; 자동 편집</span>
+          <button className="btn btn-ghost btn-icon" onClick={onClose}>&#x2715;</button>
+        </div>
+
+        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.75rem', lineHeight: 1.5 }}>
+          나레이션 없이 BGM 위로 흐르는 하이라이트를 만듭니다. 첫 컷에 제목, 장소가 바뀔 때 &#x1F4CD; 위치 카드,
+          중간 2~3컷에 짧은 문구가 들어갑니다. 슬라이드 설정(텍스트·전환)이 자동으로 바뀝니다.
+        </div>
+        {!hasBgm && (
+          <div style={{ fontSize: '0.75rem', color: 'var(--danger, #ef4444)', marginBottom: '0.75rem' }}>
+            BGM 필요: 전역 설정에서 배경음악을 먼저 추가하세요.
+          </div>
+        )}
+
+        {check('music_intro', `🎵 음악 인트로 (첫 ${opts.intro_seconds}초 무나레이션 + 제목)`)}
+        {check('location_cards', '📍 위치 카드')}
+        {check('kinetic', '🔤 키네틱 타이포')}
+
+        <div style={{ display: 'flex', gap: '0.5rem', margin: '0.5rem 0 0.75rem' }}>
+          <div style={{ flex: 1 }}>
+            <label className="label">해상도</label>
+            <select className="input" value={opts.resolution ?? '720p'} disabled={running}
+              onChange={e => setOpts({ ...opts, resolution: e.target.value as '720p' | '1080p' })} style={{ width: '100%' }}>
+              <option value="720p">720p</option>
+              <option value="1080p">1080p</option>
+            </select>
+          </div>
+          <div style={{ flex: 1 }}>
+            <label className="label">스타일</label>
+            <select className="input" value={opts.style_preset} disabled={running}
+              onChange={e => setOpts({ ...opts, style_preset: e.target.value })} style={{ width: '100%' }}>
+              <option value="cinematic">시네마틱</option>
+              <option value="vlog">브이로그</option>
+              <option value="documentary">다큐</option>
+              <option value="trending">트렌딩</option>
+            </select>
+          </div>
+        </div>
+
+        <button className="btn-action-primary render" onClick={onStart} disabled={running || !hasBgm} style={{ width: '100%' }}>
+          {running ? <><span className="spinner" /> {phaseLabel}...</> : '🎬 자동 편집 + 렌더'}
+        </button>
+
+        {(running || summary) && (
+          <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '0.6rem', marginTop: '0.5rem' }}>
+            {running && (
+              <>
+                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '0.35rem' }}>
+                  {phaseLabel}: {msg} ({Math.round(progress)}%)
+                </div>
+                <div className="progress-bar-wrap">
+                  <div className="progress-bar-fill animate-pulse" style={{ width: `${Math.max(5, progress)}%` }} />
+                </div>
+              </>
+            )}
+            {summary && (
+              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: '0.35rem', lineHeight: 1.6 }}>
+                {summary.cards.map(c => <div key={`c${c.order_index}`}>📍 #{c.order_index + 1} {c.title}{c.sub ? ` · ${c.sub}` : ''} ({c.source === 'gps' ? 'GPS' : '폴백'})</div>)}
+                {summary.kinetic.length > 0 && <div>🔤 {summary.kinetic.map(k => `#${k.order_index + 1} ${k.text}`).join(' · ')}</div>}
               </div>
             )}
           </div>
@@ -2611,8 +2710,13 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
   const [photoEffect, setPhotoEffect] = useState<PhotoEffect>(slide.photo_effect ?? 'none')
   const [effectReveal, setEffectReveal] = useState<number>(slide.effect_reveal ?? DEFAULT_EFFECT_REVEAL)
   const [textStyle, setTextStyle] = useState<TextStyle>(slide.text_style ?? 'caption')
-  const styleKey = textStyle === 'punch' ? 'punch_text' : 'hero_text'
+  const styleKey: StyleTextKey = textStyle === 'punch' ? 'punch_text' : textStyle === 'kinetic' ? 'kinetic_text' : 'hero_text'
   const [styleText, setStyleText] = useState<string>(() => getStyleText(slide, styleKey))
+  const styleMax = textStyle === 'punch' ? PUNCH_MAX_CHARS : textStyle === 'kinetic' ? KINETIC_MAX_CHARS : 200
+  // 자동 편집 위치 카드 (있을 때만 편집 UI 표시)
+  const card = getLocationCard(slide)
+  const [cardTitle, setCardTitle] = useState<string>(card?.title ?? '')
+  const [cardSub, setCardSub] = useState<string>(card?.sub ?? '')
   const [showOverlayModal, setShowOverlayModal] = useState(false)
   const [tab, setTab] = useState<'content' | 'visual'>('content')
   const { toast } = useToast()
@@ -2652,10 +2756,20 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
   useEffect(() => { setEffectReveal(slide.effect_reveal ?? DEFAULT_EFFECT_REVEAL) }, [slide.effect_reveal])
   useEffect(() => { setTextStyle(slide.text_style ?? 'caption') }, [slide.text_style])
   useEffect(() => { setStyleText(getStyleText(slide, styleKey)) }, [slide.meta, styleKey])
+  useEffect(() => {
+    const c = getLocationCard(slide)
+    setCardTitle(c?.title ?? '')
+    setCardSub(c?.sub ?? '')
+  }, [slide.meta])
 
   const commitStyleText = () => {
-    const v = textStyle === 'punch' ? styleText.slice(0, PUNCH_MAX_CHARS) : styleText
+    const v = styleText.slice(0, styleMax)
     if (v !== getStyleText(slide, styleKey)) onUpdate({ meta: withStyleText(slide, styleKey, v) })
+  }
+  const commitCard = () => {
+    const c = getLocationCard(slide)
+    if (!c || (cardTitle === c.title && cardSub === (c.sub ?? ''))) return
+    onUpdate({ meta: withLocationCard(slide, { ...c, title: cardTitle.trim(), sub: cardSub.trim() }) })
   }
 
   const handleBlur = () => {
@@ -2953,19 +3067,30 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
                   {TEXT_STYLE_PRESETS.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
                 </select>
               </div>
-              {(textStyle === 'hero' || textStyle === 'punch') && (
+              {(textStyle === 'hero' || textStyle === 'punch' || textStyle === 'kinetic') && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{textStyle === 'hero' ? '히어로 문구' : '펀치 문구'}</span>
+                  <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{textStyle === 'hero' ? '히어로 문구' : textStyle === 'punch' ? '펀치 문구' : '키네틱 문구'}</span>
                   <input className="input" value={styleText}
-                    maxLength={textStyle === 'punch' ? PUNCH_MAX_CHARS : 200}
-                    placeholder={textStyle === 'hero' ? '비우면 장소명/라벨/첫 문장 사용' : `최대 ${PUNCH_MAX_CHARS}자`}
+                    maxLength={styleMax}
+                    placeholder={textStyle === 'hero' ? '비우면 장소명/라벨/첫 문장 사용' : textStyle === 'kinetic' ? '예: 가을 숲길 (마지막 단어 노랑)' : `최대 ${PUNCH_MAX_CHARS}자`}
                     onChange={e => setStyleText(e.target.value)}
                     onBlur={commitStyleText}
                     style={{ flex: 1, padding: '0.3rem 0.5rem', fontSize: '0.8rem' }} />
-                  {textStyle === 'punch' && <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{styleText.length}/{PUNCH_MAX_CHARS}</span>}
+                  {textStyle !== 'hero' && <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{styleText.length}/{styleMax}</span>}
                 </div>
               )}
-              {(textStyle === 'hero' || textStyle === 'punch') && (
+              {card && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }} title={card.source === 'gps' ? 'GPS 역지오코딩' : '장소 슬라이드/제목 폴백'}>&#x1F4CD; 위치 카드</span>
+                  <input className="input" value={cardTitle} placeholder="제목 (비우면 카드 삭제)"
+                    onChange={e => setCardTitle(e.target.value)} onBlur={commitCard}
+                    style={{ flex: 1, padding: '0.3rem 0.5rem', fontSize: '0.8rem' }} />
+                  <input className="input" value={cardSub} placeholder="보조줄 (예: 경기도 · 2026.10.25)"
+                    onChange={e => setCardSub(e.target.value)} onBlur={commitCard}
+                    style={{ flex: 1, padding: '0.3rem 0.5rem', fontSize: '0.8rem' }} />
+                </div>
+              )}
+              {(textStyle === 'hero' || textStyle === 'punch' || textStyle === 'kinetic') && (
                 <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>이 스타일에서는 하단 자막이 표시되지 않습니다 (나레이션 음성은 유지).</span>
               )}
             </>
@@ -3108,6 +3233,18 @@ export default function Editor() {
   const [avMsg, setAvMsg] = useState('')
   const [avTask, setAvTask] = useState<AutoVideoTask>({})
   const avPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  // 자동 편집 1단계 (12)
+  const [showAutoEdit, setShowAutoEdit] = useState(false)
+  const [aeOpts, setAeOpts] = useState<AutoEditOptions>({
+    render: true, resolution: '720p', intro_seconds: 5, music_intro: true,
+    location_cards: true, kinetic: true, narration: false, style_preset: 'cinematic',
+  })
+  const [aeRunning, setAeRunning] = useState(false)
+  const [aePhase, setAePhase] = useState('')
+  const [aeProgress, setAeProgress] = useState(0)
+  const [aeMsg, setAeMsg] = useState('')
+  const [aeTask, setAeTask] = useState<AutoEditTask>({})
+  const aePollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [isDragging, setIsDragging] = useState(false)
   const [previewVideoSlide, setPreviewVideoSlide] = useState<Slide | null>(null)
   const [selectedSlideIds, setSelectedSlideIds] = useState<Set<string>>(new Set())
@@ -3198,6 +3335,47 @@ export default function Editor() {
     }, 2000)
     return () => { if (avPollRef.current) clearInterval(avPollRef.current) }
   }, [avRunning, projectId, loadProject, toast])
+
+  // Auto-edit polling (12): 렌더 단계에서는 렌더 진행률을 25~100% 로 환산해 표시
+  useEffect(() => {
+    if (!aeRunning || !projectId) { if (aePollRef.current) clearInterval(aePollRef.current); return }
+    aePollRef.current = setInterval(async () => {
+      try {
+        const s = await api.getAutoEditStatus(projectId)
+        const t = s.task || {}
+        setAeTask(t)
+        setAePhase(t.phase || '')
+        const rendering = t.phase === 'rendering' && s.render?.status === 'PROCESSING'
+        setAeProgress(rendering ? 25 + 0.75 * (s.render.progress || 0) : (t.progress || 0))
+        setAeMsg(rendering ? (s.render.message || '') : (t.message || ''))
+        if (t.status === 'done' || t.status === 'error') {
+          setAeRunning(false)
+          clearInterval(aePollRef.current!)
+          await loadProject()
+          if (t.status === 'done') toast('🎬 자동 편집 완성!', 'success')
+          else toast(`자동 편집 오류: ${t.message || ''}`, 'error')
+        }
+      } catch { clearInterval(aePollRef.current!) }
+    }, 2000)
+    return () => { if (aePollRef.current) clearInterval(aePollRef.current) }
+  }, [aeRunning, projectId, loadProject, toast])
+
+  const handleAutoEdit = async () => {
+    if (!projectId) return
+    const unsaved = slidesRef.current.map((s, i) => ({ ...s, order_index: i }))
+    await api.saveSlides(projectId, unsaved)
+    try {
+      await api.startAutoEdit(projectId, aeOpts)
+      setAeRunning(true)
+      setAePhase('queued')
+      setAeProgress(0)
+      setAeMsg('대기 중...')
+      setAeTask({})
+      toast('🎬 자동 편집 시작됨', 'info')
+    } catch (e: unknown) {
+      toast(e instanceof Error ? e.message : '자동 편집 시작 실패', 'error')
+    }
+  }
 
   const handleAutoVideo = async () => {
     if (!projectId) return
@@ -3650,6 +3828,16 @@ export default function Editor() {
           {avRunning && <span className="spinner" style={{ marginLeft: 'auto' }} />}
         </button>
 
+        {/* 자동 편집 1단계 (12) — 음악 인트로 + 위치 카드 + 키네틱 */}
+        <button className="action-card" onClick={() => setShowAutoEdit(true)}>
+          <div className="action-icon" style={{ background: 'rgba(234,179,8,0.14)' }}>&#x1F3AC;</div>
+          <div className="action-label">
+            <span>{aeRunning ? `${AE_PHASE_LABEL[aePhase] || '처리 중'} (${Math.round(aeProgress)}%)` : '자동 편집'}</span>
+            <span>음악 인트로·위치 카드·키네틱</span>
+          </div>
+          {aeRunning && <span className="spinner" style={{ marginLeft: 'auto' }} />}
+        </button>
+
       </aside>
 
       {/* Thumbnail Panel (6-2 + 6-4) */}
@@ -3921,6 +4109,20 @@ export default function Editor() {
           task={avTask}
           onStart={handleAutoVideo}
           onClose={() => setShowAutoVideo(false)}
+        />
+      )}
+      {showAutoEdit && (
+        <AutoEditModal
+          opts={aeOpts}
+          setOpts={setAeOpts}
+          hasBgm={!!project?.bgm_filename}
+          running={aeRunning}
+          phase={aePhase}
+          progress={aeProgress}
+          msg={aeMsg}
+          task={aeTask}
+          onStart={handleAutoEdit}
+          onClose={() => setShowAutoEdit(false)}
         />
       )}
       {showRender && (
