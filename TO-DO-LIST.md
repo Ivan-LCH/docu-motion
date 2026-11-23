@@ -372,6 +372,41 @@
   - [O] 11-3. 실환경 E2E 검증 (사진 10장 샘플 프로젝트로 전 구간 실행) — 서버 컨테이너에 새 백엔드 복사 후 실행: 샘플 8장 업로드 → 큐레이션 2장 삭제 → 나레이션 3장/무자막 3장 분산 → 연출 적용 → 렌더 성공, result.mp4 26.4초/1280x720/7MB 확인 (2026-09-30)
 
 
+  ── 12. 🎬 자동 편집 1단계 (2026-11-23 신규, 설계: auto-edit-stylize.md Stage 1) ──
+  목표: 시칠리안 브이로그 감성(음악 인트로·위치 표시·중간 타이포·CF 전환)을
+        사진 하이라이트에 자동 적용. 나레이션 없이 BGM 위로 흐르는 1~3분 영상.
+  - [O] 12-1. 역지오코딩 backend/services/geo_label.py
+        . reverse_geocode(lat,lng): 카카오 coord2address→coord2regioncode (키 있을 때)
+          → Nominatim /reverse (1 req/s, accept-language=ko). 실패 시 None
+        . 캐시 outputs/_geocache.json (좌표 소수점 4자리). city_short("수원시")="수원"
+  - [O] 12-2. 위치 카드 계획/렌더
+        . auto_edit.cluster_slides: 타임라인 순서 GPS 클러스터(2km) → 클러스터 첫 컷
+          meta.location_card {title, sub, source=gps}
+        . GPS 없음 → place 슬라이드 주소("수원 일월수목원" / "경기도 · 2026.10.25")
+          → 프로젝트 제목 폴백 (source=fallback), place 슬라이드가 아닌 첫 사진에
+        . renderer.render_location_card_layer: 좌측 상단 핀(도형)+제목+보조줄 알약,
+          왼쪽에서 슬라이드 인 + 페이드 0.4s, 최대 3.5s, 16:9/9:16/1:1
+  - [O] 12-3. 키네틱 타이포 text_style "kinetic"
+        . 단어(짧은 한 단어는 글자)별 stagger 등장: rise + fade + ease_out_back,
+          ExtraBold + 두꺼운 검정 외곽선, 강조 1개 노랑(#FFD400, 기본 마지막 단어), y≈0.62
+        . 문구 meta.kinetic_text / 강조 meta.kinetic_highlight
+  - [O] 12-4. plan_auto_edit + API POST/GET/DELETE /projects/{id}/auto-edit
+        . 음악 인트로(기본 5초, 무나레이션, 첫 컷 키네틱 제목 → 기존 중앙 인트로 타이틀 생략,
+          BGM 페이드 인 1s / 기존 페이드 아웃 유지)
+        . 중간 키네틱 2~3컷(서로 비인접, 카드 컷 제외): EXIF 시각·계절·장소 템플릿
+          ("가을 숲길" / "오전 11시" / "천천히 걷기"), use_ai 시 Gemini
+        . 나머지 무자막·무나레이션 (기존 대사는 meta.prev_text 백업), 전환: 인트로 직후
+          zoom_through, 장소 변경 whip_left/right, 그 외 AUTO_TRANSITION_CYCLE
+        . BGM 없으면 "BGM 필요" 오류. stylize_ratio 는 Stage 2 훅(미사용)
+  - [O] 12-5. 에디터 「🎬 자동 편집」 모달 + 키네틱 스타일 선택/문구 입력 + 위치 카드 편집
+  - [O] 12-6. 렌더 인코더: VIDEO_CODEC 우선, GPU 없으면 libx264 직행.
+        TTS 필요 슬라이드 없으면 TTS 모델 로드 생략
+  - [O] 12-7. 샘플 스크립트 scripts/render_auto_edit_sample.py (프로젝트 복제 후 렌더)
+        + tests/test_auto_edit.py (네트워크 모킹, 소형 E2E mp4 포함)
+  - [ ] 12-8. 일월수목원 시안 렌더 → Ivan 확인 (카드 위치·문구·타이포 크기 피드백)
+  - [ ] 12-9. GPS 있는 사진 세트로 역지오코딩 실검증
+  - [ ] 12-10. Stage 2: 그림→사진 전환(PR #2 효과 방향 반전) — 승인 후
+
 ================================================================================
 📝 참고: 완료된 과거 이력은 TO-DO-ARCHIVE.md 파일에서 확인하세요.
         최근 완료(2026-06-24): 6-18~6-21 실시간/구간 미리보기 전체 완료.
