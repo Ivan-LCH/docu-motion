@@ -434,11 +434,13 @@ def render_text_layer(text: str, style: str, size: tuple, duration: float,
 # ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── #
 
 _EDITORIAL_REG_FONTS = (
+    str(Path(FONT_PATH).parent / "GothicA1-Regular.ttf"),
     "/usr/share/fonts/truetype/sand-box/google/Gothic A1/GothicA1-Regular.ttf",
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
     "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
 )
 _EDITORIAL_MED_FONTS = (
+    str(Path(FONT_PATH).parent / "GothicA1-Medium.ttf"),
     "/usr/share/fonts/truetype/sand-box/google/Gothic A1/GothicA1-Medium.ttf",
     "/usr/share/fonts/truetype/sand-box/google/Gothic A1/GothicA1-SemiBold.ttf",
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",

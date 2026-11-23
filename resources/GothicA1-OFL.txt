@@ -1,0 +1,4 @@
+Gothic A1 (GothicA1-Regular.ttf, GothicA1-Medium.ttf)
+Copyright (C) HanYang I&C Co., Ltd.
+Licensed under the SIL Open Font License, Version 1.1 — https://scripts.sil.org/OFL
+Bundled so the auto-edit editorial typography renders identically in Docker (no system Korean fonts).
