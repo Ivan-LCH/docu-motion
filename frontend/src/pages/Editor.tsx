@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { api, Slide, ProjectDetail, BgmHit, PhotosSortOrder, parseSlideMeta, RouteMeta, SavedLocation, GeocodeResult, OrganizeSuggestions, RouteSuggestion, CurationSuggestion, SpellcheckResult, AutoVideoOptions, AutoVideoTask, AutoEditOptions, AutoEditTask, TRANSITION_PRESETS, TEXT_STYLE_PRESETS, PUNCH_MAX_CHARS, KINETIC_MAX_CHARS, TextStyle, StyleTextKey, getStyleText, withStyleText, getLocationCard, withLocationCard, PHOTO_EFFECT_PRESETS, PhotoEffect, DEFAULT_EFFECT_REVEAL, TO_REAL_PRESETS, ToRealStyle, getToReal, withToReal, PHOTO_EFFECT_SHORT, getSketchSoftness, withSketchSoftness, STYLIZE_EFFECT_PRESETS, StylizeEffect } from '../api/client'
+import { api, Slide, ProjectDetail, BgmHit, PhotosSortOrder, parseSlideMeta, RouteMeta, SavedLocation, GeocodeResult, OrganizeSuggestions, RouteSuggestion, CurationSuggestion, SpellcheckResult, AutoVideoOptions, AutoVideoTask, AutoEditOptions, AutoEditTask, TRANSITION_PRESETS, TEXT_STYLE_PRESETS, PUNCH_MAX_CHARS, KINETIC_MAX_CHARS, TextStyle, StyleTextKey, getStyleText, withStyleText, getLocationCard, withLocationCard, PHOTO_EFFECT_PRESETS, PhotoEffect, DEFAULT_EFFECT_REVEAL, TO_REAL_PRESETS, ToRealStyle, getToReal, withToReal, PHOTO_EFFECT_SHORT, getSketchSoftness, withSketchSoftness, getColorStrength, withColorStrength, STYLIZE_EFFECT_PRESETS, StylizeEffect } from '../api/client'
 import { useToast } from '../components/ToastContext'
 import GoogleAuthSection, { extractCodeFromUrl } from '../components/GoogleAuthSection'
 
@@ -1153,7 +1153,7 @@ function AutoEditModal({ opts, setOpts, hasBgm, running, phase, progress, msg, t
         <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', margin: '0.25rem 0' }}>
           <input type="checkbox" checked={(opts.stylize_ratio ?? 0) > 0} disabled={running}
             onChange={e => setOpts({ ...opts, stylize_ratio: e.target.checked ? 0.25 : 0 })} />
-          🖌️ 그림 → 실사 전환 (사진 일부, 스케치·수채 애니풍·만화로 시작)
+          🖌️ 그림 → 실사 전환 (사진 일부, 스케치·채색 스케치·수채 애니풍·만화로 시작)
         </label>
         {(opts.stylize_ratio ?? 0) > 0 && (
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.8rem', margin: '0.25rem 0 0.25rem 1.6rem' }}>
@@ -2727,6 +2727,7 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
   const [effectReveal, setEffectReveal] = useState<number>(slide.effect_reveal ?? DEFAULT_EFFECT_REVEAL)
   const [toReal, setToReal] = useState<ToRealStyle>(() => getToReal(slide))
   const [softness, setSoftness] = useState<number>(() => getSketchSoftness(slide, slide.photo_effect ?? 'none'))
+  const [colorStrength, setColorStrength] = useState<number>(() => getColorStrength(slide))
   const [textStyle, setTextStyle] = useState<TextStyle>(slide.text_style ?? 'caption')
   const styleKey: StyleTextKey = textStyle === 'punch' ? 'punch_text' : textStyle === 'kinetic' ? 'kinetic_text' : 'hero_text'
   const [styleText, setStyleText] = useState<string>(() => getStyleText(slide, styleKey))
@@ -2774,6 +2775,7 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
   useEffect(() => { setEffectReveal(slide.effect_reveal ?? DEFAULT_EFFECT_REVEAL) }, [slide.effect_reveal])
   useEffect(() => { setToReal(getToReal(slide)) }, [slide.meta])
   useEffect(() => { setSoftness(getSketchSoftness(slide, photoEffect)) }, [slide.meta, photoEffect])
+  useEffect(() => { setColorStrength(getColorStrength(slide)) }, [slide.meta])
   useEffect(() => { setTextStyle(slide.text_style ?? 'caption') }, [slide.text_style])
   useEffect(() => { setStyleText(getStyleText(slide, styleKey)) }, [slide.meta, styleKey])
   useEffect(() => {
@@ -3053,11 +3055,18 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
                   </select>
                 </div>
               )}
-              {!isVideo && !isRoute && (photoEffect === 'sketch' || photoEffect === 'sketch_soft') && (
+              {!isVideo && !isRoute && (photoEffect === 'sketch' || photoEffect === 'sketch_soft' || photoEffect === 'sketch_color') && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                   <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }} title="0 = 기존 진한 연필선, 높을수록 선이 얇고 종이가 밝음">&#x270F;&#xFE0F; 부드러움:</span>
                   <input type="range" min={0} max={100} step={5} value={Math.round(softness * 100)} onChange={e => setSoftness(parseInt(e.target.value) / 100)} onMouseUp={() => onUpdate({ meta: withSketchSoftness(slide, softness) })} onTouchEnd={() => onUpdate({ meta: withSketchSoftness(slide, softness) })} style={{ flex: 1, accentColor: '#818cf8' }} />
                   <span style={{ fontSize: '0.8rem', color: '#818cf8', minWidth: 64, textAlign: 'right' }}>{softness <= 0 ? '기본' : `${Math.round(softness * 100)}%`}</span>
+                </div>
+              )}
+              {!isVideo && !isRoute && photoEffect === 'sketch_color' && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }} title="낮을수록 종이가 많이 남고 색이 옅음, 높을수록 넓고 진하게 채색 (기본 70%)">&#x1F3A8; 채색 진하기:</span>
+                  <input type="range" min={0} max={100} step={5} value={Math.round(colorStrength * 100)} onChange={e => setColorStrength(parseInt(e.target.value) / 100)} onMouseUp={() => onUpdate({ meta: withColorStrength(slide, colorStrength) })} onTouchEnd={() => onUpdate({ meta: withColorStrength(slide, colorStrength) })} style={{ flex: 1, accentColor: '#818cf8' }} />
+                  <span style={{ fontSize: '0.8rem', color: '#818cf8', minWidth: 64, textAlign: 'right' }}>{`${Math.round(colorStrength * 100)}%`}</span>
                 </div>
               )}
               {!isVideo && !isRoute && photoEffect !== 'none' && (

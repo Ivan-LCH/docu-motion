@@ -108,7 +108,7 @@ class SlideBase(BaseModel):
     overlays: str = "[]"     # JSON array of overlay objects
     image_fit: str = "cover" # 'cover' | 'fit'
     ken_burns: int = 0       # Ken Burns 줌 강도 0~100
-    photo_effect: str = "none"   # presets.VALID_PHOTO_EFFECTS ('none'|'sketch'|'cartoon'|'sketch_soft'|'watercolor')
+    photo_effect: str = "none"   # presets.VALID_PHOTO_EFFECTS ('none'|'sketch'|'cartoon'|'sketch_soft'|'watercolor'|'sketch_color')
     effect_reveal: float = 0.45  # 0~1, 원본→효과 크로스페이드가 차지하는 슬라이드 길이 비율
     meta: str = "{}"         # 타입별 추가 데이터 JSON (route/place, hero_text/punch_text)
     text_style: str = "caption"  # presets.VALID_TEXT_STYLES

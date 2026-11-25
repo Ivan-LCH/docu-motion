@@ -71,7 +71,7 @@ class Slide(Base):
     overlays       = Column(Text, default="[]")              # JSON array of overlay objects
     image_fit      = Column(String(20), default="cover")     # 'cover' | 'fit' (fit = image top-aligned, subtitle area at bottom)
     ken_burns      = Column(Integer, default=0)               # Ken Burns intensity 0~100 (0 = no zoom, 100 = max ±15%)
-    photo_effect   = Column(String(20), default="none")      # presets.VALID_PHOTO_EFFECTS ('none'|'sketch'|'cartoon'|'sketch_soft'|'watercolor')
+    photo_effect   = Column(String(20), default="none")      # presets.VALID_PHOTO_EFFECTS ('none'|'sketch'|'cartoon'|'sketch_soft'|'watercolor'|'sketch_color')
     effect_reveal  = Column(Float, default=0.45)             # 0~1, 원본→효과 크로스페이드 비율 (0=즉시, 1=슬라이드 전체)
     meta           = Column(Text, default="{}")              # 타입별 추가 데이터 JSON (route/place 슬라이드)
     exif           = Column(Text, default="{}")              # 촬영 메타데이터 JSON {"captured_at": ISO|None, "gps": {lat,lng}|None}

@@ -12,6 +12,8 @@ ML 모델 없음. CPU only.
         선을 살짝 흐리고 옅은 흑연 음영 + 따뜻한 종이색. 종이가 밝게 남도록 휘도 맞춤은 하지 않는다.
 수채 애니풍: edge-preserving 평탄화(양자화 없음) + 파스텔 보정 + 하늘/밝은 상단 워시
         + 얇고 옅은 잉크 + 종이 결 + 하이라이트 번짐. 만화처럼 평균 휘도를 원본에 맞춘다.
+파스텔 채색 스케치: 부드러운 스케치 선 × 낮은 채도 파스텔 색면(얼룩진 칠 범위 + 가장자리 번짐 + 종이 결).
+        color_strength(0~1, 기본 0.70)가 채도·칠 범위를 정한다. 종이가 밝게 남도록 휘도 맞춤은 하지 않는다.
 
 opencv-python-headless 는 얼굴 감지용으로 이미 의존성이다.
 필터는 그걸 쓰고, cv2 를 못 읽는 환경에서는 PIL 근사로 렌더가 죽지 않게 한다.
@@ -20,7 +22,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from backend.services.presets import (DEFAULT_SKETCH_SOFTNESS, normalize_photo_effect,
+from backend.services.presets import (DEFAULT_COLOR_STRENGTH, DEFAULT_SKETCH_SOFTNESS,
+                                      normalize_photo_effect, parse_color_strength,
                                       parse_sketch_softness)
 
 
@@ -42,12 +45,13 @@ def ensure_rgb_uint8(image: np.ndarray) -> np.ndarray:
     return np.ascontiguousarray(arr)
 
 
-def stylize_photo(image: np.ndarray, effect: str, softness=None) -> np.ndarray:
+def stylize_photo(image: np.ndarray, effect: str, softness=None, color_strength=None) -> np.ndarray:
     """효과 적용 스틸. 입력과 같은 HxWx3 uint8. 'none'/알 수 없는 값은 원본 복사.
 
     softness (meta.sketch_softness, 0~1) 는 스케치 계열에만 쓰인다.
     sketch: None/0 → 기존 진한 스케치 그대로, >0 → 부드러운 스케치 파이프라인.
-    sketch_soft: None → DEFAULT_SKETCH_SOFTNESS(0.75).
+    sketch_soft / sketch_color: None → DEFAULT_SKETCH_SOFTNESS(0.75).
+    color_strength (meta.color_strength, 0~1) 는 sketch_color 에만 쓰인다. None → DEFAULT_COLOR_STRENGTH(0.70).
     """
     rgb = ensure_rgb_uint8(image)
     name = normalize_photo_effect(effect)
@@ -62,6 +66,10 @@ def stylize_photo(image: np.ndarray, effect: str, softness=None) -> np.ndarray:
         return _cartoon(rgb)
     if name == "watercolor":
         return _watercolor(rgb)
+    if name == "sketch_color":
+        strength = parse_color_strength(color_strength)
+        return _sketch_color(rgb, DEFAULT_SKETCH_SOFTNESS if soft is None else soft,
+                             DEFAULT_COLOR_STRENGTH if strength is None else strength)
     return rgb.copy()
 
 
@@ -313,6 +321,125 @@ def _watercolor_pil(rgb: np.ndarray) -> np.ndarray:
     wgt = np.where(mag >= thresh, 0.68, 1.0).astype(np.float32)
     out = np.clip(smooth.astype(np.float32) * wgt[..., None], 0, 255).astype(np.uint8)
     return _match_luma(rgb, out)
+
+
+_PAPER_RGB = np.array([255.0, 252.0, 245.0], dtype=np.float32)
+
+
+def _sketch_color(rgb: np.ndarray, softness: float = DEFAULT_SKETCH_SOFTNESS,
+                  color_strength: float = DEFAULT_COLOR_STRENGTH) -> np.ndarray:
+    """부드러운 연필선을 파스텔 색면 위에 곱한다. 종이가 밝게 남도록 _match_luma 는 쓰지 않는다."""
+    lines = _sketch_soft(rgb, softness)
+    try:
+        import cv2
+        wash = _pastel_wash_cv(rgb, color_strength, cv2)
+    except Exception:
+        wash = _pastel_wash_pil(rgb, color_strength)
+    # sketch_soft 의 중간톤 음영까지 곱하면 색면이 회색으로 죽는다 → 실제 연필 선만 곱한다.
+    luma = (
+        0.299 * lines[..., 0] + 0.587 * lines[..., 1] + 0.114 * lines[..., 2]
+    ).astype(np.float32) / 255.0
+    paper_ref = float(np.percentile(luma, 92))
+    residual = np.clip((paper_ref - luma) / max(paper_ref, 1e-3), 0, 1)
+    residual = np.clip(residual * 1.20, 0, 1)
+    out = np.clip(wash.astype(np.float32) * (1.0 - residual[..., None]), 0, 255).astype(np.uint8)
+    return np.ascontiguousarray(out)
+
+
+def _pastel_wash_cv(rgb: np.ndarray, color_strength: float, cv2) -> np.ndarray:
+    """낮은 채도 파스텔 색면 + 얼룩진 칠 범위 + 가장자리 번짐 + 종이 결. 긴 변 1280 제한.
+    color_strength 0 = 거의 빈 종이, 1 = 더 넓고 진한 칠 (수채처럼 꽉 채우지는 않는다)."""
+    s = float(np.clip(color_strength, 0.0, 1.0))
+    h, w = rgb.shape[:2]
+    work = rgb
+    long_side = max(h, w)
+    cap = 1280
+    if long_side > cap:
+        scale = cap / float(long_side)
+        work = cv2.resize(
+            rgb,
+            (max(1, int(round(w * scale))), max(1, int(round(h * scale)))),
+            interpolation=cv2.INTER_AREA,
+        )
+    if not hasattr(cv2, "edgePreservingFilter"):
+        raise RuntimeError("cv2.edgePreservingFilter unavailable")
+
+    flat = cv2.edgePreservingFilter(work, flags=cv2.RECURS_FILTER, sigma_s=80, sigma_r=0.40)
+    for _ in range(2):
+        flat = cv2.bilateralFilter(flat, d=9, sigmaColor=70, sigmaSpace=70)
+    if hasattr(cv2, "stylization"):
+        styled = cv2.stylization(flat, sigma_s=36, sigma_r=0.30)
+        flat = cv2.addWeighted(styled, 0.22, flat, 0.78, 0)
+
+    flat = _pastel(flat)
+    hsv = cv2.cvtColor(flat, cv2.COLOR_RGB2HSV).astype(np.float32)
+    # 수채(채도 ×1.16)보다 차분하게, 그래도 색은 분명히.
+    hsv[..., 1] = np.clip(hsv[..., 1] * (0.58 + 0.42 * s), 0, 255)
+    hsv[..., 2] = np.clip(hsv[..., 2] * 1.05 + 8, 0, 255)
+    wash = cv2.cvtColor(np.clip(hsv, 0, 255).astype(np.uint8), cv2.COLOR_HSV2RGB).astype(np.float32)
+
+    luma = 0.299 * work[..., 0] + 0.587 * work[..., 1] + 0.114 * work[..., 2]
+    # 가장 밝은 하이라이트(하늘·반사)만 칠하지 않은 종이에 가깝게.
+    paper_keep = np.clip((luma.astype(np.float32) - 210.0) / 35.0, 0, 1)
+    paper_keep = cv2.GaussianBlur(paper_keep, (0, 0), sigmaX=3.0)
+
+    rng = np.random.RandomState(13)
+    hh, ww = work.shape[0], work.shape[1]
+    blot = rng.rand(max(8, hh // 36), max(8, ww // 36)).astype(np.float32)
+    blot = cv2.resize(blot, (ww, hh), interpolation=cv2.INTER_CUBIC)
+    blot = cv2.GaussianBlur(blot, (0, 0), sigmaX=max(5.0, min(hh, ww) * 0.014))
+    coverage = np.clip(0.48 + 0.52 * s + (blot - 0.5) * 0.32, 0, 1)
+    coverage *= 1.0 - 0.90 * paper_keep
+    coverage = cv2.GaussianBlur(coverage, (0, 0), sigmaX=2.2)
+
+    # 칠 가장자리 번짐
+    bleed = cv2.GaussianBlur(wash, (0, 0), sigmaX=3.8)
+    edge = cv2.dilate((coverage * 255).astype(np.uint8), np.ones((5, 5), np.uint8)).astype(np.float32) / 255.0
+    edge = np.clip(edge - coverage, 0, 1)
+    wash = wash * (1.0 - 0.50 * edge[..., None]) + bleed * (0.50 * edge[..., None])
+
+    painted = _PAPER_RGB * (1.0 - coverage[..., None]) + wash * coverage[..., None]
+
+    # 은은한 종이 결
+    noise = rng.randn(hh, ww).astype(np.float32)
+    noise = cv2.GaussianBlur(noise, (0, 0), sigmaX=0.65)
+    fiber = cv2.filter2D(noise, -1, np.ones((1, 9), np.float32) / 9.0)
+    painted = np.clip(painted * (1.0 + fiber[..., None] * 0.020), 0, 255)
+
+    out = painted.astype(np.uint8)
+    if out.shape[0] != h or out.shape[1] != w:
+        out = cv2.resize(out, (w, h), interpolation=cv2.INTER_LINEAR)
+    return np.ascontiguousarray(out)
+
+
+def _pastel_wash_pil(rgb: np.ndarray, color_strength: float) -> np.ndarray:
+    """cv2 가 없을 때의 근사. 다운스케일 블러 평탄화 + 파스텔 + 채도 감쇠 + 얼룩진 칠 범위."""
+    from PIL import Image, ImageEnhance, ImageFilter
+
+    s = float(np.clip(color_strength, 0.0, 1.0))
+    h, w = rgb.shape[:2]
+    im = Image.fromarray(rgb, mode="RGB")
+    small = im.resize((max(1, w // 2), max(1, h // 2)), Image.BILINEAR)
+    small = small.filter(ImageFilter.SMOOTH_MORE).filter(ImageFilter.SMOOTH_MORE)
+    smooth = np.asarray(small.resize((w, h), Image.BILINEAR)).astype(np.uint8)
+    smooth = _pastel(smooth)
+    smooth = ImageEnhance.Color(Image.fromarray(smooth, mode="RGB")).enhance(0.58 + 0.42 * s)
+    wash = np.asarray(ImageEnhance.Brightness(smooth).enhance(1.05)).astype(np.float32)
+    wash = np.clip(wash + 8.0, 0, 255)
+
+    luma = (0.299 * rgb[..., 0] + 0.587 * rgb[..., 1] + 0.114 * rgb[..., 2]).astype(np.float32)
+    paper_keep = np.clip((luma - 210.0) / 35.0, 0, 1)
+
+    rng = np.random.RandomState(13)
+    blot = rng.rand(max(8, h // 36), max(8, w // 36)).astype(np.float32)
+    blot = _resize_field(blot, w, h)
+    coverage = np.clip(0.48 + 0.52 * s + (blot - 0.5) * 0.32, 0, 1)
+    coverage *= 1.0 - 0.90 * paper_keep
+    cov_im = Image.fromarray((coverage * 255).astype(np.uint8), mode="L").filter(ImageFilter.GaussianBlur(2.2))
+    coverage = np.asarray(cov_im).astype(np.float32) / 255.0
+
+    painted = _PAPER_RGB * (1.0 - coverage[..., None]) + wash * coverage[..., None]
+    return np.clip(painted, 0, 255).astype(np.uint8)
 
 
 def _cartoon(rgb: np.ndarray) -> np.ndarray:
