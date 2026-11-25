@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { api } from '../api/client'
+import { api, DriveConfig } from '../api/client'
 import { useToast } from './ToastContext'
 
 // ─── 코드 추출 유틸 ────────────────────────────
@@ -12,6 +12,9 @@ export function extractCodeFromUrl(input: string): string {
   return input.trim()
 }
 
+type AuthTarget = 'youtube' | 'photos' | 'drive'
+const TARGET_LABEL: Record<AuthTarget, string> = { youtube: 'YouTube', photos: 'Google Photos', drive: 'Google Drive' }
+
 // ─── Google 계정 인증 섹션 ──────────────────────
 export default function GoogleAuthSection() {
   const { toast } = useToast()
@@ -19,22 +22,24 @@ export default function GoogleAuthSection() {
   const [photosAuth, setPhotosAuth] = useState<boolean | null>(null)
   const [showCodeInput, setShowCodeInput] = useState(false)
   const [codeInput, setCodeInput] = useState('')
-  const [codeTarget, setCodeTarget] = useState<'youtube' | 'photos'>('youtube')
+  const [drive, setDrive] = useState<DriveConfig | null>(null)
+  const [codeTarget, setCodeTarget] = useState<AuthTarget>('youtube')
   const [exchanging, setExchanging] = useState(false)
 
   const checkStatus = useCallback(() => {
     api.youtubeAuthStatus().then(r => setYtAuth(r.authenticated)).catch(() => setYtAuth(false))
     api.photosAuthStatus().then(r => setPhotosAuth(r.authenticated)).catch(() => setPhotosAuth(false))
+    api.driveConfig().then(setDrive).catch(() => setDrive({ enabled: false, client_id: '', api_key: '', app_id: '', authenticated: false, reason: '설정 확인 실패' }))
   }, [])
 
   useEffect(() => { checkStatus() }, [checkStatus])
 
-  const handleAuth = async (target: 'youtube' | 'photos') => {
+  const handleAuth = async (target: AuthTarget) => {
     try {
       setCodeTarget(target)
       const { auth_url } = target === 'youtube'
         ? await api.youtubeAuthUrl()
-        : await api.photosAuthUrl()
+        : target === 'photos' ? await api.photosAuthUrl() : await api.driveAuthUrl()
       window.open(auth_url, '_blank')
       setShowCodeInput(true)
       setCodeInput('')
@@ -50,10 +55,12 @@ export default function GoogleAuthSection() {
     try {
       if (codeTarget === 'youtube') {
         await api.youtubeExchangeCode(code)
-      } else {
+      } else if (codeTarget === 'photos') {
         await api.photosExchangeCode(code)
+      } else {
+        await api.driveExchangeCode(code)
       }
-      toast(`${codeTarget === 'youtube' ? 'YouTube' : 'Google Photos'} 인증 완료!`, 'success')
+      toast(`${TARGET_LABEL[codeTarget]} 인증 완료!`, 'success')
       setShowCodeInput(false)
       setCodeInput('')
       checkStatus()
@@ -86,6 +93,17 @@ export default function GoogleAuthSection() {
           <span style={{ color: 'var(--text-secondary)' }}>Google Photos</span>
           {photosAuth === false && (
             <button className="btn btn-ghost" style={{ fontSize: '0.7rem', padding: '0 0.3rem' }} onClick={() => handleAuth('photos')}>인증</button>
+          )}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', opacity: drive && !drive.enabled ? 0.5 : 1 }}
+          title={drive && !drive.enabled ? drive.reason : undefined}>
+          <span style={{ color: !drive || !drive.enabled ? 'var(--text-muted)' : drive.authenticated ? 'var(--success)' : 'var(--error)' }}>
+            {drive === null ? '...' : drive.enabled && drive.authenticated ? '●' : '○'}
+          </span>
+          <span style={{ color: 'var(--text-secondary)' }}>Google Drive</span>
+          {drive && !drive.enabled && <span style={{ color: 'var(--text-muted)' }}>(관리자 설정 필요)</span>}
+          {drive && drive.enabled && !drive.authenticated && (
+            <button className="btn btn-ghost" style={{ fontSize: '0.7rem', padding: '0 0.3rem' }} onClick={() => handleAuth('drive')}>인증</button>
           )}
         </div>
       </div>

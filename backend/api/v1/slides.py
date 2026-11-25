@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from typing import List, Optional
 
@@ -225,6 +226,8 @@ _TO_REAL_META_KEY = "effect_to_real"   # 2단계: 그림→실사 마스크 (bru
 _TO_REAL_VALUES = ("brush", "wipe", "dissolve")
 _SOFTNESS_META_KEY = "sketch_softness"   # 스케치 계열 부드러움 0~1 (빈 값 = 효과 기본)
 _COLOR_STRENGTH_META_KEY = "color_strength"   # sketch_color 채색 진하기 0~1 (빈 값 = 기본 0.70)
+# 간편 자동 자막 원본 (장소 / 느낌). 자동 편집은 절대 지우지 않는다. 빈 문자열 → 키 삭제.
+_EASY_META_LIMITS = {"easy_place": 40, "easy_feel": 60}
 
 
 def _merge_style_meta(existing: str, incoming: str) -> str:
@@ -236,7 +239,8 @@ def _merge_style_meta(existing: str, incoming: str) -> str:
     except Exception:
         inc = {}
     if not isinstance(inc, dict) or not any(k in inc for k in (*_STYLE_META_KEYS, _CARD_META_KEY, _TO_REAL_META_KEY,
-                                                                  _SOFTNESS_META_KEY, _COLOR_STRENGTH_META_KEY)):
+                                                                  _SOFTNESS_META_KEY, _COLOR_STRENGTH_META_KEY,
+                                                                  *_EASY_META_LIMITS)):
         return existing
     try:
         cur = json.loads(existing) if existing else {}
@@ -282,7 +286,52 @@ def _merge_style_meta(existing: str, incoming: str) -> str:
             cur.pop(_COLOR_STRENGTH_META_KEY, None)
         else:
             cur[_COLOR_STRENGTH_META_KEY] = round(v, 3)
+    for k, limit in _EASY_META_LIMITS.items():
+        if k not in inc:
+            continue
+        v = " ".join(str(inc[k]).split())[:limit] if isinstance(inc[k], str) else ""
+        if v:
+            cur[k] = v
+        else:
+            cur.pop(k, None)
     return json.dumps(cur, ensure_ascii=False)
+
+
+def _meta_dict(raw) -> dict:
+    try:
+        m = json.loads(raw or "{}")
+        return m if isinstance(m, dict) else {}
+    except Exception:
+        return {}
+
+
+def _field_snapshot(slide: Slide, meta: dict) -> dict:
+    """자동 계획이 정하는 필드 값 (사용자 수정 감지용 비교)."""
+    card = meta.get(_CARD_META_KEY) if isinstance(meta.get(_CARD_META_KEY), dict) else None
+    return {
+        "transition": slide.transition or "none",
+        "ken_burns": int(slide.ken_burns or 0),
+        "photo_effect": slide.photo_effect or "none",
+        "effect_reveal": round(float(slide.effect_reveal if slide.effect_reveal is not None else 0.45), 4),
+        "effect_to_real": str(meta.get(_TO_REAL_META_KEY) or ""),
+        "location_card": (str(card.get("title") or ""), str(card.get("sub") or "")) if card else None,
+    }
+
+
+def mark_user_edits(before: dict, after: dict, meta_json: str) -> str:
+    """자동 계획된 슬라이드(meta.auto_fields 있음)에서 사용자가 자동 필드를 고치면
+    meta.user_locked=true, 그 필드를 auto_fields → user_fields 로 옮긴다."""
+    m = _meta_dict(meta_json)
+    if "auto_fields" not in m:
+        return meta_json
+    changed = [k for k in before if before[k] != after.get(k)]
+    if not changed:
+        return meta_json
+    m["user_locked"] = True
+    m["auto_fields"] = [f for f in (m.get("auto_fields") or []) if f not in changed]
+    uf = list(m.get("user_fields") or [])
+    m["user_fields"] = uf + [k for k in changed if k not in uf]
+    return json.dumps(m, ensure_ascii=False)
 
 
 @router.put("/{project_id}/slides")
@@ -297,6 +346,7 @@ def save_slides(
     for s_data in slides:
         slide = db.query(Slide).filter(Slide.id == s_data.id, Slide.project_id == project_id).first()
         if slide:
+            before = _field_snapshot(slide, _meta_dict(slide.meta))
             slide.order_index    = s_data.order_index
             slide.text           = s_data.text
             slide.image_filename = s_data.image_filename
@@ -329,6 +379,8 @@ def save_slides(
             slide.effect_reveal  = s_data.effect_reveal if getattr(s_data, 'effect_reveal', None) is not None else 0.45
             slide.text_style     = s_data.text_style
             slide.meta           = _merge_style_meta(slide.meta, s_data.meta)
+            slide.meta           = mark_user_edits(before, _field_snapshot(slide, _meta_dict(slide.meta)),
+                                                   slide.meta)
 
     # stage 계산
     all_slides = db.query(Slide).filter(Slide.project_id == project_id).all()
@@ -337,6 +389,27 @@ def save_slides(
     project.updated_at = datetime.utcnow()
     db.commit()
     return {"ok": True}
+
+
+class SlideLockRequest(BaseModel):
+    locked: bool
+
+
+@router.post("/{project_id}/slides/{slide_id}/lock")
+def set_slide_lock(project_id: str, slide_id: str, req: SlideLockRequest, db: Session = Depends(get_db)):
+    """🔒 토글: locked=true → 자동 계획/다시 섞기에서 제외. false → 다시 자동으로 관리 (user_fields 초기화)."""
+    slide = db.query(Slide).filter(Slide.id == slide_id, Slide.project_id == project_id).first()
+    if not slide:
+        raise HTTPException(status_code=404, detail="Slide not found")
+    m = _meta_dict(slide.meta)
+    if req.locked:
+        m["user_locked"] = True
+    else:
+        m.pop("user_locked", None)
+        m.pop("user_fields", None)
+    slide.meta = json.dumps(m, ensure_ascii=False)
+    db.commit()
+    return {"ok": True, "meta": slide.meta}
 
 
 @router.delete("/{project_id}/slides/{slide_id}", status_code=204)

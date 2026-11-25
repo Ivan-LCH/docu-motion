@@ -21,6 +21,11 @@ DocuMotion - 자동 편집 1단계 (시칠리안 브이로그 감성 하이라�
 Stage 2: opts.stylize_ratio (0~0.5, 기본 0) /
          stylize_effect ('auto'|'sketch'|'cartoon'|'sketch_soft'|'watercolor'|'sketch_color').
          auto 는 watercolor → sketch_color → sketch_soft → cartoon → sketch 순환.
+
+간편 자동 (opts.easy=True): 사용자가 적은 meta.easy_place/easy_feel 이 자막의 원본이다 (절대 지우지 않음).
+  위치 카드는 resolve_easy_captions 규칙으로 만들고, 중간 키네틱 문구·나레이션은 끈다 (인트로 제목만).
+세부 편집: 계획이 정한 필드는 meta.auto_fields 에 기록. 사용자가 그 필드를 고치면 meta.user_locked
+  (slides API) → 이후 계획/다시 섞기는 그 슬라이드의 효과를 건드리지 않는다. opts.seed 로 순환 시작점을 바꾼다.
 """
 from __future__ import annotations
 
@@ -39,7 +44,7 @@ from backend.services import task_status
 from backend.services.color_grade import VALID_STYLE_PRESETS
 from backend.services.exif_service import GROUP_RADIUS_KM, haversine_km
 from backend.services.geo_label import city_short, parse_address_parts, reverse_geocode
-from backend.services.presets import AUTO_TRANSITION_CYCLE
+from backend.services.presets import AUTO_TRANSITION_CYCLE, PROJECT_META_KEYS, project_meta
 
 logger = get_logger(__name__)
 
@@ -64,13 +69,20 @@ DEFAULT_OPTS: dict = {
     "stylize_ratio": 0.0,      # 2단계: 그림→실사 전환을 넣을 사진 비율 (0 = 끔, 최대 0.5)
     "stylize_effect": "auto",  # 'auto'(_STYLIZE_CYCLE 순환) | 'sketch' | 'cartoon' | 'sketch_soft' | 'watercolor' | 'sketch_color'
     "stylize_reveal": 0.5,     # 전환 창 (슬라이드 길이 비율)
+    "easy": False,             # 간편 자동: easy_place/easy_feel → 카드, 중간 키네틱·나레이션 끔
+    "seed": 0,                 # 다시 섞기: 전환/그림 스타일/Ken Burns 순환 시작점 (0 = 기존과 동일)
+    "require_bgm": True,       # False → BGM 확인 생략 (간편 자동 길이 추정용 dry-run)
 }
 
 KINETIC_MAX_CHARS = 8
 _INTRO_MAX_SLIDES = 4
 # 자동 편집이 관리하는 meta 키 (재실행 시 초기화)
 _MANAGED_META_KEYS = ("location_card", "kinetic_text", "kinetic_sub", "kinetic_highlight",
-                      "intro_kinetic", "bgm_fade_in", "effect_to_real", "auto_stylized")
+                      "intro_kinetic", "bgm_fade_in", "effect_to_real", "auto_stylized", "easy_duration")
+# 계획이 정하는 슬라이드 필드 (meta.auto_fields 에 기록 → 에디터 「자동」 배지, 사용자 수정 시 user_locked)
+AUTO_FIELD_KEYS = ("transition", "ken_burns", "photo_effect", "effect_reveal", "effect_to_real",
+                   "location_card", "easy_duration")
+_EFFECT_FIELDS = ("transition", "ken_burns", "photo_effect", "effect_reveal", "effect_to_real")
 _TO_REAL_CYCLE = ("brush", "wipe", "brush", "dissolve")
 _STYLIZE_CYCLE = ("watercolor", "sketch_color", "sketch_soft", "cartoon", "sketch")   # stylize_effect='auto' 순환 순서
 _STYLIZE_MAX = 6
@@ -370,8 +382,9 @@ def pick_kinetic_slides(slides: list, exclude_ids: set, blocked_idx: set) -> lis
 
 
 def pick_stylize_slides(slides: list, ratio: float, blocked_idx: set,
-                        prefer_ids: set = frozenset()) -> list[int]:
-    """그림→실사 전환을 넣을 사진 인덱스. 위치 카드 컷 우선, 서로 인접 금지, 마지막 컷 제외."""
+                        prefer_ids: set = frozenset(), phase: float = 0.0) -> list[int]:
+    """그림→실사 전환을 넣을 사진 인덱스. 위치 카드 컷 우선, 서로 인접 금지, 마지막 컷 제외.
+    phase(-0.5~0.5): 다시 섞기 때 고르게 뽑는 목표 위치를 칸 안에서 옮긴다 (0 = 기존)."""
     n = len(slides)
     cand = [i for i, s in enumerate(slides)
             if is_photo(s) and i < n - 1 and i not in blocked_idx]
@@ -387,7 +400,7 @@ def pick_stylize_slides(slides: list, ratio: float, blocked_idx: set,
     for j in range(k):                              # 2) 나머지는 고르게
         if len(chosen) >= k:
             break
-        target = cand[0] + (cand[-1] - cand[0]) * (j + 0.5) / k
+        target = cand[0] + (cand[-1] - cand[0]) * min(1.0, max(0.0, (j + 0.5 + phase) / k))
         for i in sorted(cand, key=lambda c: (abs(c - target), c)):
             if i not in chosen and all(abs(i - c) > 1 for c in chosen):
                 chosen.append(i)
@@ -410,7 +423,7 @@ def _resolve_opts(opts: Optional[dict]) -> dict:
     return o
 
 
-def ensure_bgm(db, project: Project, bgm_path: Optional[str]) -> str:
+def ensure_bgm(db, project: Project, bgm_path: Optional[str], commit: bool = True) -> str:
     """BGM 확인/설치. bgm_path 가 있으면 assets 로 'bgm_<이름>' 복사 후 프로젝트에 지정.
     둘 다 없으면 AutoEditError('BGM 필요')."""
     assets = Path(config.OUTPUTS_DIR) / project.id / "assets"
@@ -424,7 +437,8 @@ def ensure_bgm(db, project: Project, bgm_path: Optional[str]) -> str:
         if src.resolve() != dst.resolve():
             shutil.copy2(src, dst)
         project.bgm_filename = name
-        db.commit()
+        if commit:
+            db.commit()
         return name
     name = (project.bgm_filename or "").strip()
     if not name or not (assets / name).is_file():
@@ -432,9 +446,251 @@ def ensure_bgm(db, project: Project, bgm_path: Optional[str]) -> str:
     return name
 
 
-def plan_auto_edit(db, project_id: str, opts: Optional[dict] = None) -> dict:
-    """자동 편집 계획을 슬라이드/프로젝트에 기록하고 요약 dict 반환 (렌더는 하지 않음)."""
+# ────────────────────────────────────────────────────────────────────────── #
+# 간편 자동: 장소·느낌 → 위치 카드
+# ────────────────────────────────────────────────────────────────────────── #
+def resolve_easy_captions(entries: list[dict], project_title: str, cluster_card=None) -> list[dict]:
+    """간편 자동 자막 해석 (순수 함수).
+
+    entries: 타임라인 순서의 미디어 슬라이드 [{id, place, feel, cluster}] (cluster: GPS 묶음 번호|None)
+    cluster_card(cluster) → {"title","sub"}|None : 그 GPS 묶음의 역지오코딩 카드 (묶음당 1회, 실패 시 None)
+
+    실제 장소(effective place) 규칙: 자기 easy_place → (자막 없는 새 GPS 묶음의 첫 컷이면) GPS 지명
+      → 앞 장소 이어받기 → GPS 지명 → 프로젝트 제목.
+    카드 표시: 자기 장소나 느낌을 적은 컷 (제목=실제 장소, 보조=느낌)
+      + 사용자 자막이 하나도 없는 GPS 묶음의 첫 컷 (제목=지명, 보조=지역·날짜).
+      자막이 있는 묶음은 사용자 카드가 이미 있으니 GPS 카드를 겹쳐 띄우지 않는다.
+    반환: [{id, place, source('user'|'gps'|'inherit'|'title'), card|None, scene_start(bool)}]"""
+    cluster_card = cluster_card or (lambda c: None)
+    geo_cache: dict = {}
+
+    def geo(c):
+        if c not in geo_cache:
+            try:
+                geo_cache[c] = cluster_card(c)
+            except Exception:
+                geo_cache[c] = None
+        return geo_cache[c]
+
+    def txt(v) -> str:
+        return " ".join(str(v or "").split())
+
+    captioned = {e.get("cluster") for e in entries
+                 if (txt(e.get("place")) or txt(e.get("feel"))) and e.get("cluster") is not None}
+    out, prev, seen = [], None, set()
+    for e in entries:
+        place, feel, c = txt(e.get("place")), txt(e.get("feel")), e.get("cluster")
+        new_cluster = c is not None and c not in seen
+        if c is not None:
+            seen.add(c)
+        g = None
+        if place:
+            eff, source = place, "user"
+        elif new_cluster and c not in captioned and (g := geo(c)):
+            eff, source = g["title"], "gps"
+        elif prev:
+            eff, source = prev, "inherit"
+        elif c is not None and (g := geo(c)):
+            eff, source = g["title"], "gps"
+        else:
+            eff, source = txt(project_title), "title"
+        card = None
+        if place or feel:
+            if eff:
+                card = {"title": eff, "sub": feel}
+            elif feel:
+                card = {"title": feel, "sub": ""}
+        elif source == "gps" and g and new_cluster:
+            card = {"title": eff, "sub": str(g.get("sub") or "")}
+        out.append({"id": e.get("id"), "place": eff, "source": source, "card": card,
+                    "scene_start": bool(eff) and eff != prev and source in ("user", "gps")
+                    and prev is not None})
+        prev = eff or prev
+    return out
+
+
+def plan_easy_cards(project: Project, slides: list, use_geocode: bool = True,
+                    radius_km: float = GROUP_RADIUS_KM) -> tuple[list[dict], set]:
+    """meta.easy_place/easy_feel → meta.location_card. 반환: (카드 요약, 장면 전환 슬라이드 id 집합)."""
+    media = [s for s in slides if is_media(s)]
+    clusters = cluster_slides(media, radius_km) if use_geocode else []
+    member = {}
+    for ci, c in enumerate(clusters):
+        for s in c["slides"]:
+            member[s.id] = ci
+
+    def cluster_card(ci):
+        lat, lng = clusters[ci]["gps"]
+        return card_from_geo(reverse_geocode(lat, lng), _date_label(_earliest(clusters[ci]["slides"])))
+
+    entries = []
+    for s in media:
+        m = _meta(s)
+        entries.append({"id": s.id, "place": m.get("easy_place"), "feel": m.get("easy_feel"),
+                        "cluster": member.get(s.id)})
+    title = (project.title_text or "").strip() or (project.name or "").strip()
+    resolved = resolve_easy_captions(entries, title, cluster_card)
+    by_id = {s.id: s for s in media}
+    cards, scenes = [], set()
+    for r in resolved:
+        s = by_id[r["id"]]
+        if r["scene_start"]:
+            scenes.add(s.id)
+        if not r["card"]:
+            continue
+        src = "easy" if r["source"] != "gps" or _meta(s).get("easy_feel") else "gps"
+        m = _meta(s)
+        m["location_card"] = {**r["card"], "source": src}
+        _set_meta(s, m)
+        cards.append({"slide_id": s.id, "order_index": s.order_index, "cluster_start_id": s.id,
+                      "title": r["card"]["title"], "sub": r["card"]["sub"], "source": src})
+    return cards, scenes
+
+
+# ────────────────────────────────────────────────────────────────────────── #
+# 잠금 / 자동 필드
+# ────────────────────────────────────────────────────────────────────────── #
+def is_locked(m: dict) -> bool:
+    return m.get("user_locked") is True
+
+
+def _add_auto(m: dict, *fields) -> None:
+    cur = [f for f in (m.get("auto_fields") or []) if f in AUTO_FIELD_KEYS]
+    for f in fields:
+        if f not in cur:
+            cur.append(f)
+    m["auto_fields"] = cur
+
+
+def consolidate_project_meta(slides: list) -> dict:
+    """프로젝트 단위 meta(PROJECT_META_KEYS)를 slides[0] 으로 모은다 (순서 변경/삭제 대비)."""
+    if not slides:
+        return {}
+    pm = project_meta(slides)
+    for i, s in enumerate(slides):
+        m = _meta(s)
+        changed = False
+        for k in PROJECT_META_KEYS:
+            if i == 0:
+                if k in pm and m.get(k) != pm[k]:
+                    m[k] = pm[k]
+                    changed = True
+            elif k in m:
+                m.pop(k)
+                changed = True
+        if changed:
+            _set_meta(s, m)
+    return pm
+
+
+def set_project_meta(slides: list, **kv) -> None:
+    """slides[0].meta 에 프로젝트 단위 키 기록 (None → 삭제)."""
+    if not slides:
+        return
+    m = _meta(slides[0])
+    for k, v in kv.items():
+        if v is None:
+            m.pop(k, None)
+        else:
+            m[k] = v
+    _set_meta(slides[0], m)
+
+
+# ────────────────────────────────────────────────────────────────────────── #
+# 효과 (전환 · 그림→실사 · Ken Burns) — 계획과 다시 섞기 공용
+# ────────────────────────────────────────────────────────────────────────── #
+def _seed_phase(seed: int) -> float:
+    return 0.0 if not seed else ((seed * 0.618034) % 1.0) - 0.5
+
+
+def apply_effects(slides: list, *, n_intro: int, card_ids: set, scene_ids: set, first_scene,
+                  ratio: float, eff: str, reveal: float, seed: int = 0) -> tuple[list, list]:
+    """잠기지 않은 슬라이드에 그림→실사 · 전환 · Ken Burns 를 정한다. 반환: (transitions, stylized).
+    seed 는 각 순환의 시작점과 그림 슬라이드 위치를 옮긴다 (0 = 기존 결과와 동일)."""
+    seed = int(seed or 0)
+    locked = {s.id for s in slides if is_locked(_meta(s))}
+    stylized = []
+    if ratio > 0:
+        blocked = set(range(n_intro)) | {i for i, s in enumerate(slides) if s.id in locked}
+        idxs = pick_stylize_slides(slides, ratio, blocked, card_ids, phase=_seed_phase(seed))
+        for j, i in enumerate(idxs):
+            s = slides[i]
+            fx = eff if eff in _STYLIZE_CYCLE else _STYLIZE_CYCLE[(j + seed) % len(_STYLIZE_CYCLE)]
+            style = _TO_REAL_CYCLE[(j + seed) % len(_TO_REAL_CYCLE)]
+            s.photo_effect = fx
+            s.effect_reveal = reveal
+            m = _meta(s)
+            m["effect_to_real"] = style
+            m["auto_stylized"] = True
+            _add_auto(m, "photo_effect", "effect_reveal", "effect_to_real")
+            _set_meta(s, m)
+            stylized.append({"slide_id": s.id, "order_index": s.order_index,
+                             "effect": fx, "to_real": style})
+
+    transitions, whip, cyc = [], seed % 2, seed % len(AUTO_TRANSITION_CYCLE)
+    for i, s in enumerate(slides):
+        if s.id in locked:
+            transitions.append(s.transition or "none")
+            continue
+        if i == 0 or i < n_intro:
+            t = "crossfade"
+        elif i == n_intro:
+            t = "zoom_through"
+        elif s.id in scene_ids and s.id != first_scene:
+            t = ("whip_left", "whip_right")[whip % 2]
+            whip += 1
+        else:
+            t = AUTO_TRANSITION_CYCLE[cyc % len(AUTO_TRANSITION_CYCLE)]
+            cyc += 1
+        s.transition = t
+        transitions.append(t)
+        m = _meta(s)
+        _add_auto(m, "transition")
+        if is_photo(s) and ((s.ken_burns or 0) < 20 or "ken_burns" in (m.get("auto_fields") or [])):
+            s.ken_burns = 35 + ((i + seed * 7) * 17) % 40
+            _add_auto(m, "ken_burns")
+        _set_meta(s, m)
+    return transitions, stylized
+
+
+def _reset_slide(s: Slide, easy: bool) -> None:
+    """재계획 전 초기화: 자동 편집 meta 제거 (잠긴 슬라이드의 효과·사용자가 고친 카드는 유지),
+    이미지 슬라이드는 무자막·무나레이션 (이전 나레이션 텍스트는 meta.prev_text 에 백업).
+    meta.easy_place/easy_feel(간편 자동 자막 원본)은 절대 건드리지 않는다."""
+    m = _meta(s)
+    locked = is_locked(m)
+    user_fields = set(m.get("user_fields") or [])
+    if m.get("auto_stylized") and not locked:      # 이전 자동 편집이 넣은 그림 효과만 되돌린다
+        s.photo_effect = "none"
+        s.effect_reveal = 0.45
+    for k in _MANAGED_META_KEYS:
+        if locked and k in ("effect_to_real", "auto_stylized"):
+            continue
+        if k == "location_card" and "location_card" in user_fields:
+            continue
+        m.pop(k, None)
+    if locked:      # 잠긴 슬라이드: 아직 자동 값인 효과 필드 기록만 남긴다 (카드/길이는 다시 계산)
+        m["auto_fields"] = [f for f in (m.get("auto_fields") or []) if f in _EFFECT_FIELDS]
+    else:
+        m.pop("auto_fields", None)
+    if s.slide_type != "video":     # 영상 클립의 자막(JSON)·원본 오디오는 그대로 둔다
+        if (s.text or "").strip():
+            m["prev_text"] = s.text
+        s.text = ""
+        s.use_tts = 0
+        s.text_style = "none"
+    _set_meta(s, m)
+
+
+# ────────────────────────────────────────────────────────────────────────── #
+# 계획 (DB 반영)
+# ────────────────────────────────────────────────────────────────────────── #
+def plan_auto_edit(db, project_id: str, opts: Optional[dict] = None, commit: bool = True) -> dict:
+    """자동 편집 계획을 슬라이드/프로젝트에 기록하고 요약 dict 반환 (렌더는 하지 않음).
+    commit=False → flush 만 (호출 측이 rollback 하면 dry-run: 간편 자동 길이 추정)."""
     o = _resolve_opts(opts)
+    easy = bool(o.get("easy"))
+    seed = int(o.get("seed") or 0)
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise AutoEditError("Project not found")
@@ -442,24 +698,18 @@ def plan_auto_edit(db, project_id: str, opts: Optional[dict] = None) -> dict:
               .order_by(Slide.order_index).all())
     if not slides:
         raise AutoEditError("슬라이드가 없습니다")
-    bgm = ensure_bgm(db, project, o.get("bgm_path"))
+    bgm = ensure_bgm(db, project, o.get("bgm_path"), commit=commit) if o.get("require_bgm", True) \
+        else (project.bgm_filename or "")
     n = len(slides)
+    consolidate_project_meta(slides)
 
-    # 0) 초기화: 자동 편집 meta 제거, 전부 무자막·무나레이션 (이전 나레이션 텍스트는 meta 에 백업)
+    # 0) 초기화
+    user_cards = {}
     for s in slides:
         m = _meta(s)
-        if m.get("auto_stylized"):                  # 이전 자동 편집이 넣은 그림 효과만 되돌린다
-            s.photo_effect = "none"
-            s.effect_reveal = 0.45
-        for k in _MANAGED_META_KEYS:
-            m.pop(k, None)
-        if s.slide_type != "video":     # 영상 클립의 자막(JSON)·원본 오디오는 그대로 둔다
-            if (s.text or "").strip():
-                m["prev_text"] = s.text
-            s.text = ""
-            s.use_tts = 0
-            s.text_style = "none"
-        _set_meta(s, m)
+        if "location_card" in (m.get("user_fields") or []) and m.get("location_card"):
+            user_cards[s.id] = m["location_card"]
+        _reset_slide(s, easy)
 
     # 1) 음악 인트로
     sd = o["slide_duration"]
@@ -471,7 +721,7 @@ def plan_auto_edit(db, project_id: str, opts: Optional[dict] = None) -> dict:
     if n_intro:
         m0 = _meta(slides[0])
         m0["bgm_fade_in"] = float(o["bgm_fade_in"])
-        if o["kinetic"] and intro_title and is_media(slides[0]):
+        if (o["kinetic"] or easy) and intro_title and is_media(slides[0]):
             slides[0].text_style = "kinetic"
             m0["kinetic_text"] = intro_title
             m0["intro_kinetic"] = True
@@ -482,16 +732,26 @@ def plan_auto_edit(db, project_id: str, opts: Optional[dict] = None) -> dict:
                              **({"sub": m0["kinetic_sub"]} if m0.get("kinetic_sub") else {})}
         _set_meta(slides[0], m0)
 
-    # 2) 위치 카드
-    cards = []
-    if o["location_cards"]:
+    # 2) 위치 카드 (간편 자동: 장소·느낌 자막 → 카드)
+    cards, easy_scenes = [], set()
+    if easy:
+        cards, easy_scenes = plan_easy_cards(project, slides, use_geocode=bool(o["use_geocode"]),
+                                             radius_km=float(o["cluster_km"]))
+    elif o["location_cards"]:
         cards = plan_location_cards(project, slides, use_geocode=bool(o["use_geocode"]),
                                     radius_km=float(o["cluster_km"]))
+    for s in slides:                                 # 사용자가 직접 고친 카드는 그대로 되돌려 둔다
+        m = _meta(s)
+        if s.id in user_cards:
+            m["location_card"] = user_cards[s.id]
+        elif m.get("location_card"):
+            _add_auto(m, "location_card")
+        _set_meta(s, m)
     card_ids = {c["slide_id"] for c in cards}
 
-    # 3) 중간 키네틱 문구
+    # 3) 중간 키네틱 문구 (간편 자동은 끔 — 자막은 장소 카드로만)
     kinetic = []
-    if o["kinetic"]:
+    if o["kinetic"] and not easy:
         blocked = set(range(n_intro)) | ({0} if kinetic_intro else set())
         idxs = pick_kinetic_slides(slides, card_ids, blocked)
         times = [_captured(slides[i]) for i in idxs]
@@ -512,52 +772,31 @@ def plan_auto_edit(db, project_id: str, opts: Optional[dict] = None) -> dict:
             kinetic.append({"slide_id": s.id, "order_index": s.order_index, "text": text,
                             "highlight": text.split()[-1]})
 
-    # 4) 선택: 일부 나레이션 (기본 꺼짐)
+    # 4) 선택: 일부 나레이션 (기본 꺼짐, 간편 자동은 항상 끔)
     narrated = 0
-    if o["narration"]:
+    if o["narration"] and not easy:
         narrated = _narrate_some(project, slides, n_intro,
                                  {k["slide_id"] for k in kinetic} | ({slides[0].id} if kinetic_intro else set()),
                                  float(o["narration_ratio"]), o["tone"])
 
-    # 4.5) 2단계: 그림 → 실사
-    stylized = []
+    # 4.5) 2단계 그림 → 실사 + 5) 전환 + Ken Burns (잠긴 슬라이드 제외)
     ratio = max(0.0, min(0.5, float(o.get("stylize_ratio") or 0.0)))
-    if ratio > 0:
-        eff = str(o.get("stylize_effect") or "auto").lower()
-        reveal = max(0.2, min(0.7, float(o.get("stylize_reveal") or 0.5)))
-        idxs = pick_stylize_slides(slides, ratio, set(range(n_intro)), card_ids)
-        for j, i in enumerate(idxs):
-            s = slides[i]
-            fx = eff if eff in _STYLIZE_CYCLE else _STYLIZE_CYCLE[j % len(_STYLIZE_CYCLE)]
-            style = _TO_REAL_CYCLE[j % len(_TO_REAL_CYCLE)]
-            s.photo_effect = fx
-            s.effect_reveal = reveal
-            m = _meta(s)
-            m["effect_to_real"] = style
-            m["auto_stylized"] = True
-            _set_meta(s, m)
-            stylized.append({"slide_id": s.id, "order_index": s.order_index,
-                             "effect": fx, "to_real": style})
+    eff = str(o.get("stylize_effect") or "auto").lower()
+    reveal = max(0.2, min(0.7, float(o.get("stylize_reveal") or 0.5)))
+    if easy:
+        scene_ids = easy_scenes
+        first_scene = None
+    else:
+        scene_ids = {c["cluster_start_id"] for c in cards if c["source"] == "gps"}
+        first_scene = cards[0]["cluster_start_id"] if cards else None
+    transitions, stylized = apply_effects(
+        slides, n_intro=n_intro, card_ids=card_ids, scene_ids=scene_ids, first_scene=first_scene,
+        ratio=ratio, eff=eff, reveal=reveal, seed=seed)
 
-    # 5) 전환 + Ken Burns
-    cluster_start_ids = {c["cluster_start_id"] for c in cards if c["source"] == "gps"}
-    first_card = cards[0]["cluster_start_id"] if cards else None
-    transitions, whip, cyc = [], 0, 0
-    for i, s in enumerate(slides):
-        if i == 0 or i < n_intro:
-            t = "crossfade"
-        elif i == n_intro:
-            t = "zoom_through"
-        elif s.id in cluster_start_ids and s.id != first_card:
-            t = ("whip_left", "whip_right")[whip % 2]
-            whip += 1
-        else:
-            t = AUTO_TRANSITION_CYCLE[cyc % len(AUTO_TRANSITION_CYCLE)]
-            cyc += 1
-        s.transition = t
-        transitions.append(t)
-        if is_photo(s) and (s.ken_burns or 0) < 20:
-            s.ken_burns = 35 + (i * 17) % 40
+    set_project_meta(slides, auto_plan={
+        "easy": easy, "seed": seed, "n_intro": n_intro, "stylize_ratio": ratio,
+        "stylize_effect": eff, "stylize_reveal": reveal, "card_ids": sorted(card_ids),
+        "scene_ids": sorted(scene_ids), "first_scene": first_scene, "slide_duration": sd})
 
     project.style_preset = o["style_preset"]
     project.default_slide_duration = sd
@@ -565,12 +804,17 @@ def plan_auto_edit(db, project_id: str, opts: Optional[dict] = None) -> dict:
         project.resolution = o["resolution"]
     project.stage = "scripted"
     project.updated_at = datetime.utcnow()
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
 
     summary = {
         "project_id": project_id,
         "slides": n,
         "bgm": bgm,
+        "easy": easy,
+        "seed": seed,
         "style_preset": o["style_preset"],
         "slide_duration": sd,
         "resolution": project.resolution,
@@ -583,10 +827,58 @@ def plan_auto_edit(db, project_id: str, opts: Optional[dict] = None) -> dict:
         "transitions": transitions,
         "stylize_ratio": ratio,
         "stylized": stylized,
+        "locked": sum(1 for s in slides if is_locked(_meta(s))),
     }
-    logger.info(f"[auto-edit] plan {project_id}: intro={n_intro} cards={len(cards)} "
-                f"kinetic={len(kinetic)} narrated={narrated}")
+    logger.info(f"[auto-edit] plan {project_id}: easy={easy} intro={n_intro} cards={len(cards)} "
+                f"kinetic={len(kinetic)} narrated={narrated} seed={seed}")
     return summary
+
+
+def reshuffle_effects(db, project_id: str, seed: Optional[int] = None) -> dict:
+    """마지막 계획(meta.auto_plan)의 설정으로 전환·그림→실사·Ken Burns 만 다시 고른다.
+    잠긴 슬라이드는 건너뛰고 자막/카드/나레이션은 건드리지 않는다. 렌더하지 않는다."""
+    import random
+    slides = (db.query(Slide).filter(Slide.project_id == project_id)
+              .order_by(Slide.order_index).all())
+    if not slides:
+        raise AutoEditError("슬라이드가 없습니다")
+    pm = consolidate_project_meta(slides)
+    plan = pm.get("auto_plan") if isinstance(pm.get("auto_plan"), dict) else None
+    if not plan:
+        raise AutoEditError("아직 자동으로 꾸민 적이 없어요. 먼저 간편 자동이나 자동 편집을 실행하세요")
+    old_seed = int(plan.get("seed") or 0)
+    if seed is None:
+        seed = random.randint(1, 9999)
+        if seed == old_seed:
+            seed += 1
+    before = [(s.transition, s.photo_effect, s.ken_burns) for s in slides]
+    ids = {s.id for s in slides}
+    for s in slides:
+        m = _meta(s)
+        if is_locked(m):
+            continue
+        if m.get("auto_stylized"):
+            s.photo_effect = "none"
+            s.effect_reveal = 0.45
+            for k in ("effect_to_real", "auto_stylized"):
+                m.pop(k, None)
+            m["auto_fields"] = [f for f in (m.get("auto_fields") or [])
+                                if f not in ("photo_effect", "effect_reveal", "effect_to_real")]
+            _set_meta(s, m)
+    n_intro = max(0, min(int(plan.get("n_intro") or 0), len(slides) - 1))
+    apply_effects(slides, n_intro=n_intro,
+                  card_ids={i for i in plan.get("card_ids") or [] if i in ids},
+                  scene_ids={i for i in plan.get("scene_ids") or [] if i in ids},
+                  first_scene=plan.get("first_scene"),
+                  ratio=float(plan.get("stylize_ratio") or 0.0),
+                  eff=str(plan.get("stylize_effect") or "auto"),
+                  reveal=float(plan.get("stylize_reveal") or 0.5), seed=seed)
+    set_project_meta(slides, auto_plan={**plan, "seed": seed})
+    db.commit()
+    after = [(s.transition, s.photo_effect, s.ken_burns) for s in slides]
+    changed = sum(1 for a, b in zip(before, after) if a != b)
+    logger.info(f"[auto-edit] reshuffle {project_id}: seed={seed} changed={changed}")
+    return {"ok": True, "seed": seed, "changed": changed, "easy": bool(plan.get("easy"))}
 
 
 def _narrate_some(project: Project, slides: list, n_intro: int, skip_ids: set,

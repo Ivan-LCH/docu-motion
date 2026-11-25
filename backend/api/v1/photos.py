@@ -2,10 +2,6 @@
 DocuMotion - Google Photos Picker API 연동
 세션 생성 → Picker UI 팝업 → 폴링 → 선택 미디어 다운로드 → 슬라이드 생성
 """
-import os
-import re
-import json
-import subprocess
 from datetime import datetime
 from pathlib import Path
 
@@ -18,8 +14,7 @@ from backend.db.session import get_db
 from backend.db.models import Project, Slide
 from backend.core.config import OUTPUTS_DIR
 from backend.core.logger import get_logger
-from backend.services import photos_manager
-from backend.services.exif_service import extract_exif
+from backend.services import media_import, photos_manager
 
 router = APIRouter(prefix="/photos", tags=["photos"])
 logger = get_logger(__name__)
@@ -96,44 +91,10 @@ class ImportSessionRequest(BaseModel):
     sort_order: str = "selected"  # selected | oldest | newest | api
 
 
-def _sanitize(name: str) -> str:
-    return re.sub(r'[<>:"/\\|?*]', '_', name)[:80]
-
-
-def _is_hevc(file_path: str) -> bool:
-    """MP4 파일이 HEVC(H.265) 코덱인지 확인"""
-    try:
-        with open(file_path, "rb") as f:
-            f.seek(0, 2)
-            fsize = f.tell()
-            read_size = min(fsize, 1024 * 1024)
-            f.seek(fsize - read_size)
-            tail = f.read(read_size)
-            return b'hvc1' in tail or b'hev1' in tail
-    except Exception:
-        return False
-
-
-def _transcode_to_h264(src: str, dst: str) -> bool:
-    """HEVC → H.264 GPU(NVENC) 트랜스코딩, 실패 시 CPU(libx264) 폴백"""
-    for codec in ["h264_nvenc", "libx264"]:
-        try:
-            cmd = [
-                "ffmpeg", "-y", "-i", src,
-                "-c:v", codec, "-preset", "fast",
-                "-pix_fmt", "yuv420p",
-                "-c:a", "aac", "-b:a", "128k",
-                "-movflags", "+faststart",
-                dst
-            ]
-            result = subprocess.run(cmd, capture_output=True, timeout=600)
-            if result.returncode == 0 and Path(dst).exists() and Path(dst).stat().st_size > 1000:
-                logger.info(f"Transcoded HEVC→H.264 ({codec}): {Path(src).name} → {Path(dst).name}")
-                return True
-            logger.warning(f"Transcode with {codec} failed: {result.stderr[-200:]}")
-        except Exception as e:
-            logger.warning(f"Transcode with {codec} error: {e}")
-    return False
+# 공용 미디어 처리 (Google 드라이브 가져오기와 공유) — backend/services/media_import.py
+_sanitize = media_import.sanitize
+_is_hevc = media_import.is_hevc
+_transcode_to_h264 = media_import.transcode_to_h264
 
 
 @router.post("/import/{project_id}")
@@ -163,8 +124,6 @@ def import_from_session(
     existing_count = db.query(Slide).filter(Slide.project_id == project_id).count()
     imported = []
 
-    VIDEO_EXTS = {".mp4", ".mov", ".webm", ".avi", ".mkv", ".m4v"}
-
     for item in items:
         try:
             original_name = item.get("filename", f"photo_{item['id'][:8]}")
@@ -188,58 +147,15 @@ def import_from_session(
             # 다운로드 (Authorization 헤더 포함)
             photos_manager.download_item(base_url, mime_type, dest_path)
 
-            # 슬라이드 DB 생성
+            # 슬라이드 생성 (HEVC→H.264, HEIC→JPEG, EXIF — 드라이브 가져오기와 공용)
             order_idx = existing_count + len(imported)
-            is_video_file = is_video or ext in VIDEO_EXTS or mime_type.startswith("video/")
-
-            # HEVC(H.265) → H.264 자동 트랜스코딩 (Chrome 호환)
-            if is_video_file and _is_hevc(dest_path):
-                logger.info(f"HEVC detected: {saved_filename}, transcoding to H.264...")
-                h264_name = f"{stem}_{timestamp}_h264.mp4"
-                h264_path = str(assets_dir / h264_name)
-                if _transcode_to_h264(dest_path, h264_path):
-                    os.unlink(dest_path)
-                    saved_filename = h264_name
-                    dest_path = h264_path
-                else:
-                    logger.warning(f"HEVC transcode failed, keeping original: {saved_filename}")
-
-            if is_video_file:
-                slide = Slide(
-                    project_id=project_id,
-                    order_index=order_idx,
-                    image_filename="",
-                    label=original_name,
-                    text="",
-                    slide_type="video",
-                    video_filename=saved_filename,
-                    volume=1.0,
-                    subtitles="[]",
-                    use_tts=1,
-                    trim_start=0.0,
-                    trim_end=0.0,
-                )
-            else:
-                # EXIF 촬영시각/GPS 저장 (F3 — 일반 업로드와 동일)
-                try:
-                    exif_data = extract_exif(Path(dest_path))
-                    exif_json = json.dumps(exif_data, ensure_ascii=False) if (exif_data.get("captured_at") or exif_data.get("gps")) else "{}"
-                except Exception:
-                    exif_json = "{}"
-                slide = Slide(
-                    project_id=project_id,
-                    order_index=order_idx,
-                    image_filename=saved_filename,
-                    label=original_name,
-                    text="",
-                    exif=exif_json,
-                )
+            slide, saved_filename, kind = media_import.make_media_slide(
+                project_id, Path(dest_path), original_name,
+                "video/mp4" if is_video else mime_type, order_idx)
 
             db.add(slide)
-            imported.append({
-                "id": slide.id, "filename": saved_filename,
-                "type": "video" if is_video_file else "image",
-            })
+            db.flush()                      # slide.id 기본값 채우기 (응답·성공 개수용)
+            imported.append({"id": slide.id, "filename": saved_filename, "type": kind})
             logger.info(f"Photos import: {original_name} -> {saved_filename}")
 
         except Exception as e:

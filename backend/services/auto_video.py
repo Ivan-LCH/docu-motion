@@ -45,8 +45,10 @@ def _set(task_id: str, phase: str, progress: float, message: str = "", **extra):
                            progress=round(progress, 1), message=message, **extra)
 
 
-def _auto_curate(db, project_id: str, assets_dir: Path, task_id: str) -> dict:
-    """큐레이션 분석 → blurry/dark/duplicate 자동 삭제. 반환: {deleted, remaining}"""
+def _auto_curate(db, project_id: str, assets_dir: Path, task_id: str,
+                 protect_ids: set = frozenset()) -> dict:
+    """큐레이션 분석 → blurry/dark/duplicate 자동 삭제. 반환: {deleted, remaining}
+    protect_ids: 지우지 않을 슬라이드 (간편 자동: 자막을 적은 컷·잠긴 컷)"""
     slides = (db.query(Slide).filter(Slide.project_id == project_id,
                                     Slide.slide_type != "video")
               .order_by(Slide.order_index).all())
@@ -59,7 +61,7 @@ def _auto_curate(db, project_id: str, assets_dir: Path, task_id: str) -> dict:
             Slide.project_id == project_id).count()}
 
     result = curate_photos(photos)
-    doomed = {sg["slide_id"] for sg in result.get("suggestions", [])}
+    doomed = {sg["slide_id"] for sg in result.get("suggestions", [])} - set(protect_ids)
     deleted = 0
     for s in slides:
         if s.id in doomed:

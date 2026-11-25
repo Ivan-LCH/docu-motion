@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { api, Slide, ProjectDetail, BgmHit, PhotosSortOrder, parseSlideMeta, RouteMeta, SavedLocation, GeocodeResult, OrganizeSuggestions, RouteSuggestion, CurationSuggestion, SpellcheckResult, AutoVideoOptions, AutoVideoTask, AutoEditOptions, AutoEditTask, TRANSITION_PRESETS, TEXT_STYLE_PRESETS, PUNCH_MAX_CHARS, KINETIC_MAX_CHARS, TextStyle, StyleTextKey, getStyleText, withStyleText, getLocationCard, withLocationCard, PHOTO_EFFECT_PRESETS, PhotoEffect, DEFAULT_EFFECT_REVEAL, TO_REAL_PRESETS, ToRealStyle, getToReal, withToReal, PHOTO_EFFECT_SHORT, getSketchSoftness, withSketchSoftness, getColorStrength, withColorStrength, STYLIZE_EFFECT_PRESETS, StylizeEffect } from '../api/client'
+import { api, Slide, ProjectDetail, BgmHit, ApiError, getAutoFields, isUserLocked, withAutoFieldsTouched, AUTO_FIELD_LABELS, parseSlideMeta, RouteMeta, SavedLocation, GeocodeResult, OrganizeSuggestions, RouteSuggestion, CurationSuggestion, SpellcheckResult, AutoVideoOptions, AutoVideoTask, AutoEditOptions, AutoEditTask, TRANSITION_PRESETS, TEXT_STYLE_PRESETS, PUNCH_MAX_CHARS, KINETIC_MAX_CHARS, TextStyle, StyleTextKey, getStyleText, withStyleText, getLocationCard, withLocationCard, PHOTO_EFFECT_PRESETS, PhotoEffect, DEFAULT_EFFECT_REVEAL, TO_REAL_PRESETS, ToRealStyle, getToReal, withToReal, PHOTO_EFFECT_SHORT, getSketchSoftness, withSketchSoftness, getColorStrength, withColorStrength, STYLIZE_EFFECT_PRESETS, StylizeEffect } from '../api/client'
 import { useToast } from '../components/ToastContext'
 import GoogleAuthSection, { extractCodeFromUrl } from '../components/GoogleAuthSection'
+import PhotosPickerModal from '../components/PhotosPickerModal'
 
 // ─── YouTube Modal ────────────────────────────
 function YouTubeModal({ projectId, projectName, onClose }: {
@@ -139,236 +140,6 @@ function YouTubeModal({ projectId, projectName, onClose }: {
   )
 }
 
-// ─── Google Photos Picker Modal ───────────────
-function GooglePhotosModal({ projectId, onClose, onImported }: {
-  projectId: string; onClose: () => void; onImported: () => void
-}) {
-  const { toast } = useToast()
-  const [authOk, setAuthOk] = useState<boolean | null>(null)
-  const [phase, setPhase] = useState<'idle' | 'code_input' | 'picking' | 'importing' | 'done'>('idle')
-  const [sessionId, setSessionId] = useState<string>('')
-  const [codeInput, setCodeInput] = useState('')
-  const [exchanging, setExchanging] = useState(false)
-  const [sortOrder, setSortOrder] = useState<PhotosSortOrder>('selected')
-  const sortOrderRef = useRef<PhotosSortOrder>('selected')
-  useEffect(() => { sortOrderRef.current = sortOrder }, [sortOrder])
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const importingRef = useRef(false)
-
-  // 인증 확인
-  useEffect(() => {
-    api.photosAuthStatus().then(res => setAuthOk(res.authenticated)).catch(() => setAuthOk(false))
-  }, [])
-
-  // 폴링 정리
-  useEffect(() => {
-    return () => { if (pollRef.current) clearInterval(pollRef.current) }
-  }, [])
-
-  const handleAuth = async () => {
-    try {
-      const { auth_url } = await api.photosAuthUrl()
-      window.open(auth_url, '_blank')
-      setPhase('code_input')
-      setCodeInput('')
-    } catch (e: unknown) {
-      toast(e instanceof Error ? e.message : '인증 URL 생성 실패', 'error')
-    }
-  }
-
-  const handleExchangeCode = async () => {
-    const code = extractCodeFromUrl(codeInput)
-    if (!code) { toast('인증 코드를 입력해주세요', 'error'); return }
-    setExchanging(true)
-    try {
-      await api.photosExchangeCode(code)
-      toast('Google Photos 인증 완료!', 'success')
-      setAuthOk(true)
-      setPhase('idle')
-    } catch (e: unknown) {
-      toast(e instanceof Error ? e.message : '코드 교환 실패', 'error')
-    } finally {
-      setExchanging(false)
-    }
-  }
-
-  const handleOpenPicker = async () => {
-    try {
-      // 1. Picker 세션 생성
-      const session = await api.photosCreateSession()
-      setSessionId(session.id)
-      setPhase('picking')
-
-      // 2. Picker UI 새 탭에서 열기
-      window.open(session.pickerUri, '_blank')
-
-      // 3. 세션 폴링 — 사용자 선택 완료 대기
-      pollRef.current = setInterval(async () => {
-        try {
-          const status = await api.photosPollSession(session.id)
-          console.log('[Photos] poll:', status)
-          if (status.mediaItemsSet) {
-            if (pollRef.current) clearInterval(pollRef.current)
-            pollRef.current = null
-            await doImport(session.id)
-          }
-        } catch (err) {
-          console.error('[Photos] poll error:', err)
-        }
-      }, 3000)
-
-    } catch (e: unknown) {
-      toast(e instanceof Error ? e.message : 'Picker 세션 생성 실패', 'error')
-      setPhase('idle')
-    }
-  }
-
-  // 수동으로 가져오기 실행 (폴링이 자동 감지 못할 때 대비)
-  const handleManualImport = async () => {
-    if (!sessionId) return
-    // 폴링 정리
-    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
-    await doImport(sessionId)
-  }
-
-  const doImport = async (sid: string) => {
-    if (importingRef.current) return
-    importingRef.current = true
-    setPhase('importing')
-    try {
-      const res = await api.photosImport(projectId, sid, sortOrderRef.current)
-      toast(`${res.count}개 미디어 가져오기 완료!`, 'success')
-      setPhase('done')
-      onImported()
-      onClose()
-    } catch (e: unknown) {
-      toast(e instanceof Error ? e.message : '가져오기 실패', 'error')
-      importingRef.current = false
-      setPhase('idle')
-    }
-  }
-
-  return (
-    <div className="modal-overlay" onClick={phase === 'idle' || phase === 'done' ? onClose : undefined}>
-      <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: '500px' }}>
-        <div className="modal-header">
-          <span className="modal-title">Google Photos에서 가져오기</span>
-          <button className="btn btn-ghost btn-icon" onClick={onClose} disabled={phase === 'importing'}>✕</button>
-        </div>
-
-        {/* 인증 확인 중 */}
-        {authOk === null && (
-          <div style={{ textAlign: 'center', padding: '2rem' }}>
-            <span className="spinner" /> 인증 확인 중...
-          </div>
-        )}
-
-        {/* 인증 안됨 */}
-        {authOk === false && phase !== 'code_input' && (
-          <div style={{ textAlign: 'center', padding: '2rem' }}>
-            <p style={{ color: 'var(--text-secondary)', marginBottom: '1rem', fontSize: '0.9rem' }}>
-              Google Photos 접근 권한이 필요합니다
-            </p>
-            <button className="btn btn-primary" onClick={handleAuth}>Google 계정 인증</button>
-          </div>
-        )}
-
-        {/* 코드 입력 */}
-        {phase === 'code_input' && (
-          <div style={{ padding: '1.5rem' }}>
-            <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: '0.8rem', lineHeight: 1.6 }}>
-              새 탭에서 Google 로그인 후,<br />
-              주소창의 URL을 복사해서 아래에 붙여넣기하세요.
-            </p>
-            <input
-              className="input"
-              style={{ fontSize: '0.85rem', marginBottom: '0.6rem' }}
-              placeholder="http://localhost?code=4/0A... 전체 URL"
-              value={codeInput}
-              onChange={e => setCodeInput(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && handleExchangeCode()}
-              autoFocus
-            />
-            <div style={{ display: 'flex', gap: '0.5rem' }}>
-              <button className="btn btn-primary" style={{ flex: 1 }} onClick={handleExchangeCode} disabled={exchanging}>
-                {exchanging ? '처리 중...' : '인증 완료'}
-              </button>
-              <button className="btn btn-secondary" onClick={() => setPhase('idle')}>취소</button>
-            </div>
-          </div>
-        )}
-
-        {/* 인증됨 */}
-        {authOk === true && (
-          <div style={{ textAlign: 'center', padding: '1.5rem 1rem' }}>
-            {phase === 'idle' && (
-              <>
-                <p style={{ color: 'var(--text-secondary)', marginBottom: '1rem', fontSize: '0.9rem', lineHeight: 1.6 }}>
-                  Google Photos Picker가 새 창에서 열립니다.<br />
-                  원하는 사진/동영상을 선택하면 자동으로 가져옵니다.
-                </p>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', marginBottom: '1.2rem', textAlign: 'left', maxWidth: 320, marginLeft: 'auto', marginRight: 'auto' }}>
-                  <label style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', fontWeight: 600 }}>정렬 순서</label>
-                  <select
-                    value={sortOrder}
-                    onChange={e => setSortOrder(e.target.value as PhotosSortOrder)}
-                    style={{ fontSize: '0.85rem', padding: '0.5rem 0.7rem', background: 'var(--bg-card)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)' }}
-                  >
-                    <option value="selected">선택 순서 (Picker 클릭 순)</option>
-                    <option value="oldest">촬영 오래된 순</option>
-                    <option value="newest">촬영 최신 순</option>
-                    <option value="api">기본 (API 응답 순서)</option>
-                  </select>
-                </div>
-                <button className="btn btn-primary" onClick={handleOpenPicker} style={{ fontSize: '1rem', padding: '0.7rem 2rem' }}>
-                  사진 선택하기
-                </button>
-              </>
-            )}
-
-            {phase === 'picking' && (
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem' }}>
-                <span className="spinner spinner-lg" />
-                <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', lineHeight: 1.6 }}>
-                  Google Photos에서 사진을 선택해주세요...<br />
-                  <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                    선택 완료 후 자동 진행됩니다
-                  </span>
-                </p>
-                <button className="btn btn-primary" onClick={handleManualImport} style={{ marginTop: '0.5rem' }}>
-                  선택 완료 — 가져오기
-                </button>
-                <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                  자동으로 진행되지 않으면 위 버튼을 눌러주세요
-                </p>
-              </div>
-            )}
-
-            {phase === 'importing' && (
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem' }}>
-                <span className="spinner spinner-lg" />
-                <p style={{ color: 'var(--accent)', fontSize: '0.9rem', fontWeight: 600 }}>
-                  선택한 미디어를 다운로드하는 중...
-                </p>
-                <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                  파일 크기에 따라 시간이 걸릴 수 있습니다
-                </p>
-              </div>
-            )}
-          </div>
-        )}
-
-        <div className="modal-footer">
-          <button className="btn btn-secondary" onClick={onClose} disabled={phase === 'importing'}>
-            {phase === 'idle' ? '닫기' : '취소'}
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-
 // ─── Project Title Inline Editor ─────────────
 function ProjectTitleEditor({ name, onSave }: { name: string; onSave: (name: string) => Promise<void> }) {
   const [editing, setEditing] = useState(false)
@@ -423,6 +194,15 @@ function ProjectTitleEditor({ name, onSave }: { name: string; onSave: (name: str
 }
 
 // ─── BGM Search Modal (6-9) ──────────────────
+// Jamendo 오류 코드별 안내 문구
+function bgmErrorMessage(e: unknown, fallback: string): string {
+  if (e instanceof ApiError) {
+    if (e.code === 'jamendo_key_missing') return 'Jamendo 키가 설정되지 않았어요 (관리자 설정 필요)'
+    if (e.code === 'jamendo_error') return '음악 서버 오류 — 잠시 후 다시 시도해 주세요'
+  }
+  return e instanceof Error && e.message ? `${fallback}: ${e.message}` : fallback
+}
+
 function BgmSearchModal({ projectId, onClose, onApplied }: {
   projectId: string
   onClose: () => void
@@ -436,8 +216,11 @@ function BgmSearchModal({ projectId, onClose, onApplied }: {
   const [loading, setLoading] = useState(false)
   const [suggesting, setSuggesting] = useState(false)
   const [suggestedKeyword, setSuggestedKeyword] = useState('')
-  const [playingId, setPlayingId] = useState<number | null>(null)
-  const [applyingId, setApplyingId] = useState<number | null>(null)
+  const [playingId, setPlayingId] = useState<number | string | null>(null)
+  const [applyingId, setApplyingId] = useState<number | string | null>(null)
+  const [instrumental, setInstrumental] = useState(false)
+  const [queryUsed, setQueryUsed] = useState('')   // 번역된 실제 검색어 (translated 일 때만)
+  const [emptyMsg, setEmptyMsg] = useState('')     // 결과 없음 / 서버 오류 안내
   const [autoApplying, setAutoApplying] = useState(false)
   const audioRef = useRef<HTMLAudioElement | null>(null)
 
@@ -447,11 +230,17 @@ function BgmSearchModal({ projectId, onClose, onApplied }: {
     if (!q.trim()) return
     setLoading(true)
     try {
-      const res = await api.searchBgm(projectId, q.trim(), p)
+      const res = await api.searchBgm(projectId, q.trim(), p, instrumental)
       setHits(p === 1 ? res.hits : prev => [...prev, ...res.hits])
       setTotal(res.total)
       setPage(p)
-    } catch { toast('검색 실패', 'error') }
+      setQueryUsed(res.translated ? res.query_used : '')
+      setEmptyMsg(res.empty && p === 1 ? '검색 결과가 없어요' : '')
+    } catch (e) {
+      const msg = bgmErrorMessage(e, '검색 실패')
+      setEmptyMsg(msg)
+      toast(msg, 'error')
+    }
     finally { setLoading(false) }
   }
 
@@ -464,8 +253,10 @@ function BgmSearchModal({ projectId, onClose, onApplied }: {
       setHits(res.hits)
       setTotal(res.hits.length)
       setPage(1)
+      setQueryUsed('')
+      setEmptyMsg(res.empty ? '검색 결과가 없어요' : '')
       toast(`AI 추천: "${res.keyword}"`, 'success')
-    } catch { toast('AI 추천 실패', 'error') }
+    } catch (e) { toast(bgmErrorMessage(e, 'AI 추천 실패'), 'error') }
     finally { setSuggesting(false) }
   }
 
@@ -480,7 +271,7 @@ function BgmSearchModal({ projectId, onClose, onApplied }: {
       onApplied(updated as unknown as ProjectDetail)
       toast(`"${hit.title}" BGM 자동 적용 완료 (키워드: ${res.keyword})`, 'success')
       onClose()
-    } catch { toast('BGM 자동 적용 실패', 'error') }
+    } catch (e) { toast(bgmErrorMessage(e, 'BGM 자동 적용 실패'), 'error') }
     finally { setAutoApplying(false) }
   }
 
@@ -538,6 +329,12 @@ function BgmSearchModal({ projectId, onClose, onApplied }: {
             {autoApplying ? '적용 중...' : '⚡ 즉시 적용'}
           </button>
         </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', fontSize: '0.75rem', color: 'var(--text-muted)', margin: '0 0 0.5rem' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', cursor: 'pointer' }}>
+            <input type="checkbox" checked={instrumental} onChange={e => setInstrumental(e.target.checked)} /> 연주곡만
+          </label>
+          {queryUsed && <span>&#x2192; <strong style={{ color: 'var(--accent)' }}>{queryUsed}</strong></span>}
+        </div>
         {suggestedKeyword && (
           <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', margin: '0 0 0.75rem' }}>
             AI 추천 키워드: <strong style={{ color: '#a855f7' }}>{suggestedKeyword}</strong>
@@ -548,7 +345,7 @@ function BgmSearchModal({ projectId, onClose, onApplied }: {
         <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
           {hits.length === 0 && !loading && (
             <p style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '2rem 0', fontSize: '0.85rem' }}>
-              검색어를 입력하거나 ✨ AI 추천을 눌러보세요
+              {emptyMsg || '검색어를 입력하거나 ✨ AI 추천을 눌러보세요'}
             </p>
           )}
           {hits.map(hit => (
@@ -572,7 +369,10 @@ function BgmSearchModal({ projectId, onClose, onApplied }: {
                   {hit.title}
                 </div>
                 <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                  {hit.tags}
+                  {hit.artist ? `${hit.artist} · ` : ''}{hit.tags}
+                  {hit.license_url && (
+                    <> · <a href={hit.license_url} target="_blank" rel="noreferrer" style={{ color: 'var(--text-muted)' }}>라이선스</a></>
+                  )}
                 </div>
               </div>
               <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', flexShrink: 0 }}>{formatDuration(hit.duration)}</span>
@@ -2699,9 +2499,33 @@ function SubtitleTimeline({ subs, videoDuration, onChange, videoRef }: {
 }
 
 // ─── Slide Card ──────────────────────────────
-function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveUp, onMoveDown, onPreviewVideo, isSelected, onToggleSelect, onRegenerateRoute }: {
+// 간편 자동 모드 '자동' 표시
+const AUTO_TAG_STYLE: React.CSSProperties = {
+  marginLeft: '0.3rem', fontSize: '0.62rem', fontWeight: 600, padding: '0 0.3rem', borderRadius: 4,
+  background: 'var(--accent-light)', color: 'var(--accent)', border: '1px solid var(--accent)', verticalAlign: 'middle',
+}
+
+// 편집기에서 바뀐 자동 필드 목록 — 서버의 자동 잠금(user_locked)을 로컬에 미러링할 때 사용
+function touchedAutoFields(prev: Slide, delta: Partial<Slide>): string[] {
+  const out: string[] = []
+  const keys: (keyof Slide)[] = ['transition', 'photo_effect', 'effect_reveal', 'ken_burns']
+  for (const k of keys) {
+    if (k in delta && delta[k] !== prev[k]) out.push(k)
+  }
+  if (delta.meta !== undefined && delta.meta !== prev.meta) {
+    const pm = (() => { try { return prev.meta ? JSON.parse(prev.meta) : {} } catch { return {} } })()
+    const nm = (() => { try { return delta.meta ? JSON.parse(delta.meta) : {} } catch { return {} } })()
+    for (const k of ['location_card', 'effect_to_real']) {
+      if (JSON.stringify(pm?.[k] ?? null) !== JSON.stringify(nm?.[k] ?? null)) out.push(k)
+    }
+  }
+  return out
+}
+
+function SlideCard({ slide, index, total, projectId, onUpdate, onMetaSync, onDelete, onMoveUp, onMoveDown, onPreviewVideo, isSelected, onToggleSelect, onRegenerateRoute }: {
   slide: Slide; index: number; total: number; projectId: string
   onUpdate: (delta: Partial<Slide>) => void
+  onMetaSync?: (meta: string) => void  // 서버가 돌려준 meta 를 저장 없이 로컬에만 반영
   onDelete: () => void
   onMoveUp: () => void
   onMoveDown: () => void
@@ -2740,6 +2564,26 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
   const [tab, setTab] = useState<'content' | 'visual'>('content')
   const { toast } = useToast()
   const [aiBusy, setAiBusy] = useState(false)
+  // 간편 자동 모드: 자동 설정 필드 / 잠금
+  const autoFields = getAutoFields(slide)
+  const locked = isUserLocked(slide)
+  const [lockBusy, setLockBusy] = useState(false)
+  const autoTag = (field: string) => autoFields.includes(field)
+    ? <span title="간편 자동으로 설정됨 — 바꾸면 이 슬라이드는 다시 섞기에서 빠져요" style={AUTO_TAG_STYLE}>자동</span>
+    : null
+  const toggleLock = async () => {
+    if (lockBusy) return
+    setLockBusy(true)
+    try {
+      const res = await api.setSlideLock(projectId, slide.id, !locked)
+      onMetaSync?.(res.meta)
+      toast(!locked ? '잠금 — 다시 섞기에서 빠져요' : '잠금 해제 — 다시 섞기에 포함돼요', 'info')
+    } catch (e: unknown) {
+      toast(e instanceof Error ? e.message : '잠금 변경 실패', 'error')
+    } finally {
+      setLockBusy(false)
+    }
+  }
 
   // 8-5: Gemini Vision으로 슬라이드 이미지 → 나레이션 초안 생성
   const generateAiNarration = async () => {
@@ -2876,6 +2720,17 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
           <label className="label" style={{ margin: 0 }}>
             {slideIcon} Slide {index + 1} — {slide.label || slide.video_filename || slide.image_filename}
           </label>
+          {autoFields.length > 0 && (
+            <span style={{ ...AUTO_TAG_STYLE, fontSize: '0.7rem', padding: '0.1rem 0.45rem' }}
+              title={`자동 설정: ${autoFields.map(f => AUTO_FIELD_LABELS[f] || f).join(', ')}`}>자동</span>
+          )}
+          {(locked || autoFields.length > 0) && (
+            <button onClick={toggleLock} disabled={lockBusy}
+              title={locked ? '잠김 — 다시 섞기에서 빠져요 (눌러서 해제)' : '눌러서 잠그면 다시 섞기에서 빠져요'}
+              style={{ padding: '0.05rem 0.35rem', fontSize: '0.75rem', border: `1px solid ${locked ? 'var(--accent)' : 'var(--border)'}`, borderRadius: 'var(--radius-sm)', background: locked ? 'var(--accent-light)' : 'transparent', color: 'var(--text)', cursor: 'pointer', opacity: locked ? 1 : 0.55 }}>
+              {locked ? '\u{1F512}' : '\u{1F513}'}
+            </button>
+          )}
           {mapMeta && mapMeta.type === 'route' && (
             <>
               <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', background: 'var(--bg-secondary)', padding: '0.1rem 0.45rem', borderRadius: 'var(--radius-sm)' }}>
@@ -3041,7 +2896,7 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
               {/* Ken Burns (이미지만) */}
               {!isVideo && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>&#x1F39E;&#xFE0F; 줌 효과:</span>
+                  <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>&#x1F39E;&#xFE0F; 줌 효과:{autoTag('ken_burns')}</span>
                   <input type="range" min={0} max={100} step={5} value={kenBurns} onChange={e => setKenBurns(parseInt(e.target.value))} onMouseUp={() => onUpdate({ ken_burns: kenBurns })} onTouchEnd={() => onUpdate({ ken_burns: kenBurns })} style={{ flex: 1, accentColor: kenBurns > 0 ? '#818cf8' : undefined }} />
                   <span style={{ fontSize: '0.8rem', color: kenBurns > 0 ? '#818cf8' : 'var(--text-muted)', minWidth: 44, textAlign: 'right' }}>{kenBurns === 0 ? '꺼짐' : `${kenBurns}%`}</span>
                 </div>
@@ -3049,7 +2904,7 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
               {/* 사진 → 스케치/만화 (이미지·장소). 경로 슬라이드는 프레임 시퀀스라 적용되지 않음 */}
               {!isVideo && !isRoute && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>&#x1F58C;&#xFE0F; 사진 효과:</span>
+                  <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>&#x1F58C;&#xFE0F; 사진 효과:{autoTag('photo_effect')}</span>
                   <select className="input" value={photoEffect} onChange={e => { const v = e.target.value as PhotoEffect; setPhotoEffect(v); onUpdate({ photo_effect: v, effect_reveal: effectReveal }) }} style={{ flex: 1, padding: '0.3rem 0.5rem', fontSize: '0.8rem' }}>
                     {PHOTO_EFFECT_PRESETS.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
                   </select>
@@ -3098,7 +2953,7 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
               {/* 전환 (첫 슬라이드 제외) */}
               {index > 0 && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>&#x1F3AC; 전환:</span>
+                  <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>&#x1F3AC; 전환:{autoTag('transition')}</span>
                   <select className="input" value={transition} onChange={e => handleTransitionChange(e.target.value)} style={{ flex: 1, padding: '0.3rem 0.5rem', fontSize: '0.8rem' }}>
                     {TRANSITION_PRESETS.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
                   </select>
@@ -3125,7 +2980,7 @@ function SlideCard({ slide, index, total, projectId, onUpdate, onDelete, onMoveU
               )}
               {card && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }} title={card.source === 'gps' ? 'GPS 역지오코딩' : '장소 슬라이드/제목 폴백'}>&#x1F4CD; 위치 카드</span>
+                  <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', whiteSpace: 'nowrap' }} title={card.source === 'gps' ? 'GPS 역지오코딩' : '장소 슬라이드/제목 폴백'}>&#x1F4CD; 위치 카드{autoTag('location_card')}</span>
                   <input className="input" value={cardTitle} placeholder="제목 (비우면 카드 삭제)"
                     onChange={e => setCardTitle(e.target.value)} onBlur={commitCard}
                     style={{ flex: 1, padding: '0.3rem 0.5rem', fontSize: '0.8rem' }} />
@@ -3741,9 +3596,38 @@ export default function Editor() {
     slidesRef.current = slides
   }, [slides])
 
+  // 🎲 효과 다시 섞기 (간편 자동 모드로 계획된 프로젝트만)
+  const [reshuffling, setReshuffling] = useState(false)
+  const handleReshuffle = async () => {
+    if (!projectId || reshuffling) return
+    setReshuffling(true)
+    try {
+      // 편집 중인 내용을 먼저 저장해 잠금 상태를 서버와 맞춘다
+      if (autoSaveTimer.current) { clearTimeout(autoSaveTimer.current); autoSaveTimer.current = null }
+      await api.saveSlides(projectId, slidesRef.current.map((s, j) => ({ ...s, order_index: j })))
+      const res = await api.easyReshuffle(projectId)
+      await loadProject()
+      toast(`효과를 다시 섞었어요 (${res.changed}개 슬라이드 변경)`, 'success')
+    } catch (e: unknown) {
+      toast(e instanceof ApiError || e instanceof Error ? e.message : '다시 섞기 실패', 'error')
+    } finally {
+      setReshuffling(false)
+    }
+  }
+
   const updateSlide = (i: number, delta: Partial<Slide>) => {
     setSlides(prev => {
-      const next = prev.map((s, idx) => idx === i ? { ...s, ...delta } : s)
+      const next = prev.map((s, idx) => {
+        if (idx !== i) return s
+        const merged = { ...s, ...delta }
+        // 자동 필드를 손대면 서버가 잠그므로 로컬에도 반영 (auto_fields 에서 제거 + user_locked)
+        const touched = touchedAutoFields(s, delta)
+        if (touched.length) {
+          const meta = withAutoFieldsTouched(merged, touched)
+          if (meta !== null) merged.meta = meta
+        }
+        return merged
+      })
       slidesRef.current = next
       if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current)
       autoSaveTimer.current = setTimeout(async () => {
@@ -3880,6 +3764,25 @@ export default function Editor() {
             <span>음악 인트로·위치 카드·키네틱</span>
           </div>
           {aeRunning && <span className="spinner" style={{ marginLeft: 'auto' }} />}
+        </button>
+
+        {/* 간편 자동 모드 — 4단계 화면으로 이동 */}
+        <button className="action-card" onClick={() => navigate(`/easy/${projectId}`)} title="자막만 적고 음악·효과는 자동으로">
+          <div className="action-icon" style={{ background: 'var(--accent-light)' }}>&#x2726;</div>
+          <div className="action-label">
+            <span>간편 자동</span>
+            <span>자막 · 음악 자동 · 바로 렌더</span>
+          </div>
+        </button>
+
+        {/* 효과 다시 섞기 — 잠기지 않은 슬라이드의 자동 효과만 새로 배정 */}
+        <button className="action-card" onClick={handleReshuffle} disabled={reshuffling} title="손대지 않은 슬라이드의 전환·그림 효과를 다시 섞어요">
+          <div className="action-icon" style={{ background: 'rgba(34,197,94,0.12)' }}>&#x1F3B2;</div>
+          <div className="action-label">
+            <span>{reshuffling ? '섞는 중...' : '효과 다시 섞기'}</span>
+            <span>잠근 슬라이드는 그대로</span>
+          </div>
+          {reshuffling && <span className="spinner" style={{ marginLeft: 'auto' }} />}
         </button>
 
       </aside>
@@ -4049,6 +3952,7 @@ export default function Editor() {
                     total={slides.length}
                     projectId={projectId!}
                     onUpdate={delta => updateSlide(i, delta)}
+                    onMetaSync={meta => setSlides(prev => { const next = prev.map(s => s.id === slide.id ? { ...s, meta } : s); slidesRef.current = next; return next })}
                     onDelete={() => {
                       deleteSlide(i)
                       if (selectedSlideIds.has(slide.id)) {
@@ -4190,7 +4094,7 @@ export default function Editor() {
         />
       )}
       {showPhotos && (
-        <GooglePhotosModal
+        <PhotosPickerModal
           projectId={projectId!}
           onClose={() => setShowPhotos(false)}
           onImported={loadProject}

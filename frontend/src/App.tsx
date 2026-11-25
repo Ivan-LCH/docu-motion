@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { BrowserRouter, Routes, Route, Link } from 'react-router-dom'
 import Dashboard from './pages/Dashboard'
 import Editor from './pages/Editor'
+import EasyAuto from './pages/EasyAuto'
 import { ToastProvider } from './components/ToastContext'
 
 function ThemeToggle() {
@@ -42,6 +43,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/project/:id" element={<Editor />} />
+          <Route path="/easy/:projectId" element={<EasyAuto />} />
         </Routes>
       </BrowserRouter>
     </ToastProvider>

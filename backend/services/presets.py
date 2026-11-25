@@ -241,3 +241,186 @@ def resolve_style_text(item: dict, style: str) -> str:
     if max_chars and len(text) > max_chars:
         text = text[:max_chars].rstrip()
     return text
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# 슬라이드 길이 · 그림→실사 홀드 (렌더 / 미리보기 / 비트 스냅 / 간편 자동 길이 추정 공용)
+# ────────────────────────────────────────────────────────────────────────────
+# 그림→실사(meta.effect_to_real) 슬라이드는 실사가 다 드러난 뒤 real_hold 초 동안 실사로 머물고,
+# 그다음에야 다음 슬라이드 전환(overlap)이 시작되도록 '그 슬라이드만' 늘린다.
+# effect_reveal 은 슬라이드 길이의 비율이라 길이를 늘리면 드러나기도 같이 늘어난다 →
+# 늘리기 전 길이(reveal_base)로 드러나기 타이밍을 절대 초로 고정하고 끝에 홀드만 붙인다.
+#   reveal_end = start + window,  window = reveal × base,
+#   start = max(0, min(0.3 × base, 0.95 × base − window))   (photo_fx.to_real_progress 와 동일)
+#   필요 길이 D = max(base, reveal_end + hold + overlap(next, D))   (overlap 은 D 에 대해 단조 → 고정점 반복)
+# 끄기: 슬라이드 meta.to_real_hold = 0, 프로젝트 전체 slides[0].meta.to_real_hold_off = true.
+DEFAULT_TO_REAL_HOLD = 1.5
+MAX_TO_REAL_HOLD = 6.0
+TO_REAL_START_RATIO = 0.3                  # photo_fx.TO_REAL_HOLD 와 동일 (그림으로 머무는 비율)
+_TO_REAL_STYLE_NAMES = ("brush", "wipe", "dissolve")   # photo_fx.TO_REAL_STYLES 와 동일
+MIN_EASY_DURATION, MAX_EASY_DURATION = 1.0, 12.0
+
+
+def _num(v):
+    if v is None or v == "" or isinstance(v, bool):
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if f == f and f not in (float("inf"), float("-inf")) else None
+
+
+def is_free_length(item: dict) -> bool:
+    """자유 길이 슬라이드 = 텍스트 없는 비디오 외 슬라이드 (렌더러 '텍스트 없음' 분기와 동일)."""
+    return (item.get("slide_type") or "image") != "video" and not (item.get("text") or "").strip()
+
+
+def free_base_duration(item: dict, default: float) -> float:
+    """자유 길이 슬라이드의 기본 길이: meta.easy_duration(간편 자동 음악 맞춤) > 프로젝트 기본."""
+    v = _num(_parse_meta(item.get("meta")).get("easy_duration"))
+    if v is not None and v > 0:
+        return max(MIN_EASY_DURATION, min(MAX_EASY_DURATION, v))
+    return float(default or 3.0)
+
+
+def to_real_reveal_end(duration: float, reveal) -> float:
+    """그림→실사 드러나기가 끝나는 시각(초, 슬라이드 기준). photo_fx.to_real_progress 와 같은 식."""
+    d = max(0.0, float(duration or 0.0))
+    window = clamp_effect_reveal(reveal) * d
+    start = max(0.0, min(TO_REAL_START_RATIO * d, d * 0.95 - window))
+    return start + window
+
+
+def to_real_hold_seconds(item: dict, hold_off: bool = False) -> float:
+    """이 슬라이드에 필요한 실사 홀드(초). 0 = 해당 없음/꺼짐.
+    대상: 이미지 슬라이드 + photo_effect != none + 유효한 meta.effect_to_real."""
+    if hold_off:
+        return 0.0
+    if (item.get("slide_type") or "image") == "video" or not item.get("image_filename"):
+        return 0.0
+    if normalize_photo_effect(item.get("photo_effect")) == "none":
+        return 0.0
+    meta = _parse_meta(item.get("meta"))
+    if str(meta.get("effect_to_real") or "").strip().lower() not in _TO_REAL_STYLE_NAMES:
+        return 0.0
+    v = _num(meta.get("to_real_hold"))
+    if v is None:
+        return DEFAULT_TO_REAL_HOLD
+    return max(0.0, min(MAX_TO_REAL_HOLD, v))
+
+
+def project_hold_off(items: list) -> bool:
+    """slides[0].meta.to_real_hold_off == true → 프로젝트 전체 홀드 끔."""
+    if not items:
+        return False
+    return _parse_meta(items[0].get("meta")).get("to_real_hold_off") is True
+
+
+def to_real_min_duration(base: float, reveal, hold: float, next_transition,
+                         next_dur, project_duration: float = 0.7) -> float:
+    """reveal_end(base) + hold + 다음 슬라이드 진입 overlap ≤ D 를 만족하는 최소 길이 D (≥ base).
+    next_transition/next_dur 가 None 이면 마지막 슬라이드 (overlap 없음)."""
+    base = float(base or 0.0)
+    if hold <= 0 or base <= 0:
+        return base
+    need0 = to_real_reveal_end(base, reveal) + hold
+    d = max(base, need0)
+    for _ in range(6):                     # overlap 은 min(전환 길이, 0.45 × min(D, next)) → 빠르게 수렴
+        ov = 0.0 if next_dur is None else slide_overlap(next_transition, project_duration, d, next_dur)
+        nd = max(base, need0 + ov)
+        if abs(nd - d) < 1e-6:
+            break
+        d = nd
+    return d
+
+
+def apply_to_real_hold(durations: list, items: list, transitions: list,
+                       project_duration: float = 0.7, hold_off=None) -> tuple[list, list]:
+    """슬라이드 길이 목록에 그림→실사 홀드를 적용.
+    반환: (new_durations, reveal_bases) — reveal_bases[i] 는 늘어난 슬라이드의 원래 길이(드러나기 기준), 아니면 None.
+    뒤에서부터 계산해 다음 슬라이드의 최종 길이로 overlap 상한을 정확히 맞춘다."""
+    n = len(durations)
+    out = [float(d or 0.0) for d in durations]
+    bases: list = [None] * n
+    if hold_off is None:
+        hold_off = project_hold_off(items)
+    for i in range(n - 1, -1, -1):
+        hold = to_real_hold_seconds(items[i], hold_off)
+        if hold <= 0:
+            continue
+        nxt_t = (transitions[i + 1] if i + 1 < len(transitions) else "none") if i + 1 < n else None
+        nxt_d = out[i + 1] if i + 1 < n else None
+        need = to_real_min_duration(out[i], items[i].get("effect_reveal"), hold, nxt_t, nxt_d,
+                                    project_duration)
+        if need > out[i] + 1e-6:
+            bases[i] = out[i]
+            out[i] = need
+    return out, bases
+
+
+def static_slide_duration(item: dict, default: float, video_duration=None) -> float:
+    """렌더 전 길이 추정 (간편 자동 길이 추정 / 미리보기 이웃 길이).
+    자유 길이 → free_base_duration, 비디오 → 트림 구간(원본 길이는 video_duration(item) 콜백),
+    텍스트 슬라이드 → 무TTS 렌더 규칙 max(3, 글자 × 0.15) (TTS 슬라이드는 근사)."""
+    if (item.get("slide_type") or "image") == "video":
+        ts = _num(item.get("trim_start")) or 0.0
+        te = _num(item.get("trim_end")) or 0.0
+        full = None
+        if video_duration is not None:
+            try:
+                full = video_duration(item)
+            except Exception:
+                full = None
+        if te > ts:
+            return max(0.1, (min(te, full) if full else te) - ts)
+        return max(0.1, (full or default) - ts)
+    if is_free_length(item):
+        return free_base_duration(item, default)
+    return max(3.0, len((item.get("text") or "").strip()) * 0.15)
+
+
+def plan_timeline(items: list, default: float, project_duration: float = 0.7,
+                  video_duration=None) -> dict:
+    """렌더러와 같은 규칙의 타임라인 추정: 길이(+홀드) → compute_slide_starts.
+    반환: {durations, reveal_bases, starts, overlaps, total}"""
+    if not items:
+        return {"durations": [], "reveal_bases": [], "starts": [], "overlaps": [], "total": 0.0}
+    base = [static_slide_duration(it, default, video_duration) for it in items]
+    transitions = [it.get("transition") or "none" for it in items]
+    durs, bases = apply_to_real_hold(base, items, transitions, project_duration)
+    starts, overlaps = compute_slide_starts(durs, transitions, project_duration)
+    return {"durations": durs, "reveal_bases": bases, "starts": starts, "overlaps": overlaps,
+            "total": starts[-1] + durs[-1]}
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# 프로젝트 단위 설정 (Project 에 meta 컬럼이 없어 첫 슬라이드 meta 에 둔다)
+# ────────────────────────────────────────────────────────────────────────────
+# 순서 변경·삭제로 첫 슬라이드가 바뀌어도 잃지 않도록, 읽을 때는 앞에서부터 처음 나오는 값을 쓰고
+# 간편 자동 계획/음악 선택 때 slides[0] 으로 다시 모은다 (easy_auto.consolidate_project_meta).
+PROJECT_META_KEYS: tuple[str, ...] = (
+    "bgm_credit",       # {title, artist, license_url, page_url, jamendo_id}
+    "show_bgm_credit",  # false → 영상 끝 크레딧 자막 끔 (기본 표시)
+    "bgm_fade_out",     # BGM 끝 페이드 아웃(초). 없으면 기존 min(2.0, 길이 5%)
+    "bgm_loop_xfade",   # BGM 루프 크로스페이드(초). 없으면 DEFAULT_BGM_LOOP_XFADE, 0 = 이어 붙이기
+    "bgm_fit",          # 간편 자동 음악 맞춤 결과 {mode, scale, track_duration, video_length}
+    "to_real_hold_off", # true → 그림→실사 홀드 끔
+    "auto_plan",        # 자동 편집 계획 기록 {easy, seed, n_intro, stylize_ratio, ...} (다시 섞기용)
+    "easy_settings",    # 간편 자동 옵션 {resolution, stylize_ratio, slide_duration, auto_curate}
+)
+DEFAULT_BGM_LOOP_XFADE = 1.5
+
+
+def project_meta(items: list) -> dict:
+    """슬라이드 목록(dict 또는 meta 문자열을 가진 객체)에서 PROJECT_META_KEYS 를 모은다."""
+    out: dict = {}
+    for it in items or []:
+        raw = it.get("meta") if isinstance(it, dict) else getattr(it, "meta", None)
+        m = _parse_meta(raw)
+        for k in PROJECT_META_KEYS:
+            if k not in out and k in m:
+                out[k] = m[k]
+        if len(out) == len(PROJECT_META_KEYS):
+            break
+    return out
