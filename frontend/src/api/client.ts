@@ -1,6 +1,32 @@
 // DocuMotion - API Client
 const BASE = '/api/v1'
 
+// API 오류 — detail 이 문자열 또는 {code, message} 객체일 수 있음
+export class ApiError extends Error {
+  code?: string
+  status: number
+  constructor(message: string, status: number, code?: string) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+    this.code = code
+  }
+}
+
+function toApiError(res: Response, detail: unknown): ApiError {
+  if (detail && typeof detail === 'object' && !Array.isArray(detail)) {
+    const d = detail as { code?: unknown; message?: unknown }
+    const msg = typeof d.message === 'string' && d.message ? d.message : (res.statusText || 'API Error')
+    return new ApiError(msg, res.status, typeof d.code === 'string' ? d.code : undefined)
+  }
+  if (typeof detail === 'string' && detail) return new ApiError(detail, res.status)
+  // FastAPI 검증 오류(detail 배열) 등은 첫 항목 메시지 사용
+  if (Array.isArray(detail) && detail.length && typeof detail[0]?.msg === 'string') {
+    return new ApiError(detail[0].msg, res.status)
+  }
+  return new ApiError(res.statusText || 'API Error', res.status)
+}
+
 async function request<T>(method: string, path: string, body?: unknown, isForm = false): Promise<T> {
   const opts: RequestInit = { method }
   if (body) {
@@ -14,7 +40,7 @@ async function request<T>(method: string, path: string, body?: unknown, isForm =
   const res = await fetch(`${BASE}${path}`, opts)
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }))
-    throw new Error(err.detail || 'API Error')
+    throw toApiError(res, err?.detail)
   }
   if (res.status === 204) return undefined as unknown as T
   return res.json()
@@ -370,12 +396,135 @@ export interface CurationStatus {
 }
 
 export interface BgmHit {
-  id: number
+  id: number | string
   title: string
+  artist: string
   tags: string
   duration: number
   preview_url: string
   page_url: string
+  license_url: string
+  audiodownload_allowed: boolean
+  audiodownload: string
+}
+export type TranslateSource = 'gemini' | 'dict' | 'none'
+export interface BgmSearchResult {
+  total: number
+  hits: BgmHit[]
+  empty: boolean
+  query_used: string
+  translated: boolean
+  translate_source: TranslateSource
+}
+export interface BgmSuggestResult {
+  keyword: string
+  keywords: string[]
+  hits: BgmHit[]
+  empty: boolean
+}
+
+// Google Drive Picker
+export interface DriveConfig {
+  enabled: boolean
+  client_id: string
+  api_key: string
+  app_id: string
+  authenticated: boolean
+  reason: string
+}
+export type DriveSortOrder = 'captured' | 'selected'
+export interface DriveImportResult {
+  ok: boolean
+  imported: { id: string | null; filename: string | null; type?: string; error?: string }[]
+  count: number
+  skipped: { file_id: string; name: string; reason: string }[]
+}
+
+// 간편 자동 모드
+export interface EasyEstimate {
+  length: number        // 초
+  photos: number
+  videos: number
+  video_seconds: number
+  slide_duration: number
+}
+export type EasyFitMode = 'adjust' | 'trim' | 'loop'
+export interface EasyCandidate extends BgmHit {
+  fit: { mode: EasyFitMode; scale: number; label: string }
+}
+export interface EasyMusicCandidates {
+  length: number
+  keywords: string[]
+  keywords_source: 'gemini' | 'dict' | 'default' | 'user'
+  query_used: string
+  translated: boolean
+  translate_source: TranslateSource
+  duration_range: [number, number]
+  broadened: boolean
+  empty: boolean
+  candidates: EasyCandidate[]
+}
+export interface BgmCredit {
+  title: string
+  artist: string
+  license_url: string
+  page_url: string
+  jamendo_id: number | string
+}
+export interface EasyRenderOptions {
+  resolution?: '720p' | '1080p'
+  stylize_ratio?: number
+  slide_duration?: number
+  auto_curate?: boolean
+}
+export interface EasyStatus {
+  task: { status?: 'running' | 'done' | 'error'; phase?: string; progress?: number; message?: string; summary?: unknown }
+  render: { status?: string; progress?: number; message?: string }
+}
+
+// 간편 자동 모드 자막 (meta.easy_place / easy_feel) — 빈 문자열은 서버에서 삭제
+function parseMetaObj(s: Slide): Record<string, unknown> {
+  try {
+    const parsed = s.meta ? JSON.parse(s.meta) : {}
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed
+  } catch { /* 손상된 meta 는 새로 작성 */ }
+  return {}
+}
+export function getEasyCaption(s: Slide): { place: string; feel: string } {
+  const m = parseMetaObj(s)
+  return {
+    place: typeof m.easy_place === 'string' ? m.easy_place : '',
+    feel: typeof m.easy_feel === 'string' ? m.easy_feel : '',
+  }
+}
+export function withEasyCaption(s: Slide, place: string, feel: string): string {
+  return JSON.stringify({ ...parseMetaObj(s), easy_place: place, easy_feel: feel })
+}
+// 자동 설정된 필드 목록 (meta.auto_fields)
+export function getAutoFields(s: Slide): string[] {
+  const v = parseMetaObj(s).auto_fields
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []
+}
+// 사용자가 손대서 다시 섞기에서 빠지는 슬라이드 (meta.user_locked)
+export function isUserLocked(s: Slide): boolean {
+  return parseMetaObj(s).user_locked === true
+}
+// 편집기에서 자동 필드를 수정했을 때 서버의 자동 잠금을 로컬에도 반영한 meta
+export function withAutoFieldsTouched(s: Slide, fields: string[]): string | null {
+  const m = parseMetaObj(s)
+  const auto = Array.isArray(m.auto_fields) ? (m.auto_fields as unknown[]).filter((x): x is string => typeof x === 'string') : []
+  const hit = fields.filter(f => auto.includes(f))
+  if (!hit.length) return null
+  return JSON.stringify({ ...m, auto_fields: auto.filter(f => !hit.includes(f)), user_locked: true })
+}
+export const AUTO_FIELD_LABELS: Record<string, string> = {
+  transition: '전환',
+  photo_effect: '그림 효과',
+  effect_reveal: '드러내기',
+  effect_to_real: '그림→실사',
+  ken_burns: 'Ken Burns',
+  location_card: '장소 카드',
+  easy_duration: '슬라이드 길이',
 }
 
 // 오타 검증 결과
@@ -499,10 +648,10 @@ export const api = {
     return res.json()
   },
   deleteBgm: (projectId: string) => request<Project>('DELETE', `/projects/${projectId}/bgm`),
-  searchBgm: (projectId: string, q: string, page = 1) =>
-    request<{ total: number; hits: BgmHit[] }>('GET', `/projects/${projectId}/bgm/search?q=${encodeURIComponent(q)}&page=${page}`),
+  searchBgm: (projectId: string, q: string, page = 1, instrumental = false) =>
+    request<BgmSearchResult>('GET', `/projects/${projectId}/bgm/search?q=${encodeURIComponent(q)}&page=${page}&instrumental=${instrumental}`),
   suggestBgm: (projectId: string) =>
-    request<{ keyword: string; hits: BgmHit[] }>('POST', `/projects/${projectId}/bgm/suggest`),
+    request<BgmSuggestResult>('POST', `/projects/${projectId}/bgm/suggest`),
   downloadBgm: (projectId: string, url: string, filename: string) =>
     request<Project>('POST', `/projects/${projectId}/bgm/download`, { url, filename }),
 
@@ -551,6 +700,30 @@ export const api = {
   photosPollSession: (sessionId: string) => request<PickerSession>('GET', `/photos/session/${sessionId}`),
   photosImport: (projectId: string, sessionId: string, sortOrder: PhotosSortOrder = 'selected') =>
     request<PickerImportResult>('POST', `/photos/import/${projectId}`, { session_id: sessionId, sort_order: sortOrder }),
+
+  // Google Drive Picker
+  driveConfig: () => request<DriveConfig>('GET', '/drive/config'),
+  driveToken: () => request<{ access_token: string; expires_at: number | null }>('GET', '/drive/token'),
+  driveAuthUrl: () => request<{ auth_url: string }>('GET', '/drive/auth-url'),
+  driveExchangeCode: (code: string) => request<{ ok: boolean }>('POST', '/drive/exchange-code', { code }),
+  driveImport: (projectId: string, fileIds: string[], sortOrder: DriveSortOrder = 'captured') =>
+    request<DriveImportResult>('POST', `/drive/import/${projectId}`, { file_ids: fileIds, sort_order: sortOrder }),
+
+  // 간편 자동 모드
+  easyEstimate: (id: string, slideDuration?: number) =>
+    request<EasyEstimate>('GET', `/projects/${id}/easy/estimate${slideDuration !== undefined ? `?slide_duration=${slideDuration}` : ''}`),
+  easyMusicCandidates: (id: string, body: { keywords?: string[]; query?: string; slide_duration?: number }) =>
+    request<EasyMusicCandidates>('POST', `/projects/${id}/easy/music-candidates`, body),
+  easyChooseMusic: (id: string, track: BgmHit) =>
+    request<{ ok: boolean; bgm_filename: string; credit: BgmCredit; credit_text: string }>('POST', `/projects/${id}/easy/music`, { track }),
+  easyCredit: (id: string) => request<{ text: string; credit: BgmCredit | null }>('GET', `/projects/${id}/easy/credit`),
+  easyRender: (id: string, opts: EasyRenderOptions) =>
+    request<{ ok: boolean }>('POST', `/projects/${id}/easy/render`, opts),
+  easyStatus: (id: string) => request<EasyStatus>('GET', `/projects/${id}/easy/status`),
+  easyReshuffle: (id: string, seed?: number) =>
+    request<{ ok: boolean; seed: number; changed: number }>('POST', `/projects/${id}/easy/reshuffle`, seed !== undefined ? { seed } : {}),
+  setSlideLock: (projectId: string, slideId: string, locked: boolean) =>
+    request<{ ok: boolean; meta: string }>('POST', `/projects/${projectId}/slides/${slideId}/lock`, { locked }),
 
   // EXIF 자동 구성 (Photo-Vlog F3)
   scanExif: (projectId: string) =>

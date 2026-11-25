@@ -25,6 +25,8 @@ from backend.db.models import Project, Slide
 from backend.services.renderer import (
     build_slide_clip, compose_timeline, ASPECT_RATIO_MAP, split_sentences,
 )
+from backend.services.media_import import video_duration_fn
+from backend.services.presets import is_free_length, plan_timeline
 
 logger = get_logger(__name__)
 
@@ -124,6 +126,9 @@ def _HASHABLE_FIELDS(it: dict, project_id: str) -> dict:
         "label": it.get("label", ""),
         "image_filename": it.get("image_filename", ""),
         "video_filename": it.get("video_filename", ""),
+        # 실사 홀드 / 간편 자동 길이 (다음 슬라이드 전환에 따라 달라짐)
+        "free_duration": it.get("_free_duration"),
+        "reveal_base": it.get("_reveal_base"),
     }
 
 
@@ -162,11 +167,26 @@ def compute_context(db, project_id: str, slide_id: str,
                   .order_by(Slide.order_index).all())
     idx = next((i for i, s in enumerate(all_slides) if s.id == slide_id), None)
 
-    target_item = slide_to_item(slide)
+    # 풀 렌더와 같은 길이 규칙 (meta.easy_duration + 그림→실사 홀드, presets.plan_timeline).
+    # 비트 스냅은 BGM 비트 분석이 필요해 미리보기에서는 생략 (기존과 동일).
+    all_items = [slide_to_item(s) for s in all_slides]
+    try:
+        tl = plan_timeline(all_items, getattr(project, "default_slide_duration", 3.0) or 3.0,
+                           getattr(project, "transition_duration", 0.7) or 0.7,
+                           video_duration_fn(OUTPUTS_DIR / project_id / "assets"))
+        for k, it in enumerate(all_items):
+            if is_free_length(it):
+                it["_free_duration"] = round(tl["durations"][k], 4)
+            if tl["reveal_bases"][k] is not None:
+                it["_reveal_base"] = round(tl["reveal_bases"][k], 4)
+    except Exception as e:
+        logger.warning(f"Preview timeline 계산 실패 (기본 길이 사용): {e}")
+
+    target_item = all_items[idx] if idx is not None else slide_to_item(slide)
     items = [target_item]
     indices = [idx if idx is not None else 0]
     if include_neighbors and idx and idx > 0:
-        items = [slide_to_item(all_slides[idx - 1]), target_item]
+        items = [all_items[idx - 1], target_item]
         indices = [idx - 1, idx]
 
     canvas_size = ASPECT_RATIO_MAP.get(
@@ -262,6 +282,7 @@ def render_slide_preview(project_id: str, slide_id: str,
                 default_slide_duration=default_dur,
                 tts_master_volume=master_vol,
                 style_preset=style_preset,
+                free_slide_duration=it.get("_free_duration"),
             )
             if clip is not None:
                 clips.append(clip)

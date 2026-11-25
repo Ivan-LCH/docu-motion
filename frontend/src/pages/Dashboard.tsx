@@ -95,6 +95,22 @@ export default function Dashboard() {
     }
   }
 
+  // 간편 자동 모드 — 오늘 날짜 이름으로 프로젝트를 만들고 4단계 화면으로
+  const [creatingEasy, setCreatingEasy] = useState(false)
+  const handleCreateEasy = async () => {
+    const d = new Date()
+    const name = newName.trim() || `새 영상 ${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')}`
+    setCreatingEasy(true)
+    try {
+      const p = await api.createProject(name)
+      navigate(`/easy/${p.id}`)
+    } catch (e: unknown) {
+      toast(e instanceof Error ? e.message : '생성 실패', 'error')
+    } finally {
+      setCreatingEasy(false)
+    }
+  }
+
   const handleDelete = async (p: Project) => {
     try {
       await api.deleteProject(p.id)
@@ -111,6 +127,11 @@ export default function Dashboard() {
     <div style={{ display: 'grid', gridTemplateColumns: '260px 1fr', minHeight: 'calc(100vh - 64px)' }}>
       {/* Sidebar */}
       <aside style={{ background: 'var(--bg-secondary)', borderRight: '1px solid var(--border)', padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem', position: 'sticky', top: '64px', height: 'calc(100vh - 64px)', overflowY: 'auto' }}>
+        <button className="btn btn-primary btn-full" onClick={handleCreateEasy} disabled={creatingEasy}
+          title="사진·영상을 고르고 자막만 적으면 음악·효과는 자동으로"
+          style={{ padding: '0.85rem 1rem', fontSize: '1rem', fontWeight: 700, boxShadow: 'var(--shadow-accent)' }}>
+          {creatingEasy ? <span className="spinner" /> : '✦ 간편 자동으로 만들기'}
+        </button>
         <button className="btn btn-primary btn-full" onClick={() => {
           const el = document.getElementById('new-project-input')
           if (el) el.focus()

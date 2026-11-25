@@ -94,8 +94,9 @@ def check_auth() -> dict:
         return {"authenticated": False, "reason": str(e)}
 
 
-def generate_auth_url(redirect_uri: str) -> str:
-    """Picker 스코프만 요청 + 기존 권한 유지 (include_granted_scopes)."""
+def generate_auth_url(redirect_uri: str, scopes: list[str] | None = None) -> str:
+    """Picker 스코프만 요청 + 기존 권한 유지 (include_granted_scopes).
+    scopes: 다른 비제한 스코프를 함께 요청할 때 (예: 드라이브 drive.file — drive_manager)."""
     from google_auth_oauthlib.flow import Flow
     client_config = _load_client_config()
     if not client_config:
@@ -103,7 +104,7 @@ def generate_auth_url(redirect_uri: str) -> str:
     # Picker 스코프만 요청 (non-restricted → 차단 안됨)
     flow = Flow.from_client_config(
         client_config,
-        scopes=[PICKER_SCOPE],
+        scopes=scopes or [PICKER_SCOPE],
         redirect_uri=redirect_uri,
     )
     auth_url, _ = flow.authorization_url(
@@ -114,7 +115,7 @@ def generate_auth_url(redirect_uri: str) -> str:
     return auth_url
 
 
-def exchange_code(code: str, redirect_uri: str) -> bool:
+def exchange_code(code: str, redirect_uri: str, scopes: list[str] | None = None) -> bool:
     """Authorization code → token.json 저장.
 
     새 응답에 refresh_token이 없으면 기존 token.json의 refresh_token을 보존.
@@ -125,7 +126,7 @@ def exchange_code(code: str, redirect_uri: str) -> bool:
         raise ValueError("OAuth client 정보를 찾을 수 없습니다.")
     flow = Flow.from_client_config(
         client_config,
-        scopes=[PICKER_SCOPE],
+        scopes=scopes or [PICKER_SCOPE],
         redirect_uri=redirect_uri,
     )
     flow.fetch_token(code=code)

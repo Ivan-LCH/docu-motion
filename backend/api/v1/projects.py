@@ -15,10 +15,11 @@ from sqlalchemy.orm import Session
 from backend.db.session import get_db
 from backend.db.models import Project, Slide
 from backend.schema.project import ProjectCreate, ProjectRead, ProjectDetail
-from backend.core.config import OUTPUTS_DIR, GOOGLE_API_KEY, JAMENDO_CLIENT_ID, GEMINI_MODEL
+from backend.core.config import OUTPUTS_DIR
 from backend.core.logger import get_logger
 from backend.services.color_grade import VALID_STYLE_PRESETS
 from backend.services.presets import VALID_TRANSITIONS
+from backend.services import music_search
 
 
 # ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── #
@@ -251,45 +252,50 @@ def delete_bgm(project_id: str, db: Session = Depends(get_db)):
 # ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── #
 # BGM Search (Jamendo)
 # ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── #
-def _jamendo_hits(results: list) -> list:
-    return [
-        {
-            "id": t["id"],
-            "title": t.get("name", f"Track {t['id']}"),
-            "tags": ", ".join(t.get("musicinfo", {}).get("tags", {}).get("genres", []) +
-                              t.get("musicinfo", {}).get("tags", {}).get("instruments", []) +
-                              t.get("musicinfo", {}).get("tags", {}).get("vartags", [])),
-            "duration": t.get("duration", 0),
-            "preview_url": t.get("audio", ""),
-            "page_url": t.get("shareurl", ""),
-            "artist": t.get("artist_name", ""),
-        }
-        for t in results
-        if t.get("audio")
-    ]
+def _jamendo_http_error(e: music_search.JamendoError) -> HTTPException:
+    return HTTPException(status_code=e.status, detail=e.detail())
+
 
 @router.get("/{project_id}/bgm/search")
-async def search_bgm(project_id: str, q: str = "", page: int = 1, per_page: int = 15):
-    """Jamendo 무료 음악 검색"""
-    if not JAMENDO_CLIENT_ID:
-        raise HTTPException(status_code=500, detail="Jamendo client ID not configured")
-    params = {
-        "client_id": JAMENDO_CLIENT_ID,
-        "format": "json",
-        "limit": per_page,
-        "offset": (page - 1) * per_page,
-        "search": q,
-        "include": "musicinfo",
-        "audioformat": "mp32",
-    }
-    async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.get("https://api.jamendo.com/v3.0/tracks/", params=params)
-    if resp.status_code != 200:
-        raise HTTPException(status_code=502, detail="Jamendo API error")
-    data = resp.json()
-    results = data.get("results", [])
-    total = data.get("headers", {}).get("results_fullcount", len(results))
-    return {"total": total, "hits": _jamendo_hits(results)}
+async def search_bgm(project_id: str, q: str = "", page: int = 1, per_page: int = 15,
+                     instrumental: bool = False,
+                     min_duration: Optional[int] = None, max_duration: Optional[int] = None):
+    """Jamendo 무료 음악 검색. 한글 검색어는 영어 키워드로 바꿔 검색 (query_used/translated).
+    키 없음 → 503 {code: jamendo_key_missing}, 서버 오류 → 502 {code: jamendo_error}, 0건 → empty=true"""
+    tr = await music_search.translate_query(q)
+    rng = None
+    if min_duration is not None or max_duration is not None:
+        rng = (min_duration or 0, max_duration or 3600)
+    try:
+        hits, total = await music_search.jamendo_search(
+            tr["query_used"], limit=per_page, offset=(max(1, page) - 1) * per_page,
+            instrumental=instrumental, duration_range=rng)
+    except music_search.JamendoError as e:
+        raise _jamendo_http_error(e)
+    return {"total": total, "hits": hits, "empty": not hits, **tr}
+
+
+def bgm_context_text(project: Project, slides: list) -> str:
+    """AI 음악 키워드용 맥락: 장소·느낌(간편 자동) + 나레이션 + 프로젝트 제목."""
+    lines = []
+    title = (project.title_text or "").strip() or (project.name or "").strip()
+    if title:
+        lines.append(f"제목: {title}")
+    for s in slides:
+        try:
+            m = json.loads(s.meta or "{}")
+            m = m if isinstance(m, dict) else {}
+        except Exception:
+            m = {}
+        cap = " / ".join(str(m.get(k) or "").strip() for k in ("easy_place", "easy_feel")
+                         if str(m.get(k) or "").strip())
+        if cap:
+            lines.append(cap)
+        if (s.text or "").strip():
+            lines.append(s.text.strip()[:200])
+        if len(lines) > 30:
+            break
+    return "\n".join(lines)
 
 
 # ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── #
@@ -297,53 +303,22 @@ async def search_bgm(project_id: str, q: str = "", page: int = 1, per_page: int 
 # ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── #
 @router.post("/{project_id}/bgm/suggest")
 async def suggest_bgm(project_id: str, db: Session = Depends(get_db)):
-    """슬라이드 나레이션 텍스트 분석 → Gemini로 음악 키워드 추천 → Jamendo 검색"""
+    """장소·느낌·나레이션·제목 → 영어 음악 키워드(Gemini → 사전) → Jamendo 검색"""
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
     slides = db.query(Slide).filter(Slide.project_id == project_id).order_by(Slide.order_index).all()
-    narrations = [s.text for s in slides if s.text and s.text.strip()]
-    combined_text = "\n".join(narrations[:20])
-
-    # Gemini로 키워드 추출
-    keyword = "background"
-    if GOOGLE_API_KEY and (combined_text or project.title):
-        prompt_text = combined_text or project.title
-        gemini_prompt = (
-            f"다음은 영상의 나레이션 텍스트입니다:\n\n{prompt_text}\n\n"
-            "이 영상의 분위기와 주제에 맞는 배경음악을 검색할 영어 키워드 1~2개를 추천해주세요. "
-            "키워드만 반환하세요 (예: 'upbeat travel', 'calm nature', 'cinematic inspiring'). "
-            "다른 설명 없이 키워드만 한 줄로 답하세요."
-        )
-        try:
-            async with httpx.AsyncClient(timeout=20) as client:
-                gemini_resp = await client.post(
-                    f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GOOGLE_API_KEY}",
-                    json={"contents": [{"parts": [{"text": gemini_prompt}]}]},
-                )
-            if gemini_resp.status_code == 200:
-                gdata = gemini_resp.json()
-                keyword = gdata["candidates"][0]["content"]["parts"][0]["text"].strip().strip('"').strip("'")
-                keyword = keyword.split("\n")[0][:60]
-        except Exception as e:
-            logger.warning(f"Gemini suggest failed: {e}")
-
-    # Jamendo 검색
-    params = {
-        "client_id": JAMENDO_CLIENT_ID,
-        "format": "json",
-        "limit": 15,
-        "search": keyword,
-        "include": "musicinfo",
-        "audioformat": "mp32",
-    }
-    async with httpx.AsyncClient(timeout=15) as client:
-        jresp = await client.get("https://api.jamendo.com/v3.0/tracks/", params=params)
-    hits = []
-    if jresp.status_code == 200:
-        hits = _jamendo_hits(jresp.json().get("results", []))
-    return {"keyword": keyword, "hits": hits}
+    keywords, source = await music_search.ai_keywords(bgm_context_text(project, slides))
+    keyword = " ".join(keywords)
+    try:
+        hits, _ = await music_search.jamendo_search(keyword, limit=15)
+        if not hits and len(keywords) > 1:
+            hits, _ = await music_search.jamendo_search(keywords[0], limit=15)
+    except music_search.JamendoError as e:
+        raise _jamendo_http_error(e)
+    return {"keyword": keyword, "keywords": keywords, "keywords_source": source,
+            "hits": hits, "empty": not hits}
 
 
 # ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── #

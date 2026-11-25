@@ -10,6 +10,7 @@ DocuMotion - Video Renderer (MoviePy 기반)
 # Import 
 # ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── #
 
+import math
 import os
 # imageio_ffmpeg 번들 바이너리는 NVENC 미지원 → 시스템 ffmpeg 사용 강제
 os.environ.setdefault("IMAGEIO_FFMPEG_EXE", "/usr/bin/ffmpeg")
@@ -41,7 +42,10 @@ from backend.services.presets import (
     TEXT_STYLES, compute_slide_starts, slide_overlap, effect_duration,
     normalize_transition, normalize_text_style, resolve_style_text,
     normalize_photo_effect, clamp_effect_reveal, parse_sketch_softness, parse_color_strength, _parse_meta,
+    free_base_duration, apply_to_real_hold, project_hold_off, is_free_length,
+    project_meta, DEFAULT_BGM_LOOP_XFADE,
 )
+from backend.services.music_credit import credit_line
 from backend.core import config as _config
 from backend.core.config import CANVAS_SIZE, FONT_PATH, FONT_BOLD_PATH, TTS_SERVER_URL, TTS_VOICE_NAME
 from backend.core.logger import get_logger
@@ -1274,8 +1278,10 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
     use_tts_flag = bool(item.get('use_tts', 1))
 
     if not text:
-        # 텍스트가 없으면 기본 슬라이드 시간만큼 이미지 유지 (B2 비트 스냅 시 free_slide_duration 사용)
-        total_duration = free_slide_duration if free_slide_duration is not None else default_slide_duration
+        # 텍스트가 없으면 기본 슬라이드 시간만큼 이미지 유지 (B2 비트 스냅·실사 홀드 시 free_slide_duration 사용,
+        # 간편 자동 음악 맞춤은 meta.easy_duration — presets.free_base_duration)
+        total_duration = free_slide_duration if free_slide_duration is not None \
+            else free_base_duration(item, default_slide_duration)
     elif not use_tts_flag:
         # TTS 꺼짐 → 텍스트 길이에 비례해 시간 계산 (글자당 0.15초, 최소 3초)
         total_duration = max(3.0, len(text) * 0.15)
@@ -1560,8 +1566,12 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
         # 2단계: 그림/만화 → 실사 (meta.effect_to_real = brush|wipe|dissolve)
         to_real = normalize_to_real(_item_meta.get('effect_to_real')) if styled_arr is not None else ""
         reveal_mask = RevealMask(int(kb_area[1]), int(kb_area[0]), to_real, seed=i) if to_real else None
+        # 실사 홀드로 늘어난 슬라이드: 드러나기 타이밍은 늘리기 전 길이 기준 (presets.apply_to_real_hold)
+        reveal_base = item.get('_reveal_base')
+        reveal_base = float(reveal_base) if reveal_base else None
         if to_real:
-            logger.info(f"Slide {i}: {photo_effect} → real reveal '{to_real}' (window={effect_reveal:.2f})")
+            logger.info(f"Slide {i}: {photo_effect} → real reveal '{to_real}' (window={effect_reveal:.2f}"
+                        + (f", base={reveal_base:.2f}s hold→{total_duration:.2f}s)" if reveal_base else ")"))
 
         def _frame_from_box(left, top, view_w, view_h, target_w, target_h, t, dur):
             """같은 크롭 창으로 원본/스타일을 잘라 드러내기 가중치로 섞는다.
@@ -1569,7 +1579,7 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
             if styled_arr is None:
                 return _grade_real(_crop_frame(base_arr, left, top, view_w, view_h, target_w, target_h))
             if reveal_mask is not None:
-                p = to_real_progress(t, dur, effect_reveal)
+                p = to_real_progress(t, reveal_base or dur, effect_reveal)
                 if p <= 0.0:
                     return _crop_frame(styled_arr, left, top, view_w, view_h, target_w, target_h)
                 if p >= 1.0:
@@ -1682,7 +1692,7 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
 
                 def make_still(t, _o=still_orig, _s=still_styled, _d=total_duration):
                     if reveal_mask is not None:
-                        p = to_real_progress(t, _d, effect_reveal)
+                        p = to_real_progress(t, reveal_base or _d, effect_reveal)
                         if p <= 0.0:
                             return _s.copy()
                         if p >= 1.0:
@@ -1726,6 +1736,100 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
 # ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── #
 # Render Project
 # ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── #
+
+def bgm_mix_options(pmeta: dict, total_duration: float) -> tuple[float, float]:
+    """(fade_out, loop_xfade) 초. fade_out: meta.bgm_fade_out 우선 (간편 자동 3.0),
+    없으면 기존 렌더와 같은 min(2.0, 길이 5%). loop_xfade: meta.bgm_loop_xfade, 없으면 1.5초."""
+    total = max(0.0, float(total_duration or 0.0))
+    fade_out = min(2.0, total * 0.05)
+    try:
+        v = pmeta.get("bgm_fade_out")
+        if v is not None and not isinstance(v, bool):
+            fade_out = max(0.0, min(10.0, float(v), total * 0.5))
+    except (TypeError, ValueError):
+        pass
+    xfade = DEFAULT_BGM_LOOP_XFADE
+    try:
+        v = pmeta.get("bgm_loop_xfade")
+        if v is not None and not isinstance(v, bool):
+            xfade = max(0.0, min(5.0, float(v)))
+    except (TypeError, ValueError):
+        pass
+    return fade_out, xfade
+
+
+def loop_starts(track_duration: float, total_duration: float, xfade: float) -> tuple[list[float], float]:
+    """루프 반복 시작 시각들과 실제 크로스페이드 길이 (곡 길이의 25% 상한).
+    starts[k] = k × (T − xf), 마지막 반복이 total 을 덮을 때까지."""
+    T = float(track_duration)
+    if T <= 0:
+        return [0.0], 0.0
+    xf = max(0.0, min(float(xfade or 0.0), T * 0.25))
+    step = T - xf
+    n = max(1, math.ceil(max(0.0, total_duration - T) / step - 1e-9) + 1)
+    return [k * step for k in range(n)], xf
+
+
+def loop_audio(clip, total_duration: float, xfade: float):
+    """곡을 total_duration 이상이 되게 반복. xfade > 0 이면 반복 이음새를 크로스페이드."""
+    from moviepy.editor import CompositeAudioClip, concatenate_audioclips
+    starts, xf = loop_starts(clip.duration, total_duration, xfade)
+    if xf <= 0.01:
+        return concatenate_audioclips([clip] * len(starts))
+    parts = []
+    for k, st in enumerate(starts):
+        c = clip
+        if k > 0:
+            c = c.audio_fadein(xf)
+        if k < len(starts) - 1:
+            c = c.audio_fadeout(xf)
+        parts.append(c.set_start(st))
+    out = CompositeAudioClip(parts)
+    return out.set_duration(starts[-1] + clip.duration)
+
+
+CREDIT_TAIL_SECONDS = 4.0
+
+
+def render_credit_layer(text: str, size: tuple, total_duration: float,
+                        tail: float = CREDIT_TAIL_SECONDS) -> list:
+    """영상 마지막 tail 초 동안 우측 하단에 아주 작은 음악 크레딧 (테두리 없음, 옅은 그림자).
+    위치 카드(하단 8.5% 여백)보다 아래 줄에 놓여 겹치지 않는다."""
+    text = (text or "").strip()
+    if not text or total_duration <= 1.0:
+        return []
+    cw, ch = size
+    base = min(cw, ch)
+    px = max(10, int(base * 0.019))
+    font = _load_font(_editorial_font_path(medium=False), px)
+    probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+    text = _fit_text(probe, text, font, int(cw * 0.6))
+    asc, desc = font.getmetrics()
+    pad = max(3, px // 3)
+    W = int(probe.textlength(text, font=font)) + 2 * pad + 2
+    H = asc + desc + 2 * pad
+    img = _draw_soft_text(Image.new("RGBA", (W, H), (0, 0, 0, 0)), (pad, pad), text, font,
+                          (240, 240, 234, 215), shadow_alpha=120, px_ref=px)
+    rgba = np.array(img)
+    dur = min(tail, total_duration)
+    fade = min(0.5, dur / 4.0)
+    rgb = rgba[:, :, :3]
+    alpha = rgba[:, :, 3].astype(np.float32) / 255.0
+
+    def make_mask(t):
+        a = 1.0
+        if t < fade:
+            a = t / fade
+        elif t > dur - fade:
+            a = max(0.0, (dur - t) / fade)
+        return alpha * a
+
+    x = cw - int(cw * 0.04) - W + pad
+    y = ch - int(ch * 0.035) - H + pad
+    mask = VideoClip(make_mask, ismask=True, duration=dur)
+    clip = VideoClip(lambda t: rgb, duration=dur).set_mask(mask)
+    return [clip.set_position((x, y)).set_start(max(0.0, total_duration - dur))]
+
 
 def _video_codecs() -> list[str]:
     """인코더 시도 순서. VIDEO_CODEC 환경변수 우선, 없으면 NVIDIA 장치 유무로 결정.
@@ -1832,6 +1936,7 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
         # TTS/텍스트/비디오 슬라이드는 길이 불변 (나레이션/자막 박자 보존).
         # 시작 시각은 compose_timeline 과 동일한 presets.slide_overlap 규칙으로 단일 패스 계산.
         # overlap 상한이 현재 슬라이드 길이에 의존하므로 스냅 후 한 번 재계산한다.
+        free_durs = {}   # idx → 새 길이 (자유 길이 슬라이드만, 아래에서 한 번에 rebuild)
         try:
             rhythm_cfg = _resolve_rhythm_cfg(style_preset)
             if (rhythm_cfg and rhythm_cfg.get("beat_snap") and bgm_path
@@ -1850,7 +1955,6 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
 
                     clock = 0.0
                     prev_start, prev_dur = 0.0, 0.0
-                    free_durs = {}
                     for idx in range(len(final_clips)):
                         dur = final_clips[idx].duration or 0.0
                         start = _start_of(idx, prev_start, prev_dur, dur)
@@ -1870,31 +1974,54 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
                         prev_start, prev_dur = start, dur
                         clock = start + dur
 
-                    # 스냅된 클립만 rebuild (TTS 無 → 비용 저렴)
-                    for idx, nd in free_durs.items():
-                        segs = slide_narration_segments[idx] if idx < len(slide_narration_segments) else []
-                        src_i, src_item = clip_items[idx]
-                        ed_layers_b = []
-                        nb = build_slide_clip(
-                            src_item, src_i, assets_dir, temp_dir, canvas_size,
-                            tts_engine=tts_engine,
-                            font_size=_font_size, font_color=_font_color,
-                            default_slide_duration=default_slide_duration,
-                            tts_master_volume=tts_master_volume,
-                            narration_segments=segs,
-                            style_preset=style_preset,
-                            free_slide_duration=nd,
-                            editorial_layers_out=ed_layers_b,
-                        )
-                        if nb is not None:
-                            final_clips[idx] = nb
-                            slide_editorial_layers[idx] = ed_layers_b
                     if free_durs:
                         logger.info(f"B2 beat-snap: {len(free_durs)}/{len(final_clips)} "
                                     f"free slides snapped to beats (clock end={clock:.2f}s)")
         except Exception as _b2_err:
+            free_durs = {}
             logger.warning(f"B2 beat-snap skipped (using unsnapped clips): {_b2_err}")
 
+        # ── 그림→실사 홀드: 실사가 다 드러난 뒤 real_hold 초 + 다음 전환 overlap 이 슬라이드 안에 들어가게 ──
+        # (presets.apply_to_real_hold — 미리보기·간편 자동 길이 추정과 같은 규칙, 비트 스냅 뒤 최종 길이 기준)
+        reveal_bases = {}
+        try:
+            cur_durs = [free_durs.get(k, final_clips[k].duration or 0.0) for k in range(len(final_clips))]
+            clip_only = [it for _, it in clip_items]
+            held, bases = apply_to_real_hold(cur_durs, clip_only, transitions, transition_duration,
+                                             project_hold_off(slides))
+            for k, b in enumerate(bases):
+                if b is None:
+                    continue
+                if is_free_length(clip_only[k]):
+                    free_durs[k] = held[k]
+                    reveal_bases[k] = b
+                    logger.info(f"To-real hold: slide {clip_items[k][0]} {b:.2f}s → {held[k]:.2f}s")
+                else:
+                    logger.info(f"To-real hold skipped (narrated slide {clip_items[k][0]} 길이 고정)")
+        except Exception as _hold_err:
+            logger.warning(f"To-real hold skipped: {_hold_err}")
+
+        # 길이가 바뀐 자유 길이 슬라이드만 rebuild (TTS 無 → 비용 저렴)
+        for idx, nd in free_durs.items():
+            segs = slide_narration_segments[idx] if idx < len(slide_narration_segments) else []
+            src_i, src_item = clip_items[idx]
+            if idx in reveal_bases:
+                src_item = {**src_item, '_reveal_base': reveal_bases[idx]}
+            ed_layers_b = []
+            nb = build_slide_clip(
+                src_item, src_i, assets_dir, temp_dir, canvas_size,
+                tts_engine=tts_engine,
+                font_size=_font_size, font_color=_font_color,
+                default_slide_duration=default_slide_duration,
+                tts_master_volume=tts_master_volume,
+                narration_segments=segs,
+                style_preset=style_preset,
+                free_slide_duration=nd,
+                editorial_layers_out=ed_layers_b,
+            )
+            if nb is not None:
+                final_clips[idx] = nb
+                slide_editorial_layers[idx] = ed_layers_b
 
         # 클립 인코딩 - TTS 완료 직후 GPU 메모리 해제 후 NVENC 인코딩
         progress_callback(50, "클립 합치는 중...")
@@ -1985,22 +2112,37 @@ def render_project(project_id: str, slides: list, assets_dir: Path, output_file:
             if _aud is not None:
                 combined = combined.set_audio(_aud)
 
+        # ── 음악 크레딧 (간편 자동: 마지막 ~4초, 한쪽 하단에 아주 작게, 외곽선 없음) ──
+        pmeta = project_meta(slides)
+        _credit = credit_line(pmeta.get("bgm_credit")) if pmeta.get("show_bgm_credit") is not False else ""
+        if _credit and bgm_path:
+            try:
+                _cl = render_credit_layer(_credit, canvas_size, combined.duration)
+                if _cl:
+                    _aud = combined.audio
+                    combined = CompositeVideoClip([combined] + _cl, size=canvas_size)
+                    if _aud is not None:
+                        combined = combined.set_audio(_aud)
+                    logger.info(f"BGM credit overlay: {_credit}")
+            except Exception as credit_err:
+                logger.warning(f"BGM credit overlay failed (skipping): {credit_err}")
+
         # ── BGM 믹싱 ───────────────────────────────────────────────
         if bgm_path and Path(bgm_path).exists():
             try:
                 from moviepy.editor import CompositeAudioClip
                 bgm_clip = AudioFileClip(bgm_path)
                 total_duration = combined.duration
+                fade_out, loop_xfade = bgm_mix_options(pmeta, total_duration)
 
-                # BGM이 영상보다 짧으면 루프
+                # BGM이 영상보다 짧으면 루프 (반복 이음새는 크로스페이드, bgm_loop_xfade=0 이면 기존처럼 이어 붙임)
                 if bgm_clip.duration < total_duration:
-                    loops = int(total_duration / bgm_clip.duration) + 1
-                    from moviepy.editor import concatenate_audioclips
-                    bgm_clip = concatenate_audioclips([bgm_clip] * loops)
+                    bgm_clip = loop_audio(bgm_clip, total_duration, loop_xfade)
+                # 영상보다 길면 subclip 으로 잘라내고 끝을 fade_out 으로 정리
                 bgm_clip = (bgm_clip
                     .subclip(0, total_duration)
                     .volumex(bgm_volume)
-                    .audio_fadeout(min(2.0, total_duration * 0.05)))
+                    .audio_fadeout(fade_out))
                 if intro["bgm_fade_in"] > 0:
                     bgm_clip = bgm_clip.audio_fadein(min(intro["bgm_fade_in"], total_duration * 0.2))
 
