@@ -110,7 +110,7 @@ def timeline_duration(durations: list[float], transitions: list,
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# 사진 효과 (슬라이드 단위, 원본 → 스케치/만화)
+# 사진 효과 (슬라이드 단위, 원본 → 스케치/만화/수채)
 # ────────────────────────────────────────────────────────────────────────────
 # effect_reveal: 슬라이드 길이 중 원본→스타일 크로스페이드가 차지하는 비율.
 #                0 = 처음부터 스타일, 1 = 슬라이드 전체가 전환.
@@ -118,10 +118,14 @@ PHOTO_EFFECTS: dict[str, dict] = {
     "none":    {"description": "원본 사진"},
     "sketch":  {"description": "연필 스케치 (gray → invert → blur → color-dodge)"},
     "cartoon": {"description": "만화 (색면 평탄화·외곽선·채도 강화, 슬라이드당 1회)"},
+    "sketch_soft": {"description": "부드러운 스케치 (연필, 선 얇고 종이 밝음)"},
+    "watercolor":  {"description": "부드러운 수채 애니풍 (색면 평탄화, 얇은 선, 수채 질감)"},
 }
 VALID_PHOTO_EFFECTS: tuple[str, ...] = tuple(PHOTO_EFFECTS.keys())
 DEFAULT_PHOTO_EFFECT = "none"
 DEFAULT_EFFECT_REVEAL = 0.45
+# meta.sketch_softness (0~1): sketch 는 없거나 0 이면 기존 진한 스케치, sketch_soft 는 기본 0.75.
+DEFAULT_SKETCH_SOFTNESS = 0.75
 
 
 def normalize_photo_effect(name) -> str:
@@ -140,6 +144,19 @@ def clamp_effect_reveal(value, default: float = DEFAULT_EFFECT_REVEAL) -> float:
         return default
     if f != f or f == float("inf") or f == float("-inf"):
         return default
+    return max(0.0, min(1.0, f))
+
+
+def parse_sketch_softness(value):
+    """meta.sketch_softness → 0~1 float. 비어 있거나 숫자가 아니면 None (효과별 기본값 사용)."""
+    if value is None or value == "" or isinstance(value, bool):
+        return None
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    if f != f or f in (float("inf"), float("-inf")):
+        return None
     return max(0.0, min(1.0, f))
 
 

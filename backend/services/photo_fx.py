@@ -1,5 +1,5 @@
 """
-슬라이드 사진 효과 — 연필 스케치 / 만화.
+슬라이드 사진 효과 — 연필 스케치 / 부드러운 스케치 / 만화 / 부드러운 수채 애니풍.
 
 한 슬라이드당 이미 리사이즈된 스틸(Ken Burns 소스)에 한 번만 적용한다.
 렌더러는 그 결과를 원본과 크로스페이드하고, 프레임마다 필터를 다시 돌리지 않는다.
@@ -8,6 +8,10 @@ ML 모델 없음. CPU only.
 스케치: grayscale → invert → Gaussian blur → color-dodge.
 만화:   색면 평탄화(bilateral+stylization) + 양자화 + 채도 강화 + 잉크 외곽선
         (가장 긴 변 1280 으로 제한 후 원 해상도로 복원). 그림 구간은 시네마틱 색보정을 건너뛴다.
+부드러운 스케치: 같은 color-dodge 에 잔차 증폭을 softness 로 낮추고(기본 0.75에서 ×3 → ≈×1.54, 1.0에서 ≈×1.05),
+        선을 살짝 흐리고 옅은 흑연 음영 + 따뜻한 종이색. 종이가 밝게 남도록 휘도 맞춤은 하지 않는다.
+수채 애니풍: edge-preserving 평탄화(양자화 없음) + 파스텔 보정 + 하늘/밝은 상단 워시
+        + 얇고 옅은 잉크 + 종이 결 + 하이라이트 번짐. 만화처럼 평균 휘도를 원본에 맞춘다.
 
 opencv-python-headless 는 얼굴 감지용으로 이미 의존성이다.
 필터는 그걸 쓰고, cv2 를 못 읽는 환경에서는 PIL 근사로 렌더가 죽지 않게 한다.
@@ -16,7 +20,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from backend.services.presets import normalize_photo_effect
+from backend.services.presets import (DEFAULT_SKETCH_SOFTNESS, normalize_photo_effect,
+                                      parse_sketch_softness)
 
 
 def ensure_rgb_uint8(image: np.ndarray) -> np.ndarray:
@@ -37,14 +42,26 @@ def ensure_rgb_uint8(image: np.ndarray) -> np.ndarray:
     return np.ascontiguousarray(arr)
 
 
-def stylize_photo(image: np.ndarray, effect: str) -> np.ndarray:
-    """효과 적용 스틸. 입력과 같은 HxWx3 uint8. 'none'/알 수 없는 값은 원본 복사."""
+def stylize_photo(image: np.ndarray, effect: str, softness=None) -> np.ndarray:
+    """효과 적용 스틸. 입력과 같은 HxWx3 uint8. 'none'/알 수 없는 값은 원본 복사.
+
+    softness (meta.sketch_softness, 0~1) 는 스케치 계열에만 쓰인다.
+    sketch: None/0 → 기존 진한 스케치 그대로, >0 → 부드러운 스케치 파이프라인.
+    sketch_soft: None → DEFAULT_SKETCH_SOFTNESS(0.75).
+    """
     rgb = ensure_rgb_uint8(image)
     name = normalize_photo_effect(effect)
+    soft = parse_sketch_softness(softness)
     if name == "sketch":
+        if soft:
+            return _sketch_soft(rgb, soft)
         return _sketch(rgb)
+    if name == "sketch_soft":
+        return _sketch_soft(rgb, DEFAULT_SKETCH_SOFTNESS if soft is None else soft)
     if name == "cartoon":
         return _cartoon(rgb)
+    if name == "watercolor":
+        return _watercolor(rgb)
     return rgb.copy()
 
 
@@ -115,6 +132,187 @@ def _sketch(rgb: np.ndarray) -> np.ndarray:
     residual = np.minimum((np.uint16(255) - sketch.astype(np.uint16)) * np.uint16(3), np.uint16(255))
     sketch = (np.uint16(255) - residual).astype(np.uint8)
     return np.stack([sketch, sketch, sketch], axis=-1)
+
+
+def _gray_blur(gray: np.ndarray, sigma: float) -> np.ndarray:
+    """uint8 단일 채널 Gaussian. cv2 가 없으면 PIL."""
+    try:
+        import cv2
+        return cv2.GaussianBlur(gray, (0, 0), sigmaX=sigma, sigmaY=sigma)
+    except Exception:
+        from PIL import Image, ImageFilter
+        return np.asarray(Image.fromarray(gray, mode="L").filter(ImageFilter.GaussianBlur(radius=sigma)))
+
+
+def _sketch_soft(rgb: np.ndarray, softness: float = DEFAULT_SKETCH_SOFTNESS) -> np.ndarray:
+    """부드러운 연필: 선 얇고 옅게, 종이는 밝게. 평균 휘도를 사진에 맞추지 않는다(종이가 회색이 됨)."""
+    softness = float(np.clip(softness, 0.0, 1.0))
+    h, w = rgb.shape[:2]
+    sigma = max(1.2, min(h, w) * (0.012 + 0.010 * softness))
+    try:
+        import cv2
+        gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+    except Exception:
+        from PIL import Image
+        gray = np.asarray(Image.fromarray(rgb, mode="RGB").convert("L"))
+    inv = (255 - gray).astype(np.uint8)
+    blur = _gray_blur(inv, sigma)
+    gray16 = gray.astype(np.uint16)
+    blur16 = blur.astype(np.uint16)
+    denom = np.maximum(np.uint16(256) - blur16, np.uint16(1))
+    dodge = np.minimum((gray16 * np.uint16(256)) // denom, np.uint16(255)).astype(np.uint8)
+
+    # 기존 스케치는 잔차 ×3. softness 1 → ×1.05, 0.75 → ≈×1.54.
+    boost = 3.0 - 1.95 * softness
+    residual = np.minimum(
+        (np.uint16(255) - dodge.astype(np.uint16)) * np.float32(boost),
+        255,
+    ).astype(np.uint8)
+    sketch = (255 - residual).astype(np.uint8)
+    if softness > 0:
+        sketch = _gray_blur(sketch, 0.35 + 0.75 * softness)
+
+    # 옅은 흑연 음영 — 종이는 대부분 하얗게 둔다.
+    shade = _gray_blur(gray, max(2.0, min(h, w) * 0.01))
+    lifted = 255.0 - (255.0 - shade.astype(np.float32)) * (0.20 * softness)
+    paper = sketch.astype(np.float32)
+    mix = 0.28 * softness
+    paper = paper * (1.0 - mix) + np.minimum(paper, lifted) * mix
+    paper = np.clip(paper, 0, 255)
+
+    # 따뜻한 종이색 (255, 252, 245)
+    out = np.stack(
+        [
+            paper,
+            np.clip(paper * (252.0 / 255.0), 0, 255),
+            np.clip(paper * (245.0 / 255.0), 0, 255),
+        ],
+        axis=-1,
+    ).astype(np.uint8)
+    return np.ascontiguousarray(out)
+
+
+def _watercolor(rgb: np.ndarray) -> np.ndarray:
+    try:
+        import cv2
+        return _watercolor_cv(rgb, cv2)
+    except Exception:
+        return _watercolor_pil(rgb)
+
+
+def _watercolor_cv(rgb: np.ndarray, cv2) -> np.ndarray:
+    """수채 애니풍: 양자화 없는 평탄화 + 파스텔 + 하늘 워시 + 얇은 잉크 + 종이 결. 긴 변 1280 제한."""
+    h, w = rgb.shape[:2]
+    work = rgb
+    long_side = max(h, w)
+    cap = 1280
+    if long_side > cap:
+        scale = cap / float(long_side)
+        work = cv2.resize(
+            rgb,
+            (max(1, int(round(w * scale))), max(1, int(round(h * scale)))),
+            interpolation=cv2.INTER_AREA,
+        )
+    if not hasattr(cv2, "edgePreservingFilter"):
+        raise RuntimeError("cv2.edgePreservingFilter unavailable")
+
+    # 경계 보존 평탄화 (강한 양자화 없음)
+    flat = cv2.edgePreservingFilter(work, flags=cv2.RECURS_FILTER, sigma_s=72, sigma_r=0.36)
+    for _ in range(2):
+        flat = cv2.bilateralFilter(flat, d=9, sigmaColor=64, sigmaSpace=64)
+    if hasattr(cv2, "stylization"):
+        styled = cv2.stylization(flat, sigma_s=42, sigma_r=0.28)
+        flat = cv2.addWeighted(styled, 0.40, flat, 0.60, 0)
+
+    flat = _pastel(flat)
+    hsv = cv2.cvtColor(flat, cv2.COLOR_RGB2HSV).astype(np.float32)
+    hsv[..., 1] = np.clip(hsv[..., 1] * 1.16, 0, 255)
+    hsv[..., 2] = np.clip(hsv[..., 2] * 1.03, 0, 255)
+    flat = cv2.cvtColor(np.clip(hsv, 0, 255).astype(np.uint8), cv2.COLOR_HSV2RGB)
+
+    # 하늘 / 밝은 상단 워시
+    src_hsv = cv2.cvtColor(work, cv2.COLOR_RGB2HSV)
+    hh, ss, vv = src_hsv[..., 0], src_hsv[..., 1], src_hsv[..., 2]
+    yy = np.linspace(1.0, 0.0, work.shape[0], dtype=np.float32)[:, None]
+    sky_blue = ((vv > 130) & (ss < 130) & (hh >= 80) & (hh <= 140)).astype(np.float32)
+    sky_bright = ((vv > 185) & (ss < 70)).astype(np.float32)
+    mask = np.clip(sky_blue + 0.7 * sky_bright, 0, 1) * np.clip((yy - 0.22) / 0.50, 0, 1)
+    mask = cv2.GaussianBlur(mask, (0, 0), sigmaX=18)
+    amt = 0.30 * mask[..., None]
+    flat = np.clip(flat.astype(np.float32) * (1.0 - amt) + _wash_gradient(flat.shape) * amt,
+                   0, 255).astype(np.uint8)
+
+    # 얇고 옅은 잉크 (만화의 dilate + 0.16 보다 훨씬 약하게)
+    gray = cv2.cvtColor(work, cv2.COLOR_RGB2GRAY)
+    gblur = cv2.bilateralFilter(gray, d=7, sigmaColor=55, sigmaSpace=7)
+    edges = cv2.Canny(gblur, 55, 130)
+    ink = np.where(edges > 0, 0.68, 1.0).astype(np.float32)
+    ink = cv2.GaussianBlur(ink, (0, 0), sigmaX=0.95)
+    flat = np.clip(flat.astype(np.float32) * ink[..., None], 0, 255).astype(np.uint8)
+
+    # 은은한 종이 결
+    rng = np.random.RandomState(11)
+    noise = rng.randn(flat.shape[0], flat.shape[1]).astype(np.float32)
+    noise = cv2.GaussianBlur(noise, (0, 0), sigmaX=0.65)
+    fiber = cv2.filter2D(noise, -1, np.ones((1, 9), np.float32) / 9.0)
+    tex = 1.0 + fiber * 0.022
+    flat = np.clip(flat.astype(np.float32) * tex[..., None], 0, 255).astype(np.uint8)
+
+    # 하이라이트 번짐
+    luma = 0.299 * flat[..., 0] + 0.587 * flat[..., 1] + 0.114 * flat[..., 2]
+    hi = np.clip((luma.astype(np.float32) - 200.0) / 55.0, 0, 1)
+    bloom = cv2.GaussianBlur(flat.astype(np.float32), (0, 0), sigmaX=7)
+    flat = np.clip(flat.astype(np.float32) + bloom * (0.16 * hi[..., None]), 0, 255).astype(np.uint8)
+
+    out = _match_luma(work, flat)
+    if out.shape[0] != h or out.shape[1] != w:
+        out = cv2.resize(out, (w, h), interpolation=cv2.INTER_LINEAR)
+    return np.ascontiguousarray(out)
+
+
+def _pastel(rgb: np.ndarray) -> np.ndarray:
+    """그림자 들어 올림 + 대비 완화 + 살짝 따뜻하게."""
+    f = rgb.astype(np.float32)
+    f = 255.0 * np.power(np.clip(f / 255.0, 0, 1), 0.90)
+    f = f * 0.90 + 150.0 * 0.10
+    f[..., 0] = np.clip(f[..., 0] * 1.04 + 3, 0, 255)
+    f[..., 1] = np.clip(f[..., 1] * 1.01 + 1, 0, 255)
+    f[..., 2] = np.clip(f[..., 2] * 0.98, 0, 255)
+    return np.clip(f, 0, 255).astype(np.uint8)
+
+
+def _wash_gradient(shape) -> np.ndarray:
+    """위 하늘색 → 아래 따뜻한 미색 세로 그라데이션 (float32 HxWx3)."""
+    hgt, wid = shape[0], shape[1]
+    t = np.linspace(0.0, 1.0, hgt)[:, None]
+    top = np.array([176.0, 210.0, 232.0])
+    bottom = np.array([236.0, 230.0, 214.0])
+    rows = ((1.0 - t) * top + t * bottom).astype(np.float32)
+    return np.broadcast_to(rows[:, None, :], (hgt, wid, 3))
+
+
+def _watercolor_pil(rgb: np.ndarray) -> np.ndarray:
+    """cv2 가 없을 때의 근사. 다운스케일 블러 평탄화 + 파스텔 + 채도 + 옅은 기울기 잉크."""
+    from PIL import Image, ImageEnhance, ImageFilter
+
+    h, w = rgb.shape[:2]
+    im = Image.fromarray(rgb, mode="RGB")
+    small = im.resize((max(1, w // 2), max(1, h // 2)), Image.BILINEAR)
+    small = small.filter(ImageFilter.SMOOTH_MORE).filter(ImageFilter.SMOOTH_MORE)
+    smooth = np.asarray(small.resize((w, h), Image.BILINEAR)).astype(np.uint8)
+    smooth = _pastel(smooth)
+    smooth = np.asarray(ImageEnhance.Color(Image.fromarray(smooth, mode="RGB")).enhance(1.16))
+
+    gray = (
+        0.299 * rgb[..., 0] + 0.587 * rgb[..., 1] + 0.114 * rgb[..., 2]
+    ).astype(np.float32)
+    gy, gx = np.gradient(gray)
+    mag = np.sqrt(gx * gx + gy * gy)
+    thresh = max(18.0, float(np.percentile(mag, 92)))
+    # 1=유지, 0.68=옅은 잉크
+    wgt = np.where(mag >= thresh, 0.68, 1.0).astype(np.float32)
+    out = np.clip(smooth.astype(np.float32) * wgt[..., None], 0, 255).astype(np.uint8)
+    return _match_luma(rgb, out)
 
 
 def _cartoon(rgb: np.ndarray) -> np.ndarray:
@@ -213,7 +411,7 @@ def _cartoon_pil(rgb: np.ndarray) -> np.ndarray:
 # ────────────────────────────────────────────────────────────────────────────
 # 2단계: 그림/만화 → 실사 전환 (CF 느낌의 마스크 리빌)
 # ────────────────────────────────────────────────────────────────────────────
-# 슬라이드 앞부분은 스타일 스틸(스케치/만화)로 시작해 마스크가 번지며 실사가 드러난다.
+# 슬라이드 앞부분은 스타일 스틸(스케치/만화/수채)로 시작해 마스크가 번지며 실사가 드러난다.
 # 마스크 필드는 슬라이드당 한 번 만들고, 프레임마다 임계값만 바꾼다 (CPU 저렴).
 #   brush    : 가로로 길쭉한 붓결 + 저주파 얼룩 + 좌→우 바이어스 — 물감이 씻기듯
 #   wipe     : 살짝 기운 대각 와이프, 가장자리 흔들림 + 부드러운 페더

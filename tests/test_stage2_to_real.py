@@ -87,7 +87,8 @@ def test_plan_stylize_prefers_card_and_resets(db, outputs, no_network):
     assert all(b - a > 1 for a, b in zip(idx, idx[1:]))            # 인접 금지
     assert all(i >= len(s["intro_slides"]) for i in idx)            # 인트로 제외
     assert s["cards"][0]["order_index"] in idx                      # 위치 카드 컷 우선
-    assert {x["effect"] for x in st} <= {"sketch", "cartoon"}
+    assert [x["effect"] for x in st] == [auto_edit._STYLIZE_CYCLE[j % 4] for j in range(len(st))]
+    assert st[0]["effect"] == "watercolor" and st[1]["effect"] == "sketch_soft"
     slides = {sl.order_index: sl for sl in _slides(db, p.id)}
     for x in st:
         sl = slides[x["order_index"]]
@@ -109,6 +110,40 @@ def test_plan_stylize_prefers_card_and_resets(db, outputs, no_network):
             assert sl.photo_effect in (None, "none")
 
 
+def test_stylize_auto_cycle_order():
+    assert auto_edit._STYLIZE_CYCLE == ("watercolor", "sketch_soft", "cartoon", "sketch")
+    assert auto_edit.DEFAULT_OPTS["stylize_effect"] == "auto"
+
+
+@pytest.mark.parametrize("eff", ["auto", "AUTO", "mystery"])
+def test_plan_stylize_auto_cycles_all_four(db, outputs, no_network, eff):
+    p = make_project(db, outputs, n_photos=20, place_at=1)
+    st = auto_edit.plan_auto_edit(db, p.id, {"stylize_ratio": 0.5, "stylize_effect": eff})["stylized"]
+    assert len(st) >= 5
+    assert [x["effect"] for x in st] == [auto_edit._STYLIZE_CYCLE[j % 4] for j in range(len(st))]
+    assert [x["effect"] for x in st[:4]] == ["watercolor", "sketch_soft", "cartoon", "sketch"]
+
+
+@pytest.mark.parametrize("eff", ["watercolor", "sketch_soft", "cartoon", "sketch"])
+def test_plan_stylize_pinned_effect(db, outputs, no_network, eff):
+    p = make_project(db, outputs, n_photos=12, place_at=1)
+    st = auto_edit.plan_auto_edit(db, p.id, {"stylize_ratio": 0.25, "stylize_effect": eff})["stylized"]
+    assert len(st) >= 2
+    assert {x["effect"] for x in st} == {eff}
+    for sl in _slides(db, p.id):
+        if json.loads(sl.meta or "{}").get("auto_stylized"):
+            assert sl.photo_effect == eff
+
+
+def test_api_accepts_new_stylize_effects():
+    from pydantic import ValidationError
+    from backend.api.v1.auto_edit import AutoEditRequest
+    for eff in ("auto", "sketch", "cartoon", "sketch_soft", "watercolor"):
+        assert AutoEditRequest(stylize_effect=eff).stylize_effect == eff
+    with pytest.raises(ValidationError):
+        AutoEditRequest(stylize_effect="oilpaint")
+
+
 def test_default_plan_has_no_stylize(db, outputs, no_network):
     p = make_project(db, outputs, n_photos=6, place_at=None)
     s = auto_edit.plan_auto_edit(db, p.id, {})
@@ -122,6 +157,17 @@ def test_meta_merge_effect_to_real():
     assert m == {"frames": ["f.png"], "effect_to_real": "wipe"}
     m2 = json.loads(_merge_style_meta(json.dumps(m), json.dumps({"effect_to_real": "evil"})))
     assert "effect_to_real" not in m2
+
+
+def test_meta_merge_sketch_softness():
+    from backend.api.v1.slides import _merge_style_meta
+    base = json.dumps({"frames": ["f.png"], "effect_to_real": "brush"})
+    m = json.loads(_merge_style_meta(base, json.dumps({"sketch_softness": 1.4, "frames": ["x"]})))
+    assert m == {"frames": ["f.png"], "effect_to_real": "brush", "sketch_softness": 1.0}
+    m = json.loads(_merge_style_meta(json.dumps(m), json.dumps({"sketch_softness": "0.35"})))
+    assert m["sketch_softness"] == pytest.approx(0.35)
+    m = json.loads(_merge_style_meta(json.dumps(m), json.dumps({"sketch_softness": ""})))
+    assert "sketch_softness" not in m and m["effect_to_real"] == "brush"
 
 
 def _sat(frame):

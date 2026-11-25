@@ -21,6 +21,7 @@ from backend.core.logger import get_logger
 from backend.services import map_service
 from backend.services import place_info
 from backend.services.exif_service import extract_exif
+from backend.services.presets import parse_sketch_softness
 from backend.services import route_slide_service
 from backend.services.renderer import ASPECT_RATIO_MAP
 
@@ -222,16 +223,19 @@ _STYLE_META_KEYS = ("hero_text", "punch_text", "kinetic_text", "kinetic_highligh
 _CARD_META_KEY = "location_card"   # 자동 편집 위치 카드 {title, sub, source}
 _TO_REAL_META_KEY = "effect_to_real"   # 2단계: 그림→실사 마스크 (brush|wipe|dissolve, 빈 값 = 기존)
 _TO_REAL_VALUES = ("brush", "wipe", "dissolve")
+_SOFTNESS_META_KEY = "sketch_softness"   # 스케치 계열 부드러움 0~1 (빈 값 = 효과 기본)
 
 
 def _merge_style_meta(existing: str, incoming: str) -> str:
-    """프론트가 보낸 meta 중 hero/punch/kinetic 문구와 location_card 만 기존 meta 에 병합.
+    """프론트가 보낸 meta 중 hero/punch/kinetic 문구, location_card, effect_to_real, sketch_softness 만
+    기존 meta 에 병합.
     route frames 등 서버가 관리하는 키는 클라이언트 값으로 덮어쓰지 않는다. 빈 문자열 → 키 삭제."""
     try:
         inc = json.loads(incoming) if incoming else {}
     except Exception:
         inc = {}
-    if not isinstance(inc, dict) or not any(k in inc for k in (*_STYLE_META_KEYS, _CARD_META_KEY, _TO_REAL_META_KEY)):
+    if not isinstance(inc, dict) or not any(k in inc for k in (*_STYLE_META_KEYS, _CARD_META_KEY, _TO_REAL_META_KEY,
+                                                                  _SOFTNESS_META_KEY)):
         return existing
     try:
         cur = json.loads(existing) if existing else {}
@@ -265,6 +269,12 @@ def _merge_style_meta(existing: str, incoming: str) -> str:
             cur[_TO_REAL_META_KEY] = v
         else:
             cur.pop(_TO_REAL_META_KEY, None)
+    if _SOFTNESS_META_KEY in inc:
+        v = parse_sketch_softness(inc[_SOFTNESS_META_KEY])
+        if v is None:
+            cur.pop(_SOFTNESS_META_KEY, None)
+        else:
+            cur[_SOFTNESS_META_KEY] = round(v, 3)
     return json.dumps(cur, ensure_ascii=False)
 
 
