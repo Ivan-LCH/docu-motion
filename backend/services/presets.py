@@ -120,12 +120,15 @@ PHOTO_EFFECTS: dict[str, dict] = {
     "cartoon": {"description": "만화 (색면 평탄화·외곽선·채도 강화, 슬라이드당 1회)"},
     "sketch_soft": {"description": "부드러운 스케치 (연필, 선 얇고 종이 밝음)"},
     "watercolor":  {"description": "부드러운 수채 애니풍 (색면 평탄화, 얇은 선, 수채 질감)"},
+    "sketch_color": {"description": "파스텔 채색 스케치 (부드러운 연필선 + 낮은 채도 파스텔 색면)"},
 }
 VALID_PHOTO_EFFECTS: tuple[str, ...] = tuple(PHOTO_EFFECTS.keys())
 DEFAULT_PHOTO_EFFECT = "none"
 DEFAULT_EFFECT_REVEAL = 0.45
 # meta.sketch_softness (0~1): sketch 는 없거나 0 이면 기존 진한 스케치, sketch_soft 는 기본 0.75.
 DEFAULT_SKETCH_SOFTNESS = 0.75
+# meta.color_strength (0~1): sketch_color 의 파스텔 채색 진하기. 없으면 0.70.
+DEFAULT_COLOR_STRENGTH = 0.70
 
 
 def normalize_photo_effect(name) -> str:
@@ -149,6 +152,15 @@ def clamp_effect_reveal(value, default: float = DEFAULT_EFFECT_REVEAL) -> float:
 
 def parse_sketch_softness(value):
     """meta.sketch_softness → 0~1 float. 비어 있거나 숫자가 아니면 None (효과별 기본값 사용)."""
+    return _parse_unit(value)
+
+
+def parse_color_strength(value):
+    """meta.color_strength → 0~1 float. 비어 있거나 숫자가 아니면 None (DEFAULT_COLOR_STRENGTH 사용)."""
+    return _parse_unit(value)
+
+
+def _parse_unit(value):
     if value is None or value == "" or isinstance(value, bool):
         return None
     try:

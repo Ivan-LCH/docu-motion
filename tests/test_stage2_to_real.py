@@ -87,8 +87,8 @@ def test_plan_stylize_prefers_card_and_resets(db, outputs, no_network):
     assert all(b - a > 1 for a, b in zip(idx, idx[1:]))            # 인접 금지
     assert all(i >= len(s["intro_slides"]) for i in idx)            # 인트로 제외
     assert s["cards"][0]["order_index"] in idx                      # 위치 카드 컷 우선
-    assert [x["effect"] for x in st] == [auto_edit._STYLIZE_CYCLE[j % 4] for j in range(len(st))]
-    assert st[0]["effect"] == "watercolor" and st[1]["effect"] == "sketch_soft"
+    assert [x["effect"] for x in st] == [auto_edit._STYLIZE_CYCLE[j % 5] for j in range(len(st))]
+    assert st[0]["effect"] == "watercolor" and st[1]["effect"] == "sketch_color"
     slides = {sl.order_index: sl for sl in _slides(db, p.id)}
     for x in st:
         sl = slides[x["order_index"]]
@@ -111,20 +111,21 @@ def test_plan_stylize_prefers_card_and_resets(db, outputs, no_network):
 
 
 def test_stylize_auto_cycle_order():
-    assert auto_edit._STYLIZE_CYCLE == ("watercolor", "sketch_soft", "cartoon", "sketch")
+    assert auto_edit._STYLIZE_CYCLE == ("watercolor", "sketch_color", "sketch_soft", "cartoon", "sketch")
     assert auto_edit.DEFAULT_OPTS["stylize_effect"] == "auto"
 
 
 @pytest.mark.parametrize("eff", ["auto", "AUTO", "mystery"])
-def test_plan_stylize_auto_cycles_all_four(db, outputs, no_network, eff):
+def test_plan_stylize_auto_cycles_all_five(db, outputs, no_network, eff):
     p = make_project(db, outputs, n_photos=20, place_at=1)
     st = auto_edit.plan_auto_edit(db, p.id, {"stylize_ratio": 0.5, "stylize_effect": eff})["stylized"]
-    assert len(st) >= 5
-    assert [x["effect"] for x in st] == [auto_edit._STYLIZE_CYCLE[j % 4] for j in range(len(st))]
-    assert [x["effect"] for x in st[:4]] == ["watercolor", "sketch_soft", "cartoon", "sketch"]
+    assert len(st) >= 6
+    assert [x["effect"] for x in st] == [auto_edit._STYLIZE_CYCLE[j % 5] for j in range(len(st))]
+    assert [x["effect"] for x in st[:6]] == ["watercolor", "sketch_color", "sketch_soft", "cartoon", "sketch",
+                                             "watercolor"]
 
 
-@pytest.mark.parametrize("eff", ["watercolor", "sketch_soft", "cartoon", "sketch"])
+@pytest.mark.parametrize("eff", ["watercolor", "sketch_color", "sketch_soft", "cartoon", "sketch"])
 def test_plan_stylize_pinned_effect(db, outputs, no_network, eff):
     p = make_project(db, outputs, n_photos=12, place_at=1)
     st = auto_edit.plan_auto_edit(db, p.id, {"stylize_ratio": 0.25, "stylize_effect": eff})["stylized"]
@@ -138,7 +139,7 @@ def test_plan_stylize_pinned_effect(db, outputs, no_network, eff):
 def test_api_accepts_new_stylize_effects():
     from pydantic import ValidationError
     from backend.api.v1.auto_edit import AutoEditRequest
-    for eff in ("auto", "sketch", "cartoon", "sketch_soft", "watercolor"):
+    for eff in ("auto", "sketch", "cartoon", "sketch_soft", "watercolor", "sketch_color"):
         assert AutoEditRequest(stylize_effect=eff).stylize_effect == eff
     with pytest.raises(ValidationError):
         AutoEditRequest(stylize_effect="oilpaint")
@@ -168,6 +169,29 @@ def test_meta_merge_sketch_softness():
     assert m["sketch_softness"] == pytest.approx(0.35)
     m = json.loads(_merge_style_meta(json.dumps(m), json.dumps({"sketch_softness": ""})))
     assert "sketch_softness" not in m and m["effect_to_real"] == "brush"
+
+
+def test_meta_merge_color_strength():
+    from backend.api.v1.slides import _merge_style_meta
+    base = json.dumps({"frames": ["f.png"], "sketch_softness": 0.6})
+    m = json.loads(_merge_style_meta(base, json.dumps({"color_strength": 1.8, "frames": ["x"]})))
+    assert m == {"frames": ["f.png"], "sketch_softness": 0.6, "color_strength": 1.0}
+    m = json.loads(_merge_style_meta(json.dumps(m), json.dumps({"color_strength": -0.2})))
+    assert m["color_strength"] == 0.0
+    m = json.loads(_merge_style_meta(json.dumps(m), json.dumps({"color_strength": "0.45"})))
+    assert m["color_strength"] == pytest.approx(0.45)
+    m = json.loads(_merge_style_meta(json.dumps(m), json.dumps({"color_strength": ""})))
+    assert "color_strength" not in m and m["sketch_softness"] == 0.6
+    m = json.loads(_merge_style_meta(json.dumps(m), json.dumps({"color_strength": "abc"})))
+    assert "color_strength" not in m
+
+
+def test_plan_reset_reverts_auto_sketch_color(db, outputs, no_network):
+    p = make_project(db, outputs, n_photos=12, place_at=1)
+    st = auto_edit.plan_auto_edit(db, p.id, {"stylize_ratio": 0.25, "stylize_effect": "sketch_color"})["stylized"]
+    assert st and all(x["effect"] == "sketch_color" for x in st)
+    auto_edit.plan_auto_edit(db, p.id, {"stylize_ratio": 0})
+    assert all(sl.photo_effect in (None, "none") for sl in _slides(db, p.id))
 
 
 def _sat(frame):
@@ -245,5 +269,31 @@ def test_cinematic_skips_styled_hold(tmp_path):
     # 홀드 프레임은 실사와 분명히 다르고, 채도는 유지된다
     assert float(np.abs(hold_cine.astype(np.int16) - real_cine.astype(np.int16)).mean()) > 8.0
     assert _sat(hold_cine) > 8
+    none_clip.close()
+    cine_clip.close()
+
+
+def test_cinematic_skips_sketch_color_hold(tmp_path):
+    """sketch_color 도 그림 홀드 구간은 시네마틱 색보정을 건너뛴다."""
+    from backend.services.renderer import build_slide_clip
+    from tests.test_photo_effects import _sample_photo
+    from PIL import Image
+
+    Image.fromarray(_sample_photo(900, 600)).save(tmp_path / "photo.png")
+    temp = tmp_path / "temp"
+    temp.mkdir()
+    item = {"image_filename": "photo.png", "label": "", "text": "", "slide_type": "image",
+            "use_tts": 0, "photo_effect": "sketch_color", "effect_reveal": 0.5, "ken_burns": 0,
+            "image_fit": "cover", "transition": "none", "overlays": "[]", "rotation": 0,
+            "text_style": "none", "meta": '{"effect_to_real": "dissolve"}'}
+    none_clip = build_slide_clip(item, 0, tmp_path, temp, (640, 360), tts_engine=None,
+                                 default_slide_duration=2.0, style_preset="none")
+    cine_clip = build_slide_clip(item, 0, tmp_path, temp, (640, 360), tts_engine=None,
+                                 default_slide_duration=2.0, style_preset="cinematic")
+    hold_none, hold_cine = none_clip.get_frame(0.2), cine_clip.get_frame(0.2)
+    assert float(np.abs(hold_none.astype(np.int16) - hold_cine.astype(np.int16)).mean()) < 3.0
+    real_none, real_cine = none_clip.get_frame(1.85), cine_clip.get_frame(1.85)
+    assert float(np.abs(real_none.astype(np.int16) - real_cine.astype(np.int16)).mean()) > 8.0
+    assert _sat(hold_cine) > 4
     none_clip.close()
     cine_clip.close()

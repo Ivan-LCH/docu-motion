@@ -1,4 +1,4 @@
-"""사진 효과(sketch / sketch_soft / cartoon / watercolor): 배열 규약, 스키마, 짧은 샘플 영상."""
+"""사진 효과(sketch / sketch_soft / cartoon / watercolor / sketch_color): 배열 규약, 스키마, 짧은 샘플 영상."""
 from __future__ import annotations
 
 import os
@@ -12,6 +12,8 @@ from pydantic import ValidationError
 from backend.schema.project import SlideCreate, SlideUpdate
 from backend.services.photo_fx import (
     _cartoon_pil,
+    _pastel_wash_pil,
+    _sketch_color,
     _sketch_soft,
     _watercolor,
     _watercolor_pil,
@@ -20,11 +22,13 @@ from backend.services.photo_fx import (
     stylize_photo,
 )
 from backend.services.presets import (
+    DEFAULT_COLOR_STRENGTH,
     DEFAULT_EFFECT_REVEAL,
     DEFAULT_SKETCH_SOFTNESS,
     VALID_PHOTO_EFFECTS,
     clamp_effect_reveal,
     normalize_photo_effect,
+    parse_color_strength,
     parse_sketch_softness,
 )
 
@@ -54,6 +58,9 @@ def test_photo_effect_ids_registered():
     assert "cartoon" in VALID_PHOTO_EFFECTS
     assert "sketch_soft" in VALID_PHOTO_EFFECTS
     assert "watercolor" in VALID_PHOTO_EFFECTS
+    assert "sketch_color" in VALID_PHOTO_EFFECTS
+    assert normalize_photo_effect(" Sketch_Color ") == "sketch_color"
+    assert normalize_photo_effect("sketch_colour") == "none"
     assert normalize_photo_effect("SKETCH") == "sketch"
     assert normalize_photo_effect(" Sketch_Soft ") == "sketch_soft"
     assert normalize_photo_effect("WATERCOLOR") == "watercolor"
@@ -208,6 +215,84 @@ def test_new_effects_pil_fallback(monkeypatch):
     assert float(soft.mean()) > 150
 
 
+def test_parse_color_strength():
+    assert parse_color_strength(None) is None
+    assert parse_color_strength("") is None
+    assert parse_color_strength("x") is None
+    assert parse_color_strength(float("inf")) is None
+    assert parse_color_strength(False) is None
+    assert parse_color_strength("0.4") == pytest.approx(0.4)
+    assert parse_color_strength(2) == 1.0
+    assert parse_color_strength(-1) == 0.0
+    assert DEFAULT_COLOR_STRENGTH == pytest.approx(0.70)
+
+
+def _hsv_sat(frame: np.ndarray) -> float:
+    f = frame.astype(np.float32)
+    mx, mn = f.max(axis=2), f.min(axis=2)
+    return float(((mx - mn) / np.maximum(mx, 1.0)).mean())
+
+
+def test_sketch_color_pastel_on_light_paper():
+    src = _sample_photo(320, 220)
+    out = stylize_photo(src, "sketch_color")
+    assert out.shape == src.shape and out.dtype == np.uint8
+    # 기본값 = softness 0.75, color_strength 0.70
+    assert np.array_equal(out, _sketch_color(src, DEFAULT_SKETCH_SOFTNESS, 0.70))
+    assert np.array_equal(out, stylize_photo(src, "sketch_color", softness="", color_strength=None))
+    # 컬러 (회색조 아님), 그래도 원본보다 차분하다
+    assert _colorfulness(out) > 8
+    assert _hsv_sat(out) < _hsv_sat(src)
+    # 종이가 밝다: _match_luma 를 쓰지 않으므로 원본 평균보다 밝게 남는다
+    assert _luma(out) > 170
+    assert _luma(out) > _luma(src) + 15
+    busy = _busy_photo()
+    assert _luma(stylize_photo(busy, "sketch_color")) > _luma(busy) + 20
+    # 연필 선은 남는다
+    assert float((out.min(axis=2) < 120).mean()) > 0.002
+    # 긴 변 1280 초과 입력도 원 해상도로 돌아온다
+    big = _sample_photo(1600, 900)
+    assert stylize_photo(big, "sketch_color").shape == big.shape
+
+
+def test_sketch_color_strength_and_softness():
+    src = _sample_photo(320, 220)
+    lo = stylize_photo(src, "sketch_color", color_strength=0.4)
+    hi = stylize_photo(src, "sketch_color", color_strength=0.7)
+    assert _hsv_sat(hi) > _hsv_sat(lo) * 1.1
+    paper = np.array([255, 252, 245], np.int16)
+    def tint(f):   # 종이색에서 벗어난 정도 (칠 범위 × 진하기)
+        return float(np.abs(f.astype(np.int16) - paper).max(axis=2).mean())
+    assert tint(hi) > tint(lo) + 8
+    # 문자열/범위 밖 값도 받는다
+    assert np.array_equal(stylize_photo(src, "sketch_color", color_strength="0.7"), hi)
+    assert np.array_equal(stylize_photo(src, "sketch_color", color_strength=5),
+                          stylize_photo(src, "sketch_color", color_strength=1.0))
+    # softness 가 선에 반영된다
+    busy = _busy_photo()
+    s_hard = stylize_photo(busy, "sketch_color", softness=0.2)
+    s_soft = stylize_photo(busy, "sketch_color", softness=1.0)
+    assert not np.array_equal(s_hard, s_soft)
+    assert np.array_equal(s_soft, _sketch_color(busy, 1.0, DEFAULT_COLOR_STRENGTH))
+    # color_strength 는 다른 효과에 영향 없음
+    for eff in ("sketch", "sketch_soft", "cartoon", "watercolor"):
+        assert np.array_equal(stylize_photo(src, eff, color_strength=0.1), stylize_photo(src, eff))
+
+
+def test_sketch_color_pil_fallback(monkeypatch):
+    import sys
+    src = _busy_photo(160, 120)
+    wash = _pastel_wash_pil(src, 0.7)
+    assert wash.shape == src.shape and wash.dtype == np.uint8
+    monkeypatch.setitem(sys.modules, "cv2", None)
+    out = stylize_photo(src, "sketch_color")
+    assert out.shape == src.shape and out.dtype == np.uint8
+    assert _colorfulness(out) > 4
+    assert _luma(out) > _luma(src) + 20
+    lo = stylize_photo(src, "sketch_color", color_strength=0.4)
+    assert _hsv_sat(out) > _hsv_sat(lo)
+
+
 def test_reveal_weight_and_blend():
     assert reveal_weight(0.0, 2.0, 0.5) == 0.0
     assert reveal_weight(1.0, 2.0, 0.5) == 1.0  # 창 길이 = 1s
@@ -224,7 +309,7 @@ def test_reveal_weight_and_blend():
 
 
 def test_schema_accepts_effect_ids_and_reveal():
-    for effect in ("sketch", "cartoon", "SKETCH", "sketch_soft", "Watercolor"):
+    for effect in ("sketch", "cartoon", "SKETCH", "sketch_soft", "Watercolor", "sketch_color"):
         created = SlideCreate(photo_effect=effect)
         assert created.photo_effect == effect.lower()
         updated = SlideUpdate(id="s1", order_index=1, photo_effect=effect, effect_reveal=0.25)
@@ -359,6 +444,8 @@ def test_effects_render_in_short_sample_video(tmp_path: Path):
     ("sketch_soft", "{}"),
     ("sketch", '{"sketch_softness": 0.6}'),
     ("watercolor", '{"effect_to_real": "brush"}'),
+    ("sketch_color", '{"sketch_softness": 0.6, "color_strength": 0.4}'),
+    ("sketch_color", '{"effect_to_real": "wipe"}'),
 ])
 def test_new_effects_build_slide_clip(tmp_path: Path, effect: str, meta: str):
     from backend.services.renderer import build_slide_clip
@@ -380,6 +467,10 @@ def test_new_effects_build_slide_clip(tmp_path: Path, effect: str, meta: str):
     assert float(np.abs(start.astype(np.int16) - end.astype(np.int16)).mean()) > 6
     if effect == "watercolor":      # 그림 → 실사: 수채로 시작 (컬러 유지)
         assert _colorfulness(start) > 8
+    elif effect == "sketch_color" and "effect_to_real" in meta:   # 채색 스케치로 시작: 밝은 종이 + 색
+        assert _colorfulness(start) > 4 and _luma(start) > _luma(end) + 15
+    elif effect == "sketch_color":  # 실사 → 채색 스케치: 밝은 종이 + 옅은 색으로 끝
+        assert _colorfulness(end) > 4 and _luma(end) > _luma(start) + 15
     elif meta == "{}":              # 실사 → 부드러운 스케치: 밝은 종이로 끝
         assert _colorfulness(start) > 15 and float(end.mean()) > 150
     clip.close()

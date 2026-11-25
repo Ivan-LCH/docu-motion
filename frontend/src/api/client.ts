@@ -58,27 +58,29 @@ export interface Slide {
   overlays?: string    // JSON array of overlay objects
   image_fit?: 'cover' | 'fit'  // cover: 전체화면, fit: 이미지 위쪽+하단 자막 영역
   ken_burns?: number   // Ken Burns 강도 0~100 (0=정적, 100=최대 줌)
-  photo_effect?: PhotoEffect  // none | sketch | cartoon | sketch_soft | watercolor
+  photo_effect?: PhotoEffect  // none | sketch | cartoon | sketch_soft | watercolor | sketch_color
   effect_reveal?: number      // 0~1, 슬라이드 길이 중 원본→효과 크로스페이드 비율
   meta?: string        // 타입별 추가 데이터 JSON (route/place, hero_text/punch_text)
   text_style?: TextStyle
 }
 
 // 사진 효과 — backend/services/presets.py 의 PHOTO_EFFECTS 와 동기화 유지
-export type PhotoEffect = 'none' | 'sketch' | 'cartoon' | 'sketch_soft' | 'watercolor'
+export type PhotoEffect = 'none' | 'sketch' | 'cartoon' | 'sketch_soft' | 'watercolor' | 'sketch_color'
 export const PHOTO_EFFECT_PRESETS: { value: PhotoEffect; label: string }[] = [
   { value: 'none', label: '없음 (원본)' },
   { value: 'sketch', label: '스케치 (연필)' },
   { value: 'sketch_soft', label: '부드러운 스케치' },
   { value: 'cartoon', label: '만화' },
   { value: 'watercolor', label: '부드러운 수채 애니풍' },
+  { value: 'sketch_color', label: '파스텔 채색 스케치' },
 ]
 export const PHOTO_EFFECT_SHORT: Record<PhotoEffect, string> = {
   none: '', sketch: '스케치', sketch_soft: '부드러운 스케치', cartoon: '만화', watercolor: '부드러운 수채 애니풍',
+  sketch_color: '파스텔 채색 스케치',
 }
 export const DEFAULT_EFFECT_REVEAL = 0.45
-// 스케치 계열 부드러움 (meta.sketch_softness 0~1). sketch 는 미설정 = 0(기존), sketch_soft 는 0.75
-export const DEFAULT_SKETCH_SOFTNESS: Partial<Record<PhotoEffect, number>> = { sketch: 0, sketch_soft: 0.75 }
+// 스케치 계열 부드러움 (meta.sketch_softness 0~1). sketch 는 미설정 = 0(기존), sketch_soft·sketch_color 는 0.75
+export const DEFAULT_SKETCH_SOFTNESS: Partial<Record<PhotoEffect, number>> = { sketch: 0, sketch_soft: 0.75, sketch_color: 0.75 }
 export function getSketchSoftness(s: Slide, effect: PhotoEffect): number {
   const fallback = DEFAULT_SKETCH_SOFTNESS[effect] ?? 0
   try {
@@ -93,6 +95,22 @@ export function withSketchSoftness(s: Slide, v: number | null): string {
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) m = parsed
   } catch { /* 손상된 meta 는 새로 작성 */ }
   return JSON.stringify({ ...m, sketch_softness: v === null ? '' : v })
+}
+// 파스텔 채색 스케치 진하기 (meta.color_strength 0~1). 미설정 = 0.70 (backend DEFAULT_COLOR_STRENGTH)
+export const DEFAULT_COLOR_STRENGTH = 0.7
+export function getColorStrength(s: Slide): number {
+  try {
+    const v = s.meta ? JSON.parse(s.meta)?.color_strength : undefined
+    return typeof v === 'number' && isFinite(v) ? Math.max(0, Math.min(1, v)) : DEFAULT_COLOR_STRENGTH
+  } catch { return DEFAULT_COLOR_STRENGTH }
+}
+export function withColorStrength(s: Slide, v: number | null): string {
+  let m: Record<string, unknown> = {}
+  try {
+    const parsed = s.meta ? JSON.parse(s.meta) : {}
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) m = parsed
+  } catch { /* 손상된 meta 는 새로 작성 */ }
+  return JSON.stringify({ ...m, color_strength: v === null ? '' : v })
 }
 
 // CinemaFlow 프리셋 — backend/services/presets.py 의 TRANSITIONS / TEXT_STYLES 와 동기화 유지
@@ -277,14 +295,15 @@ export interface AutoEditOptions {
   stylize_ratio?: number          // 2단계: 그림→실사 사진 비율 (0 = 끔)
   stylize_effect?: StylizeEffect
 }
-// 2단계 그림 스타일. auto = 수채 애니풍 → 부드러운 스케치 → 만화 → 스케치 순환 (backend _STYLIZE_CYCLE)
-export type StylizeEffect = 'auto' | 'sketch' | 'cartoon' | 'sketch_soft' | 'watercolor'
+// 2단계 그림 스타일. auto = 수채 애니풍 → 파스텔 채색 스케치 → 부드러운 스케치 → 만화 → 스케치 순환 (backend _STYLIZE_CYCLE)
+export type StylizeEffect = 'auto' | 'sketch' | 'cartoon' | 'sketch_soft' | 'watercolor' | 'sketch_color'
 export const STYLIZE_EFFECT_PRESETS: { value: StylizeEffect; label: string }[] = [
   { value: 'auto', label: '자동 순환' },
-  { value: 'sketch', label: '스케치' },
+  { value: 'watercolor', label: '부드러운 수채 애니풍' },
+  { value: 'sketch_color', label: '파스텔 채색 스케치' },
   { value: 'sketch_soft', label: '부드러운 스케치' },
   { value: 'cartoon', label: '만화' },
-  { value: 'watercolor', label: '부드러운 수채 애니풍' },
+  { value: 'sketch', label: '스케치' },
 ]
 export interface AutoEditSummary {
   intro_seconds: number
