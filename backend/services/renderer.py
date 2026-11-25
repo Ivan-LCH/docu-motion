@@ -40,7 +40,7 @@ from backend.services.photo_fx import (stylize_photo, reveal_weight, blend_rgb,
 from backend.services.presets import (
     TEXT_STYLES, compute_slide_starts, slide_overlap, effect_duration,
     normalize_transition, normalize_text_style, resolve_style_text,
-    normalize_photo_effect, clamp_effect_reveal, _parse_meta,
+    normalize_photo_effect, clamp_effect_reveal, parse_sketch_softness, _parse_meta,
 )
 from backend.core import config as _config
 from backend.core.config import CANVAS_SIZE, FONT_PATH, FONT_BOLD_PATH, TTS_SERVER_URL, TTS_VOICE_NAME
@@ -1445,7 +1445,7 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
 
         # 오버레이 적용 (PIL로 이미지에 직접)
         # 사진 효과가 있으면 리사이즈·스타일화 이후에 원본/스타일 양쪽에 올린다.
-        # (글자·이모지·모자이크가 스케치/만화 필터를 타지 않게)
+        # (글자·이모지·모자이크가 스케치/만화/수채 필터를 타지 않게)
         overlays = _json_mod.loads(item.get('overlays', '[]') or '[]')
         photo_effect = normalize_photo_effect(item.get('photo_effect'))
         effect_reveal = clamp_effect_reveal(item.get('effect_reveal'))
@@ -1518,7 +1518,8 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
         styled_arr = None
         if photo_effect != "none":
             try:
-                styled_arr = stylize_photo(base_arr, photo_effect)
+                styled_arr = stylize_photo(base_arr, photo_effect,
+                                           softness=parse_sketch_softness(_item_meta.get('sketch_softness')))
                 logger.info(
                     f"Slide {i}: photo effect '{photo_effect}' "
                     f"(reveal={effect_reveal:.2f}, {base_arr.shape[1]}x{base_arr.shape[0]})"

@@ -10,14 +10,17 @@ DocuMotion - 자동 편집 1단계 (시칠리안 브이로그 감성 하이라�
   3. 중간 키네틱 문구 — 중간 구간의 2~3장(서로 인접하지 않게)에 짧은 한글 문구.
      기본은 EXIF 시각·계절·장소 기반 템플릿, 선택적으로 Gemini (opts.use_ai).
   4. 나머지 — 텍스트 없음 + 무나레이션 (음악 전용). opts.narration=True 일 때만 일부 나레이션.
-  6. (2단계) 그림→실사 — opts.stylize_ratio > 0 이면 사진 일부를 스케치/만화 스틸로 시작해
+  6. (2단계) 그림→실사 — opts.stylize_ratio > 0 이면 사진 일부를 그림 스틸
+     (수채 애니풍/부드러운 스케치/만화/스케치)로 시작해
      brush/wipe/dissolve 마스크로 실사가 드러나게 (photo_effect + meta.effect_to_real).
      장소가 바뀌는 첫 컷(위치 카드)을 우선, 서로 인접하지 않게 고른다. 로컬 필터만 사용.
   5. 전환 — 인트로 직후 zoom_through, 장소(클러스터)가 바뀔 때 whip_left/right 교대,
      그 외 기존 AUTO_TRANSITION_CYCLE 순환. Ken Burns 유지.
 
 모든 정보성 단계(역지오코딩, Gemini)는 실패해도 생략만 하고 계속 진행한다.
-Stage 2: opts.stylize_ratio (0~0.5, 기본 0) / stylize_effect ('auto'|'sketch'|'cartoon').
+Stage 2: opts.stylize_ratio (0~0.5, 기본 0) /
+         stylize_effect ('auto'|'sketch'|'cartoon'|'sketch_soft'|'watercolor').
+         auto 는 watercolor → sketch_soft → cartoon → sketch 순환.
 """
 from __future__ import annotations
 
@@ -59,7 +62,7 @@ DEFAULT_OPTS: dict = {
     "use_geocode": True,
     "cluster_km": GROUP_RADIUS_KM,
     "stylize_ratio": 0.0,      # 2단계: 그림→실사 전환을 넣을 사진 비율 (0 = 끔, 최대 0.5)
-    "stylize_effect": "auto",  # 'auto'(스케치/만화 교대) | 'sketch' | 'cartoon'
+    "stylize_effect": "auto",  # 'auto'(_STYLIZE_CYCLE 순환) | 'sketch' | 'cartoon' | 'sketch_soft' | 'watercolor'
     "stylize_reveal": 0.5,     # 전환 창 (슬라이드 길이 비율)
 }
 
@@ -69,6 +72,7 @@ _INTRO_MAX_SLIDES = 4
 _MANAGED_META_KEYS = ("location_card", "kinetic_text", "kinetic_sub", "kinetic_highlight",
                       "intro_kinetic", "bgm_fade_in", "effect_to_real", "auto_stylized")
 _TO_REAL_CYCLE = ("brush", "wipe", "brush", "dissolve")
+_STYLIZE_CYCLE = ("watercolor", "sketch_soft", "cartoon", "sketch")   # stylize_effect='auto' 순환 순서
 _STYLIZE_MAX = 6
 _NATURE_WORDS = ("수목원", "공원", "숲", "산", "둘레길", "정원", "식물원", "호수", "계곡", "올레")
 
@@ -524,7 +528,7 @@ def plan_auto_edit(db, project_id: str, opts: Optional[dict] = None) -> dict:
         idxs = pick_stylize_slides(slides, ratio, set(range(n_intro)), card_ids)
         for j, i in enumerate(idxs):
             s = slides[i]
-            fx = eff if eff in ("sketch", "cartoon") else ("cartoon", "sketch")[j % 2]
+            fx = eff if eff in _STYLIZE_CYCLE else _STYLIZE_CYCLE[j % len(_STYLIZE_CYCLE)]
             style = _TO_REAL_CYCLE[j % len(_TO_REAL_CYCLE)]
             s.photo_effect = fx
             s.effect_reveal = reveal
