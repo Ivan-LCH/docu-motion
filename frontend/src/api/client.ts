@@ -46,6 +46,50 @@ async function request<T>(method: string, path: string, body?: unknown, isForm =
   return res.json()
 }
 
+// ─── YouTube ────────────────────────────────
+export type YouTubePrivacy = 'private' | 'unlisted' | 'public'
+export type YouTubeAuthReason = 'no_token' | 'reauth_required' | 'scope_missing' | 'error'
+export interface YouTubeAuthStatus {
+  authenticated: boolean
+  reason?: YouTubeAuthReason | string | null
+  scopes_ok?: boolean
+  channel?: string | null
+}
+export interface YouTubeMetaFields {
+  title: string
+  description: string
+  tags: string[]
+  privacy: YouTubePrivacy
+  thumbnail: string          // 'none' | 'upload' | 'slide:<n>'
+}
+export interface YouTubeThumbCandidate { index: number; slide_id: string; url: string }
+export interface YouTubeMeta extends YouTubeMetaFields {
+  source: 'ai' | 'template' | 'edited' | 'saved'
+  credit: string
+  thumbnails: YouTubeThumbCandidate[]
+  uploaded_thumbnail: string | null
+  tags_limit: number
+}
+export type YouTubeUploadStatus = 'idle' | 'queued' | 'uploading' | 'processing' | 'done' | 'error'
+export interface YouTubeUploadState {
+  status: YouTubeUploadStatus
+  progress: number
+  url: string | null
+  video_id: string | null
+  privacy: YouTubePrivacy | null
+  error: string | null
+  warning: string | null
+  started_at: string | null
+  finished_at: string | null
+}
+export interface YouTubeUploadPayload {
+  title?: string
+  description?: string
+  tags?: string[] | string
+  privacy?: YouTubePrivacy
+  thumbnail?: string
+}
+
 // ─── Types ──────────────────────────────────
 export interface SavedLocation {
   id: string
@@ -630,9 +674,24 @@ export const api = {
   },
 
   // YouTube
-  uploadYouTube: (id: string, payload: { title: string; description: string; tags?: string }) =>
-    request<{ ok: boolean; url: string }>('POST', `/projects/${id}/youtube/upload`, payload),
-  youtubeAuthStatus: () => request<{ authenticated: boolean; reason?: string }>('GET', '/youtube/auth-status'),
+  uploadYouTube: (id: string, payload: YouTubeUploadPayload) =>
+    request<YouTubeUploadState & { ok: boolean }>('POST', `/projects/${id}/youtube/upload`, payload),
+  youtubeAuthStatus: () => request<YouTubeAuthStatus>('GET', '/youtube/auth-status'),
+  youtubeMeta: (id: string, opts: { regen?: boolean; ai?: boolean } = {}) => {
+    const q = new URLSearchParams()
+    if (opts.regen) q.set('regen', '1')
+    if (opts.ai === false) q.set('ai', '0')
+    const qs = q.toString()
+    return request<YouTubeMeta>('GET', `/projects/${id}/youtube/meta${qs ? `?${qs}` : ''}`)
+  },
+  saveYoutubeMeta: (id: string, meta: YouTubeMetaFields) =>
+    request<YouTubeMeta>('PUT', `/projects/${id}/youtube/meta`, meta),
+  uploadYoutubeThumbnail: (id: string, file: File) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    return request<{ ok: boolean; url: string }>('POST', `/projects/${id}/youtube/thumbnail`, fd, true)
+  },
+  youtubeStatus: (id: string) => request<YouTubeUploadState>('GET', `/projects/${id}/youtube/status`),
   youtubeAuthUrl: () => request<{ auth_url: string }>('GET', '/youtube/auth-url'),
   youtubeExchangeCode: (code: string) => request<{ ok: boolean }>('POST', '/youtube/exchange-code', { code }),
 

@@ -19,6 +19,7 @@ const TARGET_LABEL: Record<AuthTarget, string> = { youtube: 'YouTube', photos: '
 export default function GoogleAuthSection() {
   const { toast } = useToast()
   const [ytAuth, setYtAuth] = useState<boolean | null>(null)
+  const [ytReason, setYtReason] = useState<string | null>(null)
   const [photosAuth, setPhotosAuth] = useState<boolean | null>(null)
   const [showCodeInput, setShowCodeInput] = useState(false)
   const [codeInput, setCodeInput] = useState('')
@@ -27,7 +28,7 @@ export default function GoogleAuthSection() {
   const [exchanging, setExchanging] = useState(false)
 
   const checkStatus = useCallback(() => {
-    api.youtubeAuthStatus().then(r => setYtAuth(r.authenticated)).catch(() => setYtAuth(false))
+    api.youtubeAuthStatus().then(r => { setYtAuth(r.authenticated); setYtReason(r.reason || null) }).catch(() => setYtAuth(false))
     api.photosAuthStatus().then(r => setPhotosAuth(r.authenticated)).catch(() => setPhotosAuth(false))
     api.driveConfig().then(setDrive).catch(() => setDrive({ enabled: false, client_id: '', api_key: '', app_id: '', authenticated: false, reason: '설정 확인 실패' }))
   }, [])
@@ -82,6 +83,7 @@ export default function GoogleAuthSection() {
             {ytAuth === null ? '...' : ytAuth ? '●' : '○'}
           </span>
           <span style={{ color: 'var(--text-secondary)' }}>YouTube</span>
+          {ytAuth === false && ytReason === 'scope_missing' && <span style={{ color: 'var(--text-muted)' }}>(권한 없음)</span>}
           {ytAuth === false && (
             <button className="btn btn-ghost" style={{ fontSize: '0.7rem', padding: '0 0.3rem' }} onClick={() => handleAuth('youtube')}>인증</button>
           )}
