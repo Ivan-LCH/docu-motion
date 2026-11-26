@@ -10,6 +10,7 @@ DocuMotion - Video Renderer (MoviePy 기반)
 # Import 
 # ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── #
 
+import hashlib
 import math
 import os
 # imageio_ffmpeg 번들 바이너리는 NVENC 미지원 → 시스템 ffmpeg 사용 강제
@@ -46,6 +47,7 @@ from backend.services.presets import (
     project_meta, DEFAULT_BGM_LOOP_XFADE,
 )
 from backend.services.music_credit import credit_line
+from backend.services import media_import
 from backend.core import config as _config
 from backend.core.config import CANVAS_SIZE, FONT_PATH, FONT_BOLD_PATH, TTS_SERVER_URL, TTS_VOICE_NAME
 from backend.core.logger import get_logger
@@ -92,6 +94,9 @@ def split_sentences(text: str) -> list[str]:
 
 def cleanup_temp_files(temp_dir: Path):
     for f in temp_dir.glob("v_*.wav"):
+        try: os.unlink(f)
+        except: pass
+    for f in temp_dir.glob("vprep_*.mp4"):
         try: os.unlink(f)
         except: pass
     for f in Path(".").glob("*TEMP_MPY*.mp3"):
@@ -1093,6 +1098,22 @@ def _grade_slide_clip(clip, style_preset: str, canvas_size: tuple):
         return clip
 
 
+def _prepared_video(src: Path, temp_dir: Path, ts: float, te: float, canvas_size: tuple,
+                    fit: str, audio: bool) -> "Path | None":
+    """media_import.prepare_clip 결과 (temp_dir/vprep_*.mp4, 같은 입력이면 재사용). 실패 시 None → 원본 사용."""
+    try:
+        st = src.stat()
+        key = f"{src.name}|{st.st_mtime}|{st.st_size}|{ts:.3f}|{te:.3f}|{canvas_size}|{fit}|{audio}"
+        dst = temp_dir / f"vprep_{hashlib.md5(key.encode()).hexdigest()[:12]}.mp4"
+        if dst.exists() and dst.stat().st_size > 1000:
+            return dst
+        return media_import.prepare_clip(src, dst, ts, te, canvas_size if fit != 'letterbox' else None,
+                                         fit=fit, audio=audio)
+    except Exception as e:
+        logger.warning(f"영상 클립 준비 실패 → 원본 사용 ({src.name}): {e}")
+        return None
+
+
 def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: Path,
                      canvas_size: tuple, tts_engine=None,
                      font_size: int = FONT_SIZE, font_color: str = TEXT_COLOR,
@@ -1174,28 +1195,39 @@ def build_slide_clip(item: dict, slide_index: int, assets_dir: Path, temp_dir: P
             return None
 
         from moviepy.editor import VideoFileClip, CompositeAudioClip
-        video_clip = VideoFileClip(str(video_path))
+        volume = float(item.get('volume', 1.0) if item.get('volume') is not None else 1.0)
+        trim_start = float(item.get('trim_start', 0.0) or 0.0)
+        trim_end = float(item.get('trim_end', 0.0) or 0.0)
 
-        # 볼륨 조절
-        volume = item.get('volume', 1.0)
-        if volume != 1.0:
+        # ffmpeg 로 미리 준비: 간편 자동 클립(meta.video_fit) 또는 회전 메타데이터가 있는 영상.
+        # (moviepy 1.0.3 은 ffmpeg 7 의 displaymatrix 회전을 못 읽어 세로 영상이 찌그러진다)
+        # 구간만 잘라 회전을 픽셀에 굽고 캔버스에 맞춘 작은 파일을 만든다 — 원본 전체를 디코딩하지 않는다.
+        video_fit = str(_item_meta.get('video_fit') or '')
+        prepared = None
+        if video_fit or media_import.probe_video(video_path)["rotation"]:
+            prepared = _prepared_video(video_path, temp_dir, trim_start, trim_end, canvas_size,
+                                       video_fit or 'letterbox', volume > 0)
+        video_clip = VideoFileClip(str(prepared or video_path), audio=volume > 0)
+
+        # 볼륨 조절 (0 = 원본 오디오 끔)
+        if volume > 0 and volume != 1.0 and video_clip.audio is not None:
             video_clip = video_clip.volumex(volume)
 
-        # 비디오 자르기 (Trim)
-        trim_start = float(item.get('trim_start', 0.0))
-        trim_end = float(item.get('trim_end', 0.0))
-        if trim_end > trim_start:
-            video_clip = video_clip.subclip(trim_start, min(trim_end, video_clip.duration))
-        elif trim_start > 0:
-            video_clip = video_clip.subclip(trim_start, video_clip.duration)
+        # 비디오 자르기 (Trim) — 준비된 클립은 이미 잘려 있다
+        if prepared is None:
+            if trim_end > trim_start:
+                video_clip = video_clip.subclip(trim_start, min(trim_end, video_clip.duration))
+            elif trim_start > 0:
+                video_clip = video_clip.subclip(trim_start, video_clip.duration)
 
         # 회전 적용
         rotation = item.get('rotation', 0)
         if rotation and rotation % 360 != 0:
             video_clip = video_clip.rotate(-rotation)  # MoviePy는 반시계 방향이므로 부호 반전
 
-        # 캔버스 크기 맞춤 (letterbox)
-        video_clip = video_clip.resize(height=canvas_size[1])
+        # 캔버스 크기 맞춤 (letterbox) — 준비된 클립이 이미 캔버스 크기면 생략
+        if tuple(video_clip.size) != tuple(canvas_size):
+            video_clip = video_clip.resize(height=canvas_size[1])
         total_duration = video_clip.duration
 
         # Subtitles & optional TTS

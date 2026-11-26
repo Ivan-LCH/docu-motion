@@ -403,6 +403,20 @@ export interface PickerImportResult {
   ok: boolean
   imported: { id: string | null; filename: string | null; error?: string; type?: string }[]
   count: number
+  photos?: number
+  videos?: number
+  failed?: number
+  errors?: { filename: string; type: 'image' | 'video'; error: string }[]
+}
+
+// 가져오기 결과 토스트 문구: "사진 8 · 영상 2 가져옴 · 1개 실패 (사유)"
+export function importSummary(res: PickerImportResult): string {
+  const parts = []
+  if (res.photos) parts.push(`사진 ${res.photos}`)
+  if (res.videos) parts.push(`영상 ${res.videos}`)
+  let msg = parts.length ? `${parts.join(' · ')} 가져옴` : res.count ? `${res.count}개 가져옴` : '가져온 항목 없음'
+  if (res.failed) msg += ` · ${res.failed}개 실패${res.errors?.[0]?.error ? ` (${res.errors[0].error})` : ''}`
+  return msg
 }
 
 export type PhotosSortOrder = 'selected' | 'oldest' | 'newest' | 'api'

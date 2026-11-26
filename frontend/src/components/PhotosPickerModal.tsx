@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { api, PhotosSortOrder } from '../api/client'
+import { api, PhotosSortOrder, importSummary } from '../api/client'
 import { useToast } from './ToastContext'
 import { extractCodeFromUrl } from './GoogleAuthSection'
 
@@ -101,7 +101,7 @@ export default function PhotosPickerModal({ projectId, onClose, onImported }: {
     setPhase('importing')
     try {
       const res = await api.photosImport(projectId, sid, sortOrderRef.current)
-      toast(`${res.count}개 미디어 가져오기 완료!`, 'success')
+      toast(importSummary(res), res.count ? (res.failed ? 'info' : 'success') : 'error', { duration: res.failed ? 6000 : 3500 })
       setPhase('done')
       onImported()
       onClose()
@@ -116,7 +116,7 @@ export default function PhotosPickerModal({ projectId, onClose, onImported }: {
     <div className="modal-overlay" onClick={phase === 'idle' || phase === 'done' ? onClose : undefined}>
       <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: '500px' }}>
         <div className="modal-header">
-          <span className="modal-title">Google Photos에서 가져오기</span>
+          <span className="modal-title">Google 포토에서 사진·영상 가져오기</span>
           <button className="btn btn-ghost btn-icon" onClick={onClose} disabled={phase === 'importing'}>✕</button>
         </div>
 
@@ -167,10 +167,6 @@ export default function PhotosPickerModal({ projectId, onClose, onImported }: {
           <div style={{ textAlign: 'center', padding: '1.5rem 1rem' }}>
             {phase === 'idle' && (
               <>
-                <p style={{ color: 'var(--text-secondary)', marginBottom: '1rem', fontSize: '0.9rem', lineHeight: 1.6 }}>
-                  Google Photos Picker가 새 창에서 열립니다.<br />
-                  원하는 사진/동영상을 선택하면 자동으로 가져옵니다.
-                </p>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', marginBottom: '1.2rem', textAlign: 'left', maxWidth: 320, marginLeft: 'auto', marginRight: 'auto' }}>
                   <label style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', fontWeight: 600 }}>정렬 순서</label>
                   <select
@@ -185,7 +181,7 @@ export default function PhotosPickerModal({ projectId, onClose, onImported }: {
                   </select>
                 </div>
                 <button className="btn btn-primary" onClick={handleOpenPicker} style={{ fontSize: '1rem', padding: '0.7rem 2rem' }}>
-                  사진 선택하기
+                  사진·영상 고르기
                 </button>
               </>
             )}
@@ -193,18 +189,12 @@ export default function PhotosPickerModal({ projectId, onClose, onImported }: {
             {phase === 'picking' && (
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem' }}>
                 <span className="spinner spinner-lg" />
-                <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', lineHeight: 1.6 }}>
-                  Google Photos에서 사진을 선택해주세요...<br />
-                  <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                    선택 완료 후 자동 진행됩니다
-                  </span>
+                <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
+                  새 창에서 사진·영상을 골라주세요
                 </p>
                 <button className="btn btn-primary" onClick={handleManualImport} style={{ marginTop: '0.5rem' }}>
                   선택 완료 — 가져오기
                 </button>
-                <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                  자동으로 진행되지 않으면 위 버튼을 눌러주세요
-                </p>
               </div>
             )}
 
@@ -212,10 +202,7 @@ export default function PhotosPickerModal({ projectId, onClose, onImported }: {
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem' }}>
                 <span className="spinner spinner-lg" />
                 <p style={{ color: 'var(--accent)', fontSize: '0.9rem', fontWeight: 600 }}>
-                  선택한 미디어를 다운로드하는 중...
-                </p>
-                <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                  파일 크기에 따라 시간이 걸릴 수 있습니다
+                  가져오는 중... (영상은 조금 걸려요)
                 </p>
               </div>
             )}

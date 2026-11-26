@@ -5,6 +5,8 @@ DocuMotion - Google Photos Picker API 연동
 """
 import os
 import json
+from pathlib import Path
+
 import requests as http_requests
 
 # Google OAuth가 기존 granted 스코프를 포함해서 반환할 때 스코프 불일치 에러 방지
@@ -30,6 +32,11 @@ ALL_SCOPES = [
 
 TOKEN_PATH = BASE_DIR / "token.json"
 PICKER_API = "https://photospicker.googleapis.com/v1"
+
+# 다운로드 상한 (항목별 오류로 건너뜀) · 읽기 타임아웃 ('=dv' 는 트랜스코딩 때문에 첫 바이트가 늦을 수 있다)
+MAX_VIDEO_BYTES = int(float(os.getenv("PHOTOS_MAX_VIDEO_MB", "1536")) * 1024 ** 2)
+MAX_PHOTO_BYTES = 200 * 1024 ** 2
+DOWNLOAD_READ_TIMEOUT = 300
 
 
 # ═══════════════════════════════════════════════
@@ -179,6 +186,12 @@ def _load_client_config() -> dict | None:
 # Picker Session 관리
 # ═══════════════════════════════════════════════
 
+def with_autoclose(uri: str) -> str:
+    """웹: pickerUri 뒤에 /autoclose → 선택을 마치면 Picker 창이 스스로 닫힌다."""
+    uri = uri or ""
+    return uri if not uri or uri.rstrip("/").endswith("/autoclose") else uri.rstrip("/") + "/autoclose"
+
+
 def create_session() -> dict:
     """
     Picker 세션 생성.
@@ -191,7 +204,7 @@ def create_session() -> dict:
     logger.info(f"Picker session created: {data.get('id', '')[:20]}...")
     return {
         "id": data["id"],
-        "pickerUri": data["pickerUri"],
+        "pickerUri": with_autoclose(data["pickerUri"]),
         "mediaItemsSet": data.get("mediaItemsSet", False),
     }
 
@@ -209,6 +222,32 @@ def poll_session(session_id: str) -> dict:
         "id": data["id"],
         "pickerUri": data.get("pickerUri", ""),
         "mediaItemsSet": data.get("mediaItemsSet", False),
+    }
+
+
+def parse_picked_item(item: dict) -> dict:
+    """PickedMediaItem → 가져오기용 dict.
+    영상 판별: type == 'VIDEO' 또는 mimeType video/* (mimeType 이 없을 때 '=d' 로 받으면 JPEG 썸네일만 온다).
+    processingStatus: 영상만 (PROCESSING | READY | FAILED), 없으면 ''."""
+    media_file = item.get("mediaFile") or {}
+    metadata = media_file.get("mediaFileMetadata") or {}
+    mime = media_file.get("mimeType") or ""
+    kind = (item.get("type") or "").upper()
+    is_video = kind == "VIDEO" or mime.startswith("video/")
+    vmeta = metadata.get("videoMetadata") or {}
+    return {
+        "id": item.get("id", ""),
+        "type": kind,
+        "baseUrl": media_file.get("baseUrl", ""),
+        "mimeType": mime,
+        "filename": media_file.get("filename", ""),
+        "isVideo": is_video,
+        "processingStatus": (vmeta.get("processingStatus") or "").upper() if is_video else "",
+        "width": int(metadata.get("width") or 0),
+        "height": int(metadata.get("height") or 0),
+        # 정렬용 필드 (둘 다 RFC3339 ISO 문자열, 사전순 = 시간순)
+        "selectedTime": item.get("createTime", ""),         # picker 상에서 선택된 시각
+        "creationTime": metadata.get("creationTime", ""),   # 사진 원본 촬영 시각
     }
 
 
@@ -236,18 +275,7 @@ def list_picked_items(session_id: str, sort_order: str = "selected") -> list[dic
         data = resp.json()
 
         for item in data.get("mediaItems", []):
-            media_file = item.get("mediaFile", {})
-            metadata = media_file.get("mediaFileMetadata", {}) or {}
-            items.append({
-                "id": item.get("id", ""),
-                "baseUrl": media_file.get("baseUrl", ""),
-                "mimeType": media_file.get("mimeType", ""),
-                "filename": media_file.get("filename", ""),
-                "isVideo": media_file.get("mimeType", "").startswith("video/"),
-                # 정렬용 필드 (둘 다 RFC3339 ISO 문자열, 사전순 = 시간순)
-                "selectedTime": item.get("createTime", ""),         # picker 상에서 선택된 시각
-                "creationTime": metadata.get("creationTime", ""),   # 사진 원본 촬영 시각
-            })
+            items.append(parse_picked_item(item))
 
         page_token = data.get("nextPageToken")
         if not page_token:
@@ -279,21 +307,52 @@ def delete_session(session_id: str) -> None:
 # 미디어 다운로드
 # ═══════════════════════════════════════════════
 
-def download_item(base_url: str, mime_type: str, dest_path: str) -> str:
+class DownloadError(RuntimeError):
+    """사용자에게 그대로 보여줄 항목별 다운로드 오류."""
+
+
+def download_item(base_url: str, mime_type: str, dest_path: str, is_video: bool | None = None,
+                  max_bytes: int | None = None) -> str:
     """
-    Picker에서 받은 baseUrl로 원본 다운로드.
-    사진: baseUrl + =d, 동영상: baseUrl + =dv
-    Authorization 헤더 필수.
+    Picker 에서 받은 baseUrl 로 원본 다운로드 (Authorization 헤더 필수, baseUrl 은 60분 유효).
+    사진: baseUrl + =d, 동영상: baseUrl + =dv (트랜스코딩된 고화질 mp4 — 시작까지 몇 초 걸릴 수 있음).
+    임시 파일(.part)로 스트리밍 → 끝나면 원자적 rename. 실패·용량 초과 시 부분 파일 삭제.
     """
     headers = _get_headers()
-    is_video = mime_type.startswith("video/")
+    if is_video is None:
+        is_video = (mime_type or "").startswith("video/")
+    cap = max_bytes or (MAX_VIDEO_BYTES if is_video else MAX_PHOTO_BYTES)
     download_url = base_url + ("=dv" if is_video else "=d")
+    dest = Path(dest_path)
+    tmp = dest.with_name(dest.name + ".part")
+    n = 0
+    try:
+        with http_requests.get(download_url, headers=headers, stream=True,
+                               timeout=(15, DOWNLOAD_READ_TIMEOUT)) as resp:
+            resp.raise_for_status()
+            ctype = (resp.headers.get("Content-Type") or "").lower()
+            if is_video and ctype.startswith("image/"):
+                raise DownloadError("영상 대신 썸네일만 받아졌어요")
+            clen = int(resp.headers.get("Content-Length") or 0)
+            if clen > cap:
+                raise DownloadError(f"파일이 너무 커요 ({clen / 1024 ** 3:.1f}GB)")
+            with open(tmp, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                    if not chunk:
+                        continue
+                    n += len(chunk)
+                    if n > cap:
+                        raise DownloadError(f"파일이 너무 커요 (> {cap / 1024 ** 3:.1f}GB)")
+                    f.write(chunk)
+        if n < 100:
+            raise DownloadError("빈 파일이 받아졌어요")
+        os.replace(tmp, dest)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
 
-    with http_requests.get(download_url, headers=headers, stream=True, timeout=120) as resp:
-        resp.raise_for_status()
-        with open(dest_path, "wb") as f:
-            for chunk in resp.iter_content(chunk_size=65536):
-                f.write(chunk)
-
-    logger.info(f"Picker: downloaded -> {dest_path}")
+    logger.info(f"Picker: downloaded -> {dest_path} ({n / 1024 ** 2:.1f}MB)")
     return dest_path
