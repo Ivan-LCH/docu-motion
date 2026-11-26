@@ -44,7 +44,9 @@ from backend.services import task_status
 from backend.services.color_grade import VALID_STYLE_PRESETS
 from backend.services.exif_service import GROUP_RADIUS_KM, haversine_km
 from backend.services.geo_label import city_short, parse_address_parts, reverse_geocode
-from backend.services.presets import AUTO_TRANSITION_CYCLE, PROJECT_META_KEYS, project_meta
+from backend.services.media_import import media_duration
+from backend.services.presets import (AUTO_TRANSITION_CYCLE, EASY_VIDEO_VOLUME, PROJECT_META_KEYS,
+                                      easy_clip_window, project_meta)
 
 logger = get_logger(__name__)
 
@@ -78,7 +80,8 @@ KINETIC_MAX_CHARS = 8
 _INTRO_MAX_SLIDES = 4
 # 자동 편집이 관리하는 meta 키 (재실행 시 초기화)
 _MANAGED_META_KEYS = ("location_card", "kinetic_text", "kinetic_sub", "kinetic_highlight",
-                      "intro_kinetic", "bgm_fade_in", "effect_to_real", "auto_stylized", "easy_duration")
+                      "intro_kinetic", "bgm_fade_in", "effect_to_real", "auto_stylized", "easy_duration",
+                      "video_fit")
 # 계획이 정하는 슬라이드 필드 (meta.auto_fields 에 기록 → 에디터 「자동」 배지, 사용자 수정 시 user_locked)
 AUTO_FIELD_KEYS = ("transition", "ken_burns", "photo_effect", "effect_reveal", "effect_to_real",
                    "location_card", "easy_duration")
@@ -682,6 +685,41 @@ def _reset_slide(s: Slide, easy: bool) -> None:
     _set_meta(s, m)
 
 
+def _close(a, b, eps: float = 1e-3) -> bool:
+    try:
+        return abs(float(a) - float(b)) <= eps
+    except (TypeError, ValueError):
+        return False
+
+
+def apply_easy_clip(s: Slide, full: Optional[float]) -> Optional[dict]:
+    """간편 자동 영상 클립: 트림 구간(presets.easy_clip_window) · 원본 오디오(EASY_VIDEO_VOLUME) · 화면 맞춤.
+    사용자가 정한 값은 그대로 둔다 — 지난번 계획이 넣은 값(meta.easy_clip)이나 가져온 직후 기본값
+    (트림 0/0, 볼륨 1.0)일 때만 자동으로 정한다. 잠긴 슬라이드는 건드리지 않는다. 반환: 요약 또는 None."""
+    if s.slide_type != "video" or not s.video_filename:
+        return None
+    m = _meta(s)
+    if is_locked(m):
+        return None
+    rec = m.get("easy_clip") if isinstance(m.get("easy_clip"), dict) else None
+    ts, te = float(s.trim_start or 0.0), float(s.trim_end or 0.0)
+    vol = 1.0 if s.volume is None else float(s.volume)
+    trim_auto = (ts == 0 and te == 0) or (rec is not None and _close(ts, rec.get("trim_start"))
+                                         and _close(te, rec.get("trim_end")))
+    vol_auto = _close(vol, rec.get("volume")) if rec is not None and "volume" in rec else vol == 1.0
+    if trim_auto and full:
+        s.trim_start, s.trim_end = easy_clip_window(full)
+    if vol_auto:
+        s.volume = EASY_VIDEO_VOLUME
+    m["easy_clip"] = {"trim_start": float(s.trim_start or 0.0), "trim_end": float(s.trim_end or 0.0),
+                      "volume": float(s.volume if s.volume is not None else 1.0)}
+    m["video_fit"] = "auto"                 # 렌더러: 비슷한 화면비 → 꽉 채움, 세로 영상 → 흐린 배경
+    _set_meta(s, m)
+    return {"slide_id": s.id, "order_index": s.order_index, "trim_start": s.trim_start,
+            "trim_end": s.trim_end, "volume": s.volume, "user_trim": not trim_auto,
+            "user_volume": not vol_auto}
+
+
 # ────────────────────────────────────────────────────────────────────────── #
 # 계획 (DB 반영)
 # ────────────────────────────────────────────────────────────────────────── #
@@ -710,6 +748,16 @@ def plan_auto_edit(db, project_id: str, opts: Optional[dict] = None, commit: boo
         if "location_card" in (m.get("user_fields") or []) and m.get("location_card"):
             user_cards[s.id] = m["location_card"]
         _reset_slide(s, easy)
+
+    # 0.5) 간편 자동: 영상 클립 구간·오디오 (길이 추정·음악 맞춤이 이 트림 길이를 쓴다)
+    clips = []
+    if easy:
+        assets = Path(config.OUTPUTS_DIR) / project_id / "assets"
+        for s in slides:
+            if s.slide_type == "video" and s.video_filename:
+                c = apply_easy_clip(s, media_duration(assets / s.video_filename))
+                if c:
+                    clips.append(c)
 
     # 1) 음악 인트로
     sd = o["slide_duration"]
@@ -827,6 +875,7 @@ def plan_auto_edit(db, project_id: str, opts: Optional[dict] = None, commit: boo
         "transitions": transitions,
         "stylize_ratio": ratio,
         "stylized": stylized,
+        "clips": clips,
         "locked": sum(1 for s in slides if is_locked(_meta(s))),
     }
     logger.info(f"[auto-edit] plan {project_id}: easy={easy} intro={n_intro} cards={len(cards)} "

@@ -125,33 +125,41 @@ def import_from_session(
     imported = []
 
     for item in items:
+        is_video = bool(item.get("isVideo"))
+        kind = "video" if is_video else "image"
+        original_name = item.get("filename") or f"{kind}_{item['id'][:8]}"
+        dest_path = None
         try:
-            original_name = item.get("filename", f"photo_{item['id'][:8]}")
             mime_type = item.get("mimeType", "")
             base_url = item.get("baseUrl", "")
-            is_video = item.get("isVideo", False)
-
             if not base_url:
-                logger.warning(f"Skipping item with no baseUrl: {item['id']}")
-                continue
+                raise ValueError("다운로드 주소가 없어요")
+            status = item.get("processingStatus") or ""
+            if is_video and status and status != "READY":
+                raise ValueError("아직 처리 중인 영상" if status == "PROCESSING" else "처리 실패한 영상")
 
-            # 파일명 생성
+            # 파일명 생성 — '=dv' 는 .MOV 원본이어도 mp4 를 준다
             stem = _sanitize(Path(original_name).stem)
-            ext = Path(original_name).suffix.lower()
-            if not ext:
-                ext = ".mp4" if is_video else ".jpg"
+            ext = ".mp4" if is_video else (Path(original_name).suffix.lower() or ".jpg")
             timestamp = datetime.now().strftime('%H%M%S%f')
             saved_filename = f"{stem}_{timestamp}{ext}"
-            dest_path = str(assets_dir / saved_filename)
+            dest_path = assets_dir / saved_filename
 
-            # 다운로드 (Authorization 헤더 포함)
-            photos_manager.download_item(base_url, mime_type, dest_path)
+            # 다운로드 (Authorization 헤더, 임시 파일 → rename, 용량 상한)
+            photos_manager.download_item(base_url, mime_type, str(dest_path), is_video=is_video)
 
-            # 슬라이드 생성 (HEVC→H.264, HEIC→JPEG, EXIF — 드라이브 가져오기와 공용)
-            order_idx = existing_count + len(imported)
+            if is_video:
+                info = media_import.probe_video(dest_path)
+                if not info["has_video"] or not info["duration"]:
+                    raise ValueError("영상 파일이 아니에요")
+                media_import.pretrim_long_video(dest_path)     # 60초 넘으면 가운데 15초만 (스트림 복사)
+
+            # 슬라이드 생성 (HEVC→H.264, HEIC→JPEG, EXIF, 영상 포스터 — 드라이브 가져오기와 공용)
+            order_idx = existing_count + sum(1 for i in imported if i.get("id"))
             slide, saved_filename, kind = media_import.make_media_slide(
-                project_id, Path(dest_path), original_name,
-                "video/mp4" if is_video else mime_type, order_idx)
+                project_id, dest_path, original_name,
+                (mime_type if mime_type.startswith("video/") else "video/mp4") if is_video else mime_type,
+                order_idx)
 
             db.add(slide)
             db.flush()                      # slide.id 기본값 채우기 (응답·성공 개수용)
@@ -160,9 +168,15 @@ def import_from_session(
 
         except Exception as e:
             logger.error(f"Photos import failed for {item.get('id', '?')}: {e}")
-            imported.append({"id": None, "filename": None, "error": str(e)})
+            if dest_path is not None:
+                for f in (dest_path, dest_path.with_name(media_import.poster_name(dest_path.name))):
+                    try:
+                        f.unlink()
+                    except OSError:
+                        pass
+            imported.append({"id": None, "filename": original_name, "type": kind, "error": str(e)})
 
-    if imported:
+    if any(i.get("id") for i in imported):
         project.stage = "uploaded"
         project.updated_at = datetime.utcnow()
         db.commit()
@@ -170,7 +184,13 @@ def import_from_session(
     # 세션 정리
     photos_manager.delete_session(req.session_id)
 
-    success_count = sum(1 for i in imported if i.get("id"))
+    ok = [i for i in imported if i.get("id")]
+    success_count = len(ok)
+    errors = [{"filename": i["filename"], "type": i["type"], "error": i["error"]}
+              for i in imported if not i.get("id")]
     logger.info(f"[{project_id}] Photos Picker import: {success_count}/{len(items)} succeeded")
 
-    return {"ok": True, "imported": imported, "count": success_count}
+    return {"ok": True, "imported": imported, "count": success_count,
+            "photos": sum(1 for i in ok if i["type"] == "image"),
+            "videos": sum(1 for i in ok if i["type"] == "video"),
+            "failed": len(errors), "errors": errors}

@@ -25,6 +25,7 @@ from backend.services.exif_service import extract_exif
 from backend.services.presets import parse_color_strength, parse_sketch_softness
 from backend.services import route_slide_service
 from backend.services import slide_order
+from backend.services import media_import
 from backend.services.renderer import ASPECT_RATIO_MAP
 
 router = APIRouter(prefix="/projects", tags=["slides"])
@@ -167,7 +168,8 @@ async def upload_slides(
                 subtitles="[]",
                 use_tts=1,
                 trim_start=0.0,
-                trim_end=0.0
+                trim_end=0.0,
+                meta=json.dumps(media_import.video_slide_meta(saved_path), ensure_ascii=False),
             )
             db.add(slide)
             new_slides.append(slide)
@@ -452,6 +454,9 @@ def delete_slide(project_id: str, slide_id: str, db: Session = Depends(get_db)):
         vid = assets_dir / slide.video_filename
         if vid.exists():
             os.unlink(vid)
+        poster = assets_dir / media_import.poster_name(slide.video_filename)
+        if poster.exists():
+            os.unlink(poster)
     # Route 슬라이드 프레임 파일들 일괄 삭제
     if slide.slide_type == "route":
         _delete_route_frames(assets_dir, slide.meta)

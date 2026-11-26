@@ -305,9 +305,10 @@ body {
   box-shadow: var(--shadow-md);
   animation: slideUp 0.25s ease;
 }
-.toast-success { background: rgba(34,197,94,0.15); border: 1px solid var(--success); color: var(--success); }
-.toast-error   { background: rgba(239,68,68,0.15); border: 1px solid var(--error); color: var(--error); }
-.toast-info    { background: rgba(59,130,246,0.15); border: 1px solid var(--info); color: var(--info); }
+/* 같은 색조를 카드 배경 위에 깔아 불투명하게 — 아래 버튼·글자가 비치지 않게 */
+.toast-success { background: linear-gradient(rgba(34,197,94,0.15), rgba(34,197,94,0.15)), var(--bg-card); border: 1px solid var(--success); color: var(--success); }
+.toast-error   { background: linear-gradient(rgba(239,68,68,0.15), rgba(239,68,68,0.15)), var(--bg-card); border: 1px solid var(--error); color: var(--error); }
+.toast-info    { background: linear-gradient(rgba(59,130,246,0.15), rgba(59,130,246,0.15)), var(--bg-card); border: 1px solid var(--info); color: var(--info); }
 .toast.toast-with-action { background: var(--bg-card); }   /* 되돌리기 버튼이 있는 토스트는 불투명 */
 .toast-action {
   margin-left: 0.4rem; padding: 0.15rem 0.6rem; border-radius: var(--radius-sm);

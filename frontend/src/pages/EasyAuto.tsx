@@ -29,11 +29,15 @@ function fmt(sec: number | null | undefined): string {
 
 const isMedia = (s: Slide) => s.slide_type === 'image' || s.slide_type === 'video'
 
-// 영상 클립 길이: 트림 구간 우선, 없으면 메타데이터 길이
+// 간편 자동 클립 최대 길이 (backend presets.EASY_CLIP_MAX 와 같게)
+const EASY_CLIP_MAX = 6
+
+// 영상 클립 길이: 트림 구간 우선, 없으면 원본 길이(가져올 때 기록한 meta.video_duration)를 최대 6초로
 function clipLength(s: Slide, metaDur?: number): number | null {
   const start = s.trim_start || 0
   if (s.trim_end && s.trim_end > start) return s.trim_end - start
-  if (metaDur && isFinite(metaDur)) return Math.max(0, metaDur - start)
+  const full = Number(metaObj(s).video_duration) || metaDur
+  if (full && isFinite(full)) return Math.min(EASY_CLIP_MAX, Math.max(0, full - start))
   return null
 }
 
@@ -76,9 +80,15 @@ function MediaThumb({ projectId, slide, duration, onDuration, style, showBadge =
   const isVideo = slide.slide_type === 'video'
   const base: React.CSSProperties = { width: '100%', height: '100%', objectFit: 'cover', display: 'block', background: '#000' }
   const len = isVideo ? clipLength(slide, duration) : null
+  // 영상은 가져올 때 만든 작은 포스터 jpg 로 (모바일에서 영상을 내려받지 않게). 없으면 <video> 메타데이터
+  const poster = isVideo && !controls ? String(metaObj(slide).poster || '') : ''
+  const [posterFailed, setPosterFailed] = useState(false)
   return (
     <div style={{ position: 'relative', overflow: 'hidden', borderRadius: 'var(--radius-md)', background: 'var(--bg-secondary)', aspectRatio: '16/9', ...style }}>
-      {isVideo && slide.video_filename ? (
+      {isVideo && poster && !posterFailed ? (
+        <img src={api.assetUrl(projectId, poster)} alt="" loading="lazy" draggable={false} style={base}
+          onError={() => setPosterFailed(true)} />
+      ) : isVideo && slide.video_filename ? (
         <video
           src={`${api.assetUrl(projectId, slide.video_filename)}#t=${(slide.trim_start || 0) + 0.1}`}
           preload="metadata" muted playsInline controls={controls} style={base}

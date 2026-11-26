@@ -359,6 +359,28 @@ def apply_to_real_hold(durations: list, items: list, transitions: list,
     return out, bases
 
 
+# ────────────────────────────────────────────────────────────────────────────
+# 간편 자동 영상 클립 (구글 포토 등에서 가져온 휴대폰 영상)
+# ────────────────────────────────────────────────────────────────────────────
+# 클립당 최대 EASY_CLIP_MAX 초, 원본의 '가운데' 구간을 쓴다 (앞 EASY_CLIP_LEAD 초는 최소한 건너뜀).
+# 휴대폰 영상은 녹화 버튼을 누르고 떼는 앞·끝이 흔들리고, 찍으려던 장면은 보통 가운데에 있다.
+# 사진만 음악 길이에 맞춰 늘고 줄며, 영상 클립 길이는 고정이다 (easy_auto.solve_photo_scale).
+EASY_CLIP_MAX = 6.0
+EASY_CLIP_LEAD = 0.5
+# 원본 오디오 기본값: 음소거 (BGM 필수 + 휴대폰 소리는 대부분 바람·잡음). slide.volume 이 덮어쓰기 손잡이.
+EASY_VIDEO_VOLUME = 0.0
+
+
+def easy_clip_window(full: float, max_len: float = EASY_CLIP_MAX,
+                     lead: float = EASY_CLIP_LEAD) -> tuple[float, float]:
+    """원본 길이 full → (trim_start, trim_end). 짧으면 전체, 길면 가운데 max_len 초."""
+    full = max(0.0, float(full or 0.0))
+    if full <= max_len:
+        return 0.0, round(full, 3)
+    ts = min(max(lead, (full - max_len) / 2.0), full - max_len)
+    return round(ts, 3), round(ts + max_len, 3)
+
+
 def static_slide_duration(item: dict, default: float, video_duration=None) -> float:
     """렌더 전 길이 추정 (간편 자동 길이 추정 / 미리보기 이웃 길이).
     자유 길이 → free_base_duration, 비디오 → 트림 구간(원본 길이는 video_duration(item) 콜백),
