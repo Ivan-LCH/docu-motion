@@ -24,6 +24,7 @@ from backend.services import place_info
 from backend.services.exif_service import extract_exif
 from backend.services.presets import parse_color_strength, parse_sketch_softness
 from backend.services import route_slide_service
+from backend.services import slide_order
 from backend.services.renderer import ASPECT_RATIO_MAP
 
 router = APIRouter(prefix="/projects", tags=["slides"])
@@ -412,12 +413,34 @@ def set_slide_lock(project_id: str, slide_id: str, req: SlideLockRequest, db: Se
     return {"ok": True, "meta": slide.meta}
 
 
+class SlideOrderRequest(BaseModel):
+    slide_ids: List[str]
+
+
+@router.put("/{project_id}/slides/order", response_model=List[SlideRead])
+def reorder_slides(project_id: str, req: SlideOrderRequest, db: Session = Depends(get_db)):
+    """전체 슬라이드 id 를 새 순서로 → order_index 0..n-1 (첫 슬라이드의 프로젝트 meta 도 이동)"""
+    project = _get_project_or_404(project_id, db)
+    try:
+        slides = slide_order.reorder_slides(db, project_id, req.slide_ids)
+    except slide_order.SlideOrderError as e:
+        raise HTTPException(status_code=e.status, detail=str(e))
+    project.updated_at = datetime.utcnow()
+    db.commit()
+    return slides
+
+
 @router.delete("/{project_id}/slides/{slide_id}", status_code=204)
 def delete_slide(project_id: str, slide_id: str, db: Session = Depends(get_db)):
-    """슬라이드 삭제"""
+    """슬라이드 삭제 → order_index 다시 채우고, 첫 슬라이드였으면 프로젝트 meta 를 새 첫 슬라이드로,
+    음악 길이 맞춤(bgm_fit·easy_duration)은 지워 다음 렌더가 다시 계산한다."""
     slide = db.query(Slide).filter(Slide.id == slide_id, Slide.project_id == project_id).first()
     if not slide:
         raise HTTPException(status_code=404, detail="Slide not found")
+    if slide_order.easy_render_running(project_id):
+        raise HTTPException(status_code=409, detail="렌더링 중에는 삭제할 수 없습니다")
+    pm = slide_order.collect_first_meta(
+        db.query(Slide).filter(Slide.project_id == project_id).order_by(Slide.order_index).all())
     assets_dir = _assets_dir(project_id)
     # 이미지 파일 삭제
     if slide.image_filename:
@@ -433,6 +456,8 @@ def delete_slide(project_id: str, slide_id: str, db: Session = Depends(get_db)):
     if slide.slide_type == "route":
         _delete_route_frames(assets_dir, slide.meta)
     db.delete(slide)
+    db.flush()
+    slide_order.compact_after_delete(db, project_id, pm)
     db.commit()
 
 
