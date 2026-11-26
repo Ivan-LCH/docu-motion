@@ -100,6 +100,167 @@ function MediaThumb({ projectId, slide, duration, onDuration, style, showBadge =
   )
 }
 
+// ─── 썸네일 순서 편집 (삭제 · 드래그 · ◀▶) ─────────
+// 마우스/펜: 타일을 5px 이상 끌면 시작. 터치: 번호 배지를 끌거나 타일을 길게(0.35초) 눌러 시작 — 그 외엔 페이지 스크롤.
+type DragState = { id: string; x: number; y: number; dx: number; dy: number; w: number; over: number; barId: string; barRight: boolean }
+type PressState = { id: string; pointerId: number; x: number; y: number; touch: boolean; el: HTMLElement; timer?: ReturnType<typeof setTimeout> }
+
+const GHOST_SCALE = 0.6   // 끌고 있는 썸네일은 작게 — 표시선이 가려지지 않게
+
+function moveIds(ids: string[], from: number, insertAt: number): string[] | null {
+  const to = insertAt > from ? insertAt - 1 : insertAt
+  if (from < 0 || to === from) return null
+  const next = [...ids]
+  const [it] = next.splice(from, 1)
+  next.splice(to, 0, it)
+  return next
+}
+
+function ReorderGrid({ projectId, media, durations, onDuration, onMove, onDelete }: {
+  projectId: string; media: Slide[]; durations: Record<string, number>
+  onDuration: (id: string, d: number) => void
+  onMove: (ids: string[]) => void
+  onDelete: (id: string) => void
+}) {
+  const [drag, setDrag] = useState<DragState | null>(null)
+  const dragRef = useRef<DragState | null>(null)
+  const press = useRef<PressState | null>(null)
+  const tiles = useRef<Map<string, HTMLDivElement>>(new Map())
+  const boxRef = useRef<HTMLDivElement>(null)
+  const scrollRaf = useRef<number | null>(null)
+  const ids = media.map(s => s.id)
+
+  const setDragState = (d: DragState | null) => { dragRef.current = d; setDrag(d) }
+
+  // 드래그 중 터치 스크롤 막기 (touchmove 는 passive:false 여야 preventDefault 가능)
+  useEffect(() => {
+    const block = (e: TouchEvent) => { if (dragRef.current) e.preventDefault() }
+    document.addEventListener('touchmove', block, { passive: false })
+    return () => document.removeEventListener('touchmove', block)
+  }, [])
+
+  // 포인터 위치 → 삽입 위치 (가장 가까운 타일의 왼쪽/오른쪽) + 표시선 위치
+  const locate = (x: number, y: number): Pick<DragState, 'over' | 'barId' | 'barRight'> => {
+    let best = -1, bestD = Infinity, after = false
+    ids.forEach((id, i) => {
+      const el = tiles.current.get(id)
+      if (!el) return
+      const r = el.getBoundingClientRect()
+      const cx = r.left + r.width / 2, cy = r.top + r.height / 2
+      const d = Math.hypot((x - cx) / r.width, (y - cy) / r.height)
+      if (d < bestD) { bestD = d; best = i; after = x > cx }
+    })
+    if (best < 0) return { over: ids.length, barId: '', barRight: false }
+    return { over: best + (after ? 1 : 0), barId: ids[best], barRight: after }
+  }
+
+  // 가장자리 근처면 그리드(또는 페이지)를 천천히 스크롤
+  const autoScroll = () => {
+    const d = dragRef.current
+    if (!d) { scrollRaf.current = null; return }
+    const box = boxRef.current
+    const edge = 56
+    const speed = (dist: number) => Math.ceil((edge - dist) / 4)
+    if (box && box.scrollHeight > box.clientHeight) {
+      const r = box.getBoundingClientRect()
+      if (d.y < r.top + edge) box.scrollTop -= speed(Math.max(0, d.y - r.top))
+      else if (d.y > r.bottom - edge) box.scrollTop += speed(Math.max(0, r.bottom - d.y))
+    } else {
+      if (d.y < edge) window.scrollBy(0, -speed(Math.max(0, d.y)))
+      else if (d.y > window.innerHeight - edge) window.scrollBy(0, speed(Math.max(0, window.innerHeight - d.y)))
+    }
+    scrollRaf.current = requestAnimationFrame(autoScroll)
+  }
+
+  const begin = (p: PressState, x: number, y: number) => {
+    const el = tiles.current.get(p.id)
+    if (!el) return
+    const r = el.getBoundingClientRect()
+    try { p.el.setPointerCapture(p.pointerId) } catch { /* 이미 끝난 포인터 */ }
+    if (p.touch) navigator.vibrate?.(12)
+    setDragState({ id: p.id, x, y, dx: p.x - r.left, dy: p.y - r.top, w: r.width, ...locate(x, y) })
+    if (scrollRaf.current === null) scrollRaf.current = requestAnimationFrame(autoScroll)
+  }
+
+  const clearPress = () => {
+    if (press.current?.timer) clearTimeout(press.current.timer)
+    press.current = null
+  }
+
+  const onPointerDown = (e: React.PointerEvent<HTMLDivElement>, id: string) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return
+    const target = e.target as HTMLElement
+    if (target.closest('button')) return
+    clearPress()
+    const p: PressState = { id, pointerId: e.pointerId, x: e.clientX, y: e.clientY, touch: e.pointerType === 'touch', el: e.currentTarget }
+    press.current = p
+    if (p.touch) {
+      if (target.closest('.easy-tile-badge')) begin(p, e.clientX, e.clientY)
+      else p.timer = setTimeout(() => { if (press.current === p) begin(p, p.x, p.y) }, 350)
+    }
+  }
+
+  const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const p = press.current
+    if (!p || e.pointerId !== p.pointerId) return
+    const d = dragRef.current
+    if (!d) {
+      const dist = Math.hypot(e.clientX - p.x, e.clientY - p.y)
+      if (p.touch) { if (dist > 8) clearPress(); return }   // 길게 누르기 전에 움직이면 스크롤
+      if (dist < 5) return
+      begin(p, e.clientX, e.clientY)
+      return
+    }
+    setDragState({ ...d, x: e.clientX, y: e.clientY, ...locate(e.clientX, e.clientY) })
+  }
+
+  const finish = (drop: boolean) => {
+    const d = dragRef.current
+    clearPress()
+    setDragState(null)
+    if (scrollRaf.current !== null) { cancelAnimationFrame(scrollRaf.current); scrollRaf.current = null }
+    if (drop && d) {
+      const next = moveIds(ids, ids.indexOf(d.id), d.over)
+      if (next) onMove(next)
+    }
+  }
+
+  const step = (i: number, delta: number) => {
+    const next = moveIds(ids, i, delta < 0 ? i - 1 : i + 2)
+    if (next) onMove(next)
+  }
+
+  const from = drag ? ids.indexOf(drag.id) : -1
+  const showDrop = drag !== null && drag.over !== from && drag.over !== from + 1
+  const dragged = drag ? media[from] : null
+
+  return (
+    <div ref={boxRef} className="easy-thumbs">
+      {media.map((s, i) => (
+        <div key={s.id} ref={el => { if (el) tiles.current.set(s.id, el); else tiles.current.delete(s.id) }}
+          className={`easy-tile${drag?.id === s.id ? ' is-dragging' : ''}`}
+          onPointerDown={e => onPointerDown(e, s.id)} onPointerMove={onPointerMove}
+          onPointerUp={() => finish(true)} onPointerCancel={() => finish(false)}
+          onDragStart={e => e.preventDefault()} onContextMenu={e => e.preventDefault()}>
+          <MediaThumb projectId={projectId} slide={s} duration={durations[s.id]} onDuration={onDuration} />
+          <span className="easy-tile-badge" aria-label={`${i + 1}번째 · 끌어서 이동`}>{i + 1}</span>
+          <button className="easy-tile-btn easy-tile-del" aria-label="삭제" title="삭제" onClick={() => onDelete(s.id)}>✕</button>
+          <div className="easy-tile-arrows">
+            <button className="easy-tile-btn" aria-label="앞으로" title="앞으로" disabled={i === 0} onClick={() => step(i, -1)}>◀</button>
+            <button className="easy-tile-btn" aria-label="뒤로" title="뒤로" disabled={i === media.length - 1} onClick={() => step(i, 1)}>▶</button>
+          </div>
+          {showDrop && drag.barId === s.id && <span className="easy-drop" style={drag.barRight ? { right: -5 } : { left: -5 }} />}
+        </div>
+      ))}
+      {drag && dragged && (
+        <div className="easy-ghost" style={{ width: drag.w * GHOST_SCALE, transform: `translate(${drag.x - drag.dx * GHOST_SCALE}px, ${drag.y - drag.dy * GHOST_SCALE}px) rotate(2deg)` }}>
+          <MediaThumb projectId={projectId} slide={dragged} duration={durations[dragged.id]} />
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── 단계 표시 ──────────────────────────────
 const STEP_LABELS = ['가져오기', '자막', '음악', '렌더', '업로드']
 const CIRCLED = ['①', '②', '③', '④', '⑤']
@@ -130,10 +291,11 @@ function StepPills({ step, maxStep, done, onGo }: { step: Step; maxStep: Step; d
 }
 
 // ─── ① 가져오기 ──────────────────────────────
-function ImportStep({ project, media, durations, onDuration, reload, autoCurate, setAutoCurate, onNext }: {
+function ImportStep({ project, media, durations, onDuration, reload, onMove, onDelete, autoCurate, setAutoCurate, onNext }: {
   project: ProjectDetail; media: Slide[]; durations: Record<string, number>
   onDuration: (id: string, d: number) => void
   reload: () => Promise<void>
+  onMove: (ids: string[]) => void; onDelete: (id: string) => void
   autoCurate: boolean; setAutoCurate: (v: boolean) => void
   onNext: () => void
 }) {
@@ -177,8 +339,8 @@ function ImportStep({ project, media, durations, onDuration, reload, autoCurate,
   )
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(360px, 5fr) 7fr', gap: '2.5rem', alignItems: 'start' }}>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+    <div className="easy-import">
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', minWidth: 0 }}>
         <div>
           <h1 style={h1}>새 영상 만들기</h1>
           <p style={{ color: 'var(--text-secondary)', lineHeight: 1.6 }}>
@@ -205,7 +367,7 @@ function ImportStep({ project, media, durations, onDuration, reload, autoCurate,
           </>)}
       </div>
 
-      <div style={{ ...panel, minHeight: 520, display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+      <div className="easy-import-panel" style={{ ...panel, display: 'flex', flexDirection: 'column', gap: '1rem', minWidth: 0 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
           <h2 style={{ fontSize: '1.3rem', fontWeight: 700, margin: 0 }}>가져온 항목 {media.length}개</h2>
           <span style={muted}>사진 {photos} · 영상 {videos}</span>
@@ -215,11 +377,8 @@ function ImportStep({ project, media, durations, onDuration, reload, autoCurate,
             왼쪽에서 사진이나 영상을 가져와 주세요
           </div>
         ) : (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '0.6rem', maxHeight: '60vh', overflowY: 'auto' }}>
-            {media.map(s => (
-              <MediaThumb key={s.id} projectId={project.id} slide={s} duration={durations[s.id]} onDuration={onDuration} />
-            ))}
-          </div>
+          <ReorderGrid projectId={project.id} media={media} durations={durations} onDuration={onDuration}
+            onMove={onMove} onDelete={onDelete} />
         )}
         <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', color: 'var(--text-secondary)', fontSize: '0.85rem' }}>
           <input type="checkbox" checked={autoCurate} onChange={e => setAutoCurate(e.target.checked)} />
@@ -740,6 +899,9 @@ export default function EasyAuto() {
   const [status, setStatus] = useState<EasyStatus | null>(null)
   const [starting, setStarting] = useState(false)
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [hidden, setHidden] = useState<Set<string>>(new Set())   // 되돌리기 대기 중인 삭제
+  const pendingDel = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
+  const opChain = useRef<Promise<void>>(Promise.resolve())       // 순서·삭제 요청을 차례로
 
   const setAutoCurate = (v: boolean) => {
     setAutoCurateState(v)
@@ -842,6 +1004,77 @@ export default function EasyAuto() {
     }
   }, [id])
 
+  const enqueue = (fn: () => Promise<void>) => {
+    opChain.current = opChain.current.then(fn).catch(() => {})
+    return opChain.current
+  }
+
+  // 순서 변경: 화면 먼저 바꾸고 전체 순서를 저장, 실패하면 서버 상태로 되돌림
+  const onMove = (mediaIds: string[]) => {
+    const cur = slidesRef.current
+    const byId = new Map(cur.map(s => [s.id, s]))
+    const movable = new Set(mediaIds)
+    let k = 0
+    const next = cur.map(s => (movable.has(s.id) ? byId.get(mediaIds[k++])! : s))
+    slidesRef.current = next
+    setSlides(next)
+    enqueue(async () => {
+      try { await api.reorderSlides(id, slidesRef.current.map(s => s.id)) }
+      catch (e) { toast(errMsg(e, '순서 변경 실패'), 'error'); await reload().catch(() => {}) }
+    })
+  }
+
+  const unhide = (sid: string) => setHidden(h => { const n = new Set(h); n.delete(sid); return n })
+
+  const commitDelete = (sid: string) => {
+    const t = pendingDel.current.get(sid)
+    if (t === undefined) return opChain.current
+    clearTimeout(t)
+    pendingDel.current.delete(sid)
+    return enqueue(async () => {
+      try {
+        await api.deleteSlide(id, sid)
+        slidesRef.current = slidesRef.current.filter(s => s.id !== sid)
+        setSlides(slidesRef.current)
+        setMusic(null)                       // 길이가 바뀌었으니 음악 후보·맞춤은 다시
+      } catch (e) {
+        toast(errMsg(e, '삭제 실패'), 'error')
+      } finally {
+        unhide(sid)
+      }
+    })
+  }
+
+  // 삭제: 바로 숨기고 5초 동안 되돌리기, 그 뒤 서버에서 삭제
+  const onDelete = (sid: string) => {
+    if (pendingDel.current.has(sid)) return
+    setHidden(h => new Set(h).add(sid))
+    pendingDel.current.set(sid, setTimeout(() => { commitDelete(sid) }, 5000))
+    toast('삭제했어요', 'success', {
+      duration: 5000,
+      action: {
+        label: '되돌리기', onClick: () => {
+          const t = pendingDel.current.get(sid)
+          if (t === undefined) return
+          clearTimeout(t)
+          pendingDel.current.delete(sid)
+          unhide(sid)
+        },
+      },
+    })
+  }
+
+  const flushEdits = async () => {
+    await Promise.all([...pendingDel.current.keys()].map(commitDelete))
+    await opChain.current
+  }
+
+  // 페이지를 떠날 때 남은 삭제 실행
+  useEffect(() => () => {
+    pendingDel.current.forEach((t, sid) => { clearTimeout(t); api.deleteSlide(id, sid).catch(() => {}) })
+    pendingDel.current.clear()
+  }, [id])
+
   const onDuration = useCallback((sid: string, d: number) => {
     setDurations(prev => (prev[sid] === d ? prev : { ...prev, [sid]: d }))
   }, [])
@@ -899,10 +1132,16 @@ export default function EasyAuto() {
     return <div style={{ display: 'flex', justifyContent: 'center', padding: '6rem' }}><span className="spinner spinner-lg" /></div>
   }
 
-  const media = slides.filter(isMedia)
+  const media = slides.filter(s => isMedia(s) && !hidden.has(s.id))
+
+  const leave = async (s: Step) => {
+    if (step === 1) await flushEdits()
+    if (step === 2) flushSave()
+    go(s)
+  }
 
   return (
-    <main className="page" style={{ padding: '1.5rem 3rem 3rem', maxWidth: 1600, margin: '0 auto' }}>
+    <main className="page easy-page" style={{ maxWidth: 1600, margin: '0 auto' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem', gap: '1rem', flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
           <button className="btn btn-ghost btn-sm" onClick={() => navigate('/')}>← 목록</button>
@@ -910,12 +1149,13 @@ export default function EasyAuto() {
           <span style={muted}>{project.name}</span>
         </div>
         <StepPills step={step} maxStep={maxStep} done={renderState === 'done'}
-          onGo={s => { if (step === 2) flushSave(); go(s) }} />
+          onGo={leave} />
       </div>
 
       {step === 1 && (
         <ImportStep project={project} media={media} durations={durations} onDuration={onDuration} reload={reload}
-          autoCurate={autoCurate} setAutoCurate={setAutoCurate} onNext={() => go(2)} />
+          onMove={onMove} onDelete={onDelete}
+          autoCurate={autoCurate} setAutoCurate={setAutoCurate} onNext={() => leave(2)} />
       )}
       {step === 2 && (
         <CaptionStep project={project} media={media} durations={durations} onDuration={onDuration} onCaption={onCaption}

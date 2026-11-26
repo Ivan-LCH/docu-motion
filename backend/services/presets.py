@@ -408,6 +408,7 @@ PROJECT_META_KEYS: tuple[str, ...] = (
     "to_real_hold_off", # true → 그림→실사 홀드 끔
     "auto_plan",        # 자동 편집 계획 기록 {easy, seed, n_intro, stylize_ratio, ...} (다시 섞기용)
     "easy_settings",    # 간편 자동 옵션 {resolution, stylize_ratio, slide_duration, auto_curate}
+    "user_ordered",     # true → 사용자가 순서를 직접 바꿈 (slide_order.reorder_slides)
 )
 DEFAULT_BGM_LOOP_XFADE = 1.5
 

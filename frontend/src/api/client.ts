@@ -607,6 +607,8 @@ export const api = {
     request<{ ok: boolean }>('PUT', `/projects/${id}/slides`, slides),
   deleteSlide: (projectId: string, slideId: string) =>
     request<void>('DELETE', `/projects/${projectId}/slides/${slideId}`),
+  reorderSlides: (projectId: string, slideIds: string[]) =>
+    request<Slide[]>('PUT', `/projects/${projectId}/slides/order`, { slide_ids: slideIds }),
 
   // AI 나레이션 (8-5/8-6)
   generateNarration: (projectId: string, slideId: string) =>

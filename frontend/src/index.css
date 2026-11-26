@@ -308,6 +308,12 @@ body {
 .toast-success { background: rgba(34,197,94,0.15); border: 1px solid var(--success); color: var(--success); }
 .toast-error   { background: rgba(239,68,68,0.15); border: 1px solid var(--error); color: var(--error); }
 .toast-info    { background: rgba(59,130,246,0.15); border: 1px solid var(--info); color: var(--info); }
+.toast.toast-with-action { background: var(--bg-card); }   /* 되돌리기 버튼이 있는 토스트는 불투명 */
+.toast-action {
+  margin-left: 0.4rem; padding: 0.15rem 0.6rem; border-radius: var(--radius-sm);
+  border: 1px solid currentColor; background: transparent; color: inherit;
+  font: inherit; font-weight: 700; cursor: pointer;
+}
 
 /* ─────────────────────────────────────────────
    Spinner
@@ -601,4 +607,52 @@ body {
   opacity: 0.25;
   cursor: not-allowed;
   pointer-events: none;
+}
+
+/* ─────────────────────────────────────────────
+   간편 자동 ① 가져오기 — 반응형 · 썸네일 순서 편집
+───────────────────────────────────────────── */
+.easy-page { padding: 1.5rem 3rem 3rem; }
+.easy-import { display: grid; grid-template-columns: minmax(360px, 5fr) 7fr; gap: 2.5rem; align-items: start; }
+.easy-import-panel { min-height: 520px; }
+.easy-thumbs {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 0.6rem;
+  max-height: 60vh; overflow-y: auto; padding: 2px;
+}
+.easy-tile { position: relative; touch-action: pan-y pinch-zoom; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; cursor: grab; }
+.easy-tile.is-dragging { opacity: 0.35; }
+.easy-tile-badge {
+  position: absolute; left: 6px; top: 6px; min-width: 22px; height: 22px; padding: 0 6px;
+  display: flex; align-items: center; justify-content: center; border-radius: 999px;
+  background: rgba(0,0,0,0.6); color: #fff; font-size: 0.72rem; font-weight: 700; touch-action: none;
+}
+.easy-tile-btn {
+  width: 24px; height: 24px; padding: 0; border: none; border-radius: 999px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,0.6); color: #fff; font-size: 0.8rem; line-height: 1;
+}
+.easy-tile-btn:hover:not(:disabled) { background: rgba(0,0,0,0.85); }
+.easy-tile-btn:disabled { opacity: 0.3; cursor: default; }
+.easy-tile-del { position: absolute; right: 6px; top: 6px; }
+.easy-tile-del:hover { background: var(--error) !important; }
+.easy-tile-arrows { position: absolute; left: 6px; bottom: 6px; display: flex; gap: 4px; }
+.easy-drop {
+  position: absolute; top: 4%; bottom: 4%; width: 4px; border-radius: 4px;
+  background: var(--accent); box-shadow: 0 0 0 2px rgba(108,99,255,0.35); pointer-events: none;
+}
+.easy-ghost {
+  position: fixed; left: 0; top: 0; z-index: 1000; pointer-events: none;
+  box-shadow: 0 12px 28px rgba(0,0,0,0.45); border-radius: var(--radius-md); opacity: 0.92;
+}
+
+@media (max-width: 860px) {
+  .easy-page { padding: 1rem 1rem 2rem; }
+  .easy-import { grid-template-columns: 1fr; gap: 1.25rem; }
+  .easy-import-panel { min-height: 0; padding: 1rem !important; }
+  .easy-thumbs { grid-template-columns: repeat(3, 1fr); max-height: none; overflow: visible; }
+}
+@media (max-width: 520px) {
+  .easy-thumbs { grid-template-columns: repeat(2, 1fr); }
+  .easy-tile-btn { width: 28px; height: 28px; }
+  .easy-tile-badge { min-width: 26px; height: 26px; }
 }
