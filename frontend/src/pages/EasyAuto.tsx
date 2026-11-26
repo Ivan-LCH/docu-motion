@@ -7,10 +7,11 @@ import {
 import { useToast } from '../components/ToastContext'
 import PhotosPickerModal from '../components/PhotosPickerModal'
 import DrivePickerButton from '../components/DrivePickerButton'
+import YouTubeUploadPanel from '../components/YouTubeUploadPanel'
 
 // ─── 공통 상수·헬퍼 ───────────────────────────
 const SLIDE_DURATION = 3.5
-type Step = 1 | 2 | 3 | 4
+type Step = 1 | 2 | 3 | 4 | 5
 type RenderState = 'idle' | 'running' | 'error' | 'done'
 
 const PHASE_LABEL: Record<string, string> = {
@@ -100,8 +101,8 @@ function MediaThumb({ projectId, slide, duration, onDuration, style, showBadge =
 }
 
 // ─── 단계 표시 ──────────────────────────────
-const STEP_LABELS = ['가져오기', '자막', '음악', '렌더']
-const CIRCLED = ['①', '②', '③', '④']
+const STEP_LABELS = ['가져오기', '자막', '음악', '렌더', '업로드']
+const CIRCLED = ['①', '②', '③', '④', '⑤']
 
 function StepPills({ step, maxStep, done, onGo }: { step: Step; maxStep: Step; done: boolean; onGo: (s: Step) => void }) {
   return (
@@ -596,11 +597,11 @@ function MusicStep({ project, music, setMusic, selected, setSelected, resolution
 }
 
 // ─── ④ 렌더 ────────────────────────────────
-function RenderStep({ project, media, durations, onDuration, state, status, resolution, onRetry, onReshuffle, onOtherMusic, busy }: {
+function RenderStep({ project, media, durations, onDuration, state, status, resolution, onRetry, onReshuffle, onOtherMusic, onUpload, busy }: {
   project: ProjectDetail; media: Slide[]; durations: Record<string, number>
   onDuration: (id: string, d: number) => void
   state: RenderState; status: EasyStatus | null; resolution: string
-  onRetry: () => void; onReshuffle: () => void; onOtherMusic: () => void; busy: boolean
+  onRetry: () => void; onReshuffle: () => void; onOtherMusic: () => void; onUpload: () => void; busy: boolean
 }) {
   const navigate = useNavigate()
   const { toast } = useToast()
@@ -666,18 +667,21 @@ function RenderStep({ project, media, durations, onDuration, state, status, reso
             {fmt(videoLen)} · {project.resolution || resolution}
             {c && <> · BGM “{c.title}” ({c.artist}{c.license_url ? `, ${licenseShort(c.license_url)}` : ''})</>}
           </div>
-          <a className="btn btn-primary btn-full" href={videoUrl} download={`${project.name}.mp4`} style={{ ...bigBtn, justifyContent: 'flex-start' }}>⬇ 다운로드</a>
+          <button className="btn btn-primary btn-full" style={{ ...bigBtn, justifyContent: 'flex-start' }} onClick={onUpload}>▶ YouTube 업로드 →</button>
+          <a className="btn btn-secondary btn-full" href={videoUrl} download={`${project.name}.mp4`} style={{ ...bigBtn, justifyContent: 'flex-start' }}>⬇ 다운로드</a>
           <button className="btn btn-secondary btn-full" style={{ ...bigBtn, justifyContent: 'flex-start' }} onClick={() => navigate(`/project/${project.id}`)}>✎ 세부 편집 열기</button>
           <button className="btn btn-secondary btn-full" style={{ ...bigBtn, justifyContent: 'flex-start' }} onClick={onReshuffle} disabled={busy}>
             {busy ? <><span className="spinner" /> 섞는 중...</> : '🎲 효과 다시 섞기'}
           </button>
           <button className="btn btn-secondary btn-full" style={{ ...bigBtn, justifyContent: 'flex-start' }} onClick={onOtherMusic}>🎵 다른 곡으로</button>
           <p style={muted}>세부 편집은 기존 에디터로 열려요. 자동으로 넣은 효과는 슬라이드마다 '자동' 표시가 붙고, 손댄 슬라이드는 다시 섞기에서 빠져요.</p>
-          <div>
-            <label className="label">음악 크레딧 (YouTube 설명에 붙여넣기)</label>
-            <textarea className="textarea" readOnly value={credit?.text || ''} rows={4} style={{ fontSize: '0.8rem' }} />
-            <button className="btn btn-ghost btn-sm" style={{ marginTop: '0.4rem' }} onClick={copy} disabled={!credit?.text}>복사</button>
-          </div>
+          {credit?.text && (
+            <details>
+              <summary className="label" style={{ cursor: 'pointer' }}>음악 크레딧 <span style={muted}>· YouTube 설명에 자동 포함</span></summary>
+              <textarea className="textarea" readOnly value={credit.text} rows={4} style={{ fontSize: '0.8rem', marginTop: '0.4rem' }} />
+              <button className="btn btn-ghost btn-sm" style={{ marginTop: '0.4rem' }} onClick={copy}>복사</button>
+            </details>
+          )}
         </div>
       </div>
 
@@ -776,7 +780,7 @@ export default function EasyAuto() {
         if (st?.task?.status === 'running') {
           setRenderState('running'); setStep(4); setMaxStep(4)
         } else if (p.status === 'COMPLETED' && p.has_video) {
-          setRenderState('done'); setStep(4); setMaxStep(4)
+          setRenderState('done'); setStep(4); setMaxStep(5)
         } else if (st?.task?.status === 'error') {
           setRenderState('error'); setStep(4); setMaxStep(4)
         }
@@ -798,6 +802,7 @@ export default function EasyAuto() {
         if (st.task?.status === 'done') {
           await reload()
           setRenderState('done')
+          setMaxStep(5)
           toast('영상이 완성됐어요', 'success')
         } else if (st.task?.status === 'error') {
           await reload().catch(() => {})
@@ -904,7 +909,7 @@ export default function EasyAuto() {
           <span style={{ fontWeight: 600, color: 'var(--accent)' }}>✦ 간편 자동</span>
           <span style={muted}>{project.name}</span>
         </div>
-        <StepPills step={step} maxStep={maxStep} done={step === 4 && renderState === 'done'}
+        <StepPills step={step} maxStep={maxStep} done={renderState === 'done'}
           onGo={s => { if (step === 2) flushSave(); go(s) }} />
       </div>
 
@@ -925,7 +930,16 @@ export default function EasyAuto() {
       {step === 4 && (
         <RenderStep project={project} media={media} durations={durations} onDuration={onDuration}
           state={renderState} status={status} resolution={resolution}
-          onRetry={handleRetry} onReshuffle={handleReshuffle} onOtherMusic={() => go(3)} busy={starting} />
+          onRetry={handleRetry} onReshuffle={handleReshuffle} onOtherMusic={() => go(3)} onUpload={() => go(5)} busy={starting} />
+      )}
+      {step === 5 && (
+        <div style={{ ...panel, padding: '2rem' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '1.5rem' }}>
+            <h1 style={{ ...h1, marginBottom: 0 }}>YouTube 업로드</h1>
+            <button className="btn btn-ghost btn-sm" onClick={() => go(4)}>← 영상</button>
+          </div>
+          <YouTubeUploadPanel projectId={project.id} />
+        </div>
       )}
     </main>
   )
