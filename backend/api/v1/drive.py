@@ -19,7 +19,7 @@ from backend.core.config import OUTPUTS_DIR
 from backend.core.logger import get_logger
 from backend.db.models import Project, Slide
 from backend.db.session import get_db
-from backend.services import drive_manager, media_import
+from backend.services import capture_time, drive_manager, media_import
 from backend.services.drive_manager import DriveError
 
 router = APIRouter(prefix="/drive", tags=["drive"])
@@ -73,20 +73,13 @@ class DriveImportRequest(BaseModel):
 
 
 def sort_imported(rows: list[dict], sort_order: str) -> list[dict]:
-    """rows: [{captured: ISO|None, ...}] (선택 순서). captured: 촬영 시각순 — 시각을 모르는 항목은
-    선택 순서상 바로 앞 항목의 시각을 이어받아 그 뒤에 붙는다 (맨 앞이면 첫 시각)."""
+    """rows: [{captured: ISO|None, type?, name?, ...}] (선택 순서). captured: 촬영 시각순 (사진·영상 섞어서) —
+    시간대 없는 captured 는 영상이면 UTC(ffprobe), 사진이면 현지 시각, 없으면 원본 파일명에서.
+    시각을 모르는 항목은 선택 순서상 바로 앞 항목 뒤에 붙는다 (맨 앞이면 맨 앞) — capture_time.sort_by_capture."""
     if sort_order != "captured":
         return rows
-    known = [r["captured"] for r in rows if r.get("captured")]
-    if not known:
-        return rows
-    prev = known[0]
-    keyed = []
-    for i, r in enumerate(rows):
-        if r.get("captured"):
-            prev = r["captured"]
-        keyed.append((prev, 0 if r.get("captured") else 1, i, r))
-    return [k[3] for k in sorted(keyed, key=lambda k: (k[0], k[1], k[2]))]
+    return capture_time.sort_by_capture(rows, lambda r: capture_time.stored_capture_key(
+        {"captured_at": r.get("captured")}, r.get("type") == "video") or capture_time.time_from_filename(r.get("name") or ""))
 
 
 def _captured_of(slide: Slide) -> str | None:
@@ -143,7 +136,8 @@ def drive_import(project_id: str, req: DriveImportRequest, db: Session = Depends
                 slide, fname, kind = media_import.make_media_slide(
                     project_id, jpg, name, "image/jpeg", 0,
                     captured_hint=drive_manager.captured_hint(meta), gps_hint=drive_manager.gps_hint(meta))
-            rows.append({"slide": slide, "filename": fname, "type": kind, "captured": _captured_of(slide)})
+            rows.append({"slide": slide, "filename": fname, "type": kind, "name": name,
+                         "captured": _captured_of(slide)})
             logger.info(f"Drive import: {name} -> {fname}")
         except DriveError as e:
             skipped.append({"file_id": fid, "name": name, "reason": str(e)})
