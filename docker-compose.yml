@@ -10,7 +10,7 @@ services:
   docu-app:
     build: .
     container_name: docu_motion_app
-    command: ["/bin/bash", "-c", "/usr/sbin/sshd && sleep infinity"]
+    command: ["/bin/bash", "-c", "/usr/sbin/sshd; rm -f /app/server.pid; (bash /app/start_server.sh >> /app/logs/autostart.log 2>&1 &); sleep infinity"]
     ports:
       - "8505:8000"
       - "1028:22"
