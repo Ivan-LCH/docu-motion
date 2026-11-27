@@ -2,6 +2,7 @@
 DocuMotion - Google Photos Picker API 연동
 세션 생성 → Picker UI 팝업 → 폴링 → 선택 미디어 다운로드 → 슬라이드 생성
 """
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -14,7 +15,7 @@ from backend.db.session import get_db
 from backend.db.models import Project, Slide
 from backend.core.config import OUTPUTS_DIR
 from backend.core.logger import get_logger
-from backend.services import media_import, photos_manager
+from backend.services import capture_time, media_import, photos_manager
 
 router = APIRouter(prefix="/photos", tags=["photos"])
 logger = get_logger(__name__)
@@ -88,7 +89,7 @@ def poll_picker_session(session_id: str):
 # ─── 선택 미디어 가져오기 (다운로드 + 슬라이드 생성) ──
 class ImportSessionRequest(BaseModel):
     session_id: str
-    sort_order: str = "selected"  # selected | oldest | newest | api
+    sort_order: str = "oldest"  # oldest(기본 · 촬영 시각순, 사진·영상 섞어서) | newest | selected | api
 
 
 # 공용 미디어 처리 (Google 드라이브 가져오기와 공유) — backend/services/media_import.py
@@ -160,6 +161,13 @@ def import_from_session(
                 project_id, dest_path, original_name,
                 (mime_type if mime_type.startswith("video/") else "video/mp4") if is_video else mime_type,
                 order_idx)
+
+            # 촬영 시각(UTC) 보관 → 나중에 '시간순 정렬' (organize.sort_by_capture_time)
+            captured = capture_time.picked_item_key(item)
+            if captured is not None:
+                exif = json.loads(slide.exif or "{}") or {}
+                exif["captured_utc"] = capture_time.to_utc_iso(captured)
+                slide.exif = json.dumps(exif, ensure_ascii=False)
 
             db.add(slide)
             db.flush()                      # slide.id 기본값 채우기 (응답·성공 개수용)

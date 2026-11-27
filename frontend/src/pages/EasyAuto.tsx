@@ -313,6 +313,7 @@ function ImportStep({ project, media, durations, onDuration, reload, onMove, onD
   const [title, setTitle] = useState(project.name)
   const [showPhotos, setShowPhotos] = useState(false)
   const [uploading, setUploading] = useState(false)
+  const [sorting, setSorting] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
   useEffect(() => { setTitle(project.name) }, [project.name])
 
@@ -332,6 +333,13 @@ function ImportStep({ project, media, durations, onDuration, reload, onMove, onD
       await reload()
     } catch (e) { toast(errMsg(e, '업로드 실패'), 'error') }
     finally { setUploading(false); if (fileRef.current) fileRef.current.value = '' }
+  }
+
+  const sortByTime = async () => {
+    setSorting(true)
+    try { await api.sortByCaptureTime(project.id); await reload() }
+    catch (e) { toast(errMsg(e, '정렬 실패'), 'error') }
+    finally { setSorting(false) }
   }
 
   const photos = media.filter(s => s.slide_type === 'image').length
@@ -380,7 +388,14 @@ function ImportStep({ project, media, durations, onDuration, reload, onMove, onD
       <div className="easy-import-panel" style={{ ...panel, display: 'flex', flexDirection: 'column', gap: '1rem', minWidth: 0 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
           <h2 style={{ fontSize: '1.3rem', fontWeight: 700, margin: 0 }}>가져온 항목 {media.length}개</h2>
-          <span style={muted}>사진 {photos} · 영상 {videos}</span>
+          <span style={{ ...muted, display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+            사진 {photos} · 영상 {videos}
+            {media.length > 1 && (
+              <button className="btn btn-secondary btn-sm" onClick={sortByTime} disabled={sorting}>
+                {sorting ? <span className="spinner" /> : '시간순 정렬'}
+              </button>
+            )}
+          </span>
         </div>
         {media.length === 0 ? (
           <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', ...muted, fontSize: '0.9rem' }}>

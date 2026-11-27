@@ -17,6 +17,7 @@ from google.auth.transport.requests import Request
 
 from backend.core.config import BASE_DIR
 from backend.core.logger import get_logger
+from backend.services import capture_time
 
 logger = get_logger(__name__)
 
@@ -245,20 +246,20 @@ def parse_picked_item(item: dict) -> dict:
         "processingStatus": (vmeta.get("processingStatus") or "").upper() if is_video else "",
         "width": int(metadata.get("width") or 0),
         "height": int(metadata.get("height") or 0),
-        # 정렬용 필드 (둘 다 RFC3339 ISO 문자열, 사전순 = 시간순)
+        # 정렬용 필드 (둘 다 RFC3339 ISO 문자열 — 촬영 시각 해석은 capture_time.parse_iso_utc)
         "selectedTime": item.get("createTime", ""),         # picker 상에서 선택된 시각
         "creationTime": metadata.get("creationTime", ""),   # 사진 원본 촬영 시각
     }
 
 
-def list_picked_items(session_id: str, sort_order: str = "selected") -> list[dict]:
+def list_picked_items(session_id: str, sort_order: str = "oldest") -> list[dict]:
     """
     선택 완료된 세션에서 미디어 아이템 목록 조회.
 
     sort_order:
         - "selected"   : 사용자가 picker 상에서 선택한 순서 (item.createTime 오름차순)
-        - "oldest"     : 촬영 시각 오래된 순 (mediaFileMetadata.creationTime 오름차순)
-        - "newest"     : 촬영 시각 최신 순 (mediaFileMetadata.creationTime 내림차순)
+        - "oldest"     : 촬영 시각 오래된 순 (기본 · creationTime, 없으면 파일명 — capture_time.picked_item_key)
+        - "newest"     : 촬영 시각 최신 순
         - "api"        : Picker API 응답 순서 그대로 (기본 fallback)
     """
     headers = _get_headers()
@@ -281,13 +282,11 @@ def list_picked_items(session_id: str, sort_order: str = "selected") -> list[dic
         if not page_token:
             break
 
-    # 정렬 적용 — 빈 문자열은 끝으로 보내기
+    # 정렬 적용 — 선택 순서: 빈 문자열은 끝으로 / 촬영 시각: 사진·영상 섞어서, 시각 모르는 항목은 이웃 기준 (capture_time)
     if sort_order == "selected":
         items.sort(key=lambda i: (i["selectedTime"] == "", i["selectedTime"]))
-    elif sort_order == "oldest":
-        items.sort(key=lambda i: (i["creationTime"] == "", i["creationTime"]))
-    elif sort_order == "newest":
-        items.sort(key=lambda i: (i["creationTime"] == "", i["creationTime"]), reverse=True)
+    elif sort_order in ("oldest", "newest"):
+        items = capture_time.sort_by_capture(items, capture_time.picked_item_key, reverse=sort_order == "newest")
     # "api"는 정렬 안 함
 
     logger.info(f"Picker session {session_id[:12]}...: {len(items)} items, sort={sort_order}")

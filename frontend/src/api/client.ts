@@ -773,7 +773,7 @@ export const api = {
   photosExchangeCode: (code: string) => request<{ ok: boolean }>('POST', '/photos/exchange-code', { code }),
   photosCreateSession: () => request<PickerSession>('POST', '/photos/session'),
   photosPollSession: (sessionId: string) => request<PickerSession>('GET', `/photos/session/${sessionId}`),
-  photosImport: (projectId: string, sessionId: string, sortOrder: PhotosSortOrder = 'selected') =>
+  photosImport: (projectId: string, sessionId: string, sortOrder: PhotosSortOrder = 'oldest') =>
     request<PickerImportResult>('POST', `/photos/import/${projectId}`, { session_id: sessionId, sort_order: sortOrder }),
 
   // Google Drive Picker
@@ -807,6 +807,10 @@ export const api = {
     request<OrganizeSuggestions>('GET', `/projects/${projectId}/organize/suggestions`),
   sortSlides: (projectId: string) =>
     request<{ ok: boolean; reordered: number }>('POST', `/projects/${projectId}/organize/sort`),
+  // 사진·영상 섞어서 촬영 시각 오래된 순 (시각 모르는 슬라이드는 앞 슬라이드에 붙어 간다)
+  sortByCaptureTime: (projectId: string) =>
+    request<{ ok: boolean; changed: boolean; with_time: number; without_time: number; order: string[] }>(
+      'POST', `/projects/${projectId}/slides/sort-by-capture-time`),
   insertRouteSuggestion: (
     projectId: string,
     payload: { after_slide_id: string; origin: { lat: number; lng: number; name?: string }; destination: { lat: number; lng: number; name?: string }; profile?: string },

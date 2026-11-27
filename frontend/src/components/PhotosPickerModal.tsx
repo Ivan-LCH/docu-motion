@@ -13,8 +13,8 @@ export default function PhotosPickerModal({ projectId, onClose, onImported }: {
   const [sessionId, setSessionId] = useState<string>('')
   const [codeInput, setCodeInput] = useState('')
   const [exchanging, setExchanging] = useState(false)
-  const [sortOrder, setSortOrder] = useState<PhotosSortOrder>('selected')
-  const sortOrderRef = useRef<PhotosSortOrder>('selected')
+  const [sortOrder, setSortOrder] = useState<PhotosSortOrder>('oldest')
+  const sortOrderRef = useRef<PhotosSortOrder>('oldest')
   useEffect(() => { sortOrderRef.current = sortOrder }, [sortOrder])
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const importingRef = useRef(false)
@@ -174,8 +174,8 @@ export default function PhotosPickerModal({ projectId, onClose, onImported }: {
                     onChange={e => setSortOrder(e.target.value as PhotosSortOrder)}
                     style={{ fontSize: '0.85rem', padding: '0.5rem 0.7rem', background: 'var(--bg-card)', color: 'var(--text)', border: '1px solid var(--border)', borderRadius: 'var(--radius-sm)' }}
                   >
-                    <option value="selected">선택 순서 (Picker 클릭 순)</option>
                     <option value="oldest">촬영 오래된 순</option>
+                    <option value="selected">선택 순서 (Picker 클릭 순)</option>
                     <option value="newest">촬영 최신 순</option>
                     <option value="api">기본 (API 응답 순서)</option>
                   </select>
