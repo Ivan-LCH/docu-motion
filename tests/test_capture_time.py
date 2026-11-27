@@ -185,3 +185,23 @@ def test_list_picked_items_mixed_oldest_default(picker):
     assert newest == ["v2", "p2", "pX", "v1", "p1", "pF"]
     api = [i["id"] for i in photos_manager.list_picked_items("s", "api")]
     assert api == ["v2", "p2", "pX", "v1", "p1", "pF"]
+
+
+# ── 초 없는 파일명 · epoch 우선순위 (prod 실데이터 패턴) ────────────────────
+def test_filename_minutes_only_pattern():
+    from backend.services.capture_time import time_from_filename, strip_import_stamp
+    from datetime import datetime, timezone
+    n = strip_import_stamp("2026_09_23 18_12_133752504154_h264.mp4")
+    assert time_from_filename(n) == datetime(2026, 9, 23, 9, 12, tzinfo=timezone.utc)
+    n = strip_import_stamp("2026_09_23 18_13 (8)_133802717058_h264.mp4")
+    assert time_from_filename(n) == datetime(2026, 9, 23, 9, 13, tzinfo=timezone.utc)
+
+
+def test_epoch_filename_is_weaker_than_file_exif():
+    from backend.services.capture_time import slide_capture_key, time_from_filename
+    from datetime import datetime, timezone
+    exif_dt = datetime(2026, 9, 23, 5, 37, 45, tzinfo=timezone.utc)
+    assert time_from_filename("1790154834648.jpg", allow_epoch=False) is None
+    assert slide_capture_key({}, False, ["1790154834648.jpg"], lambda: exif_dt) == exif_dt
+    # 파일에서도 못 읽으면 epoch 로라도
+    assert slide_capture_key({}, False, ["1790154834648.jpg"], lambda: None) is not None

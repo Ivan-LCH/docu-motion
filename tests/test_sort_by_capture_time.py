@@ -84,7 +84,9 @@ def organize_client(session_factory, outputs):
 def _exif_jpeg(path: Path, when: str):
     img = Image.new("RGB", (64, 48), (10, 20, 30))
     ex = Image.Exif()
-    ex.get_ifd(0x8769)[0x9003] = when                      # DateTimeOriginal (현지 시각)
+    ex[0x010F] = "TestCam"                                 # Make (IFD0)
+    ex[0x0132] = when                                      # DateTime (IFD0, 현지 시각) — Pillow 10.2 는
+                                                           # get_ifd(0x8769) 수정분을 저장하지 않아 IFD0 사용
     img.save(path, "JPEG", exif=ex)
 
 

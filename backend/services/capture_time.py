@@ -38,7 +38,7 @@ _ISO_RE = re.compile(
 # 날짜·시각 사이 구분자는 0~1개 (_ - . 공백 T), 초 뒤에 바로 붙은 1~6자리는 소수 초 (PXL_…190207123)
 _NAME_DT_RE = re.compile(
     r"(?<!\d)((?:19|20)\d{2})[-_.]?(0[1-9]|1[0-2])[-_.]?(0[1-9]|[12]\d|3[01])"
-    r"[ _T.\-]?([01]\d|2[0-3])[-_.:]?([0-5]\d)[-_.:]?([0-5]\d)(\d{1,6})?(?!\d)")
+    r"[ _T.\-]?([01]\d|2[0-3])[-_.:]?([0-5]\d)(?:[-_.:]?([0-5]\d)(\d{1,6})?)?(?!\d)")
 _EPOCH_MS_RE = re.compile(r"(?<!\d)(1\d{12})(?!\d)")
 _EPOCH_S_RE = re.compile(r"(?<!\d)(1\d{9})(?!\d)")
 
@@ -81,18 +81,22 @@ def parse_iso_utc(value, naive_tz: timezone = timezone.utc) -> Optional[datetime
         return None
 
 
-def time_from_filename(name: str, local_tz: timezone = LOCAL_TZ) -> Optional[datetime]:
-    """파일명 속 촬영 시각 → UTC aware datetime. 날짜+시각 패턴(현지 시각 = local_tz) 우선, 없으면 epoch ms/s."""
+def time_from_filename(name: str, local_tz: timezone = LOCAL_TZ, allow_epoch: bool = True) -> Optional[datetime]:
+    """파일명 속 촬영 시각 → UTC aware datetime. 날짜+시각 패턴(현지 시각 = local_tz, 초 생략 가능
+    예: '2026_09_23 18_12') 우선, 없으면 epoch ms/s (allow_epoch=False 면 epoch 은 보지 않음 —
+    epoch 이름은 저장/다운로드 시각일 수 있어 EXIF 보다 약한 근거)."""
     base = re.split(r"[\\/]", str(name or ""))[-1]
     if not base:
         return None
     for m in _NAME_DT_RE.finditer(base):
         y, mo, d, hh, mi, ss, frac = m.groups()
         try:
-            dt = datetime(int(y), int(mo), int(d), int(hh), int(mi), int(ss), _micro(frac), tzinfo=local_tz)
+            dt = datetime(int(y), int(mo), int(d), int(hh), int(mi), int(ss or 0), _micro(frac), tzinfo=local_tz)
         except ValueError:                       # 2월 30일 등
             continue
         return dt.astimezone(timezone.utc)
+    if not allow_epoch:
+        return None
     for rx, scale in ((_EPOCH_MS_RE, 1000.0), (_EPOCH_S_RE, 1.0)):
         for m in rx.finditer(base):
             dt = datetime.fromtimestamp(int(m.group(1)) / scale, tz=timezone.utc)
@@ -125,13 +129,20 @@ def strip_import_stamp(saved_name: str) -> str:
 
 def slide_capture_key(exif: dict, is_video: bool, names: Sequence[str] = (),
                       read_file: Optional[Callable[[], Optional[datetime]]] = None) -> Optional[datetime]:
-    """슬라이드 촬영 시각: 저장된 값 → 파일명(원본 이름, 저장 이름 순) → read_file()(EXIF/ffprobe, 느려서 마지막)."""
+    """슬라이드 촬영 시각: 저장된 값 → 파일명 날짜 패턴(원본 이름, 저장 이름 순) → read_file()(EXIF/ffprobe)
+    → 파일명 epoch ms/s (저장 시각일 수 있어 마지막)."""
     k = stored_capture_key(exif, is_video)
+    for n in names:
+        if k is not None:
+            return k
+        k = time_from_filename(n, allow_epoch=False)
+    if k is None and read_file is not None:
+        k = read_file()
     for n in names:
         if k is not None:
             break
         k = time_from_filename(n)
-    return k if k is not None or read_file is None else read_file()
+    return k
 
 
 def to_utc_iso(dt: datetime) -> str:
